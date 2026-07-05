@@ -23,7 +23,7 @@ work.
 ## Setup
 
 ```sh
-python3 -m venv .venv          # use Homebrew python3, not system 3.9
+python3 -m venv .venv          # Python 3.10+
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
