@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Runtime state (rebuilt on startup)
+events.db
+events.db-wal
+events.db-shm
+.offsets/
+pm_agent.lock
