@@ -1,7 +1,15 @@
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
+
+# a venv accidentally created in the repo root (use .venv instead)
+bin/
+lib/
+include/
+share/
+pyvenv.cfg
 
 # Runtime state (rebuilt on startup)
 events.db

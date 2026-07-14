@@ -1,31 +1,170 @@
 """
-agent-bus: a minimal append-only event bus for multi-agent coordination.
+agent-bus: an append-only event bus for local multi-agent orchestration.
 
-Design:
-  - Events are immutable rows in SQLite (the log IS the source of truth).
-  - Consumers track their own offset (last event id seen) -> crash recovery
-    is just "resume from offset".
-  - Subscribers get history-then-live via a single SSE stream:
-      GET /events/stream?from_id=0&topics=task.assigned,task.completed
-  - Publishing is a POST; an asyncio.Condition wakes all live subscribers.
+Events are immutable SQLite rows. Consumers rebuild state by replaying the log,
+then follow the same ordered stream over SSE. Versioned contracts protect known
+orchestration events while unknown topics remain available to extensions.
 
-Run:  uvicorn bus:app --port 8765
+Run: uvicorn bus:app --port 8765
 """
 
 import asyncio
 import contextlib
 import json
+import os
+import secrets
 import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 DB_PATH = Path(__file__).parent / "events.db"
+CURRENT_SCHEMA_VERSION = 2
+
+# Optional perimeter auth: when AGENT_BUS_TOKEN is set, every data route
+# requires "Authorization: Bearer <token>". Actor strings are still
+# self-reported — this authenticates clients, not identities.
+API_TOKEN = os.environ.get("AGENT_BUS_TOKEN")
+
+
+async def require_token(request: Request) -> None:
+    if not API_TOKEN:
+        return
+    supplied = request.headers.get("authorization", "")
+    if not secrets.compare_digest(supplied, f"Bearer {API_TOKEN}"):
+        raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+KNOWN_TOPICS = {
+    "agent.registered",
+    "agent.heartbeat",
+    "task.created",
+    "task.assigned",
+    "task.started",
+    "task.completed",
+    "task.blocked",
+    "task.assignment_expired",
+    "decision.needed",
+    "decision.made",
+}
+
+
+class EventValidationError(ValueError):
+    """A known event does not satisfy its versioned contract."""
+
+
+class IdempotencyConflict(ValueError):
+    """An idempotency key was reused for a different logical request."""
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _require_string(payload: dict, field: str) -> None:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise EventValidationError(f"payload.{field} must be a non-empty string")
+
+
+def _require_task_id(payload: dict) -> None:
+    if not _is_positive_int(payload.get("task_id")):
+        raise EventValidationError("payload.task_id must be a positive integer")
+
+
+def validate_event(
+    topic: str,
+    actor: str,
+    payload: dict,
+    caused_by: Optional[int],
+    idempotency_key: Optional[str],
+    schema_version: int,
+) -> None:
+    """Validate common fields and v2 contracts for built-in event topics.
+
+    Version 1 remains replayable for databases created by the prototype. New
+    publishes default to v2. Unknown topics are deliberately allowed so the
+    bus stays an extensible coordination substrate rather than a task-board API.
+    """
+    if not isinstance(topic, str) or not topic.strip():
+        raise EventValidationError("topic must be a non-empty string")
+    if not isinstance(actor, str) or not actor.strip():
+        raise EventValidationError("actor must be a non-empty string")
+    if not _is_positive_int(schema_version):
+        raise EventValidationError("schema_version must be a positive integer")
+    if idempotency_key is not None and (
+        not isinstance(idempotency_key, str) or not idempotency_key.strip()
+    ):
+        raise EventValidationError("idempotency_key must be null or a non-empty string")
+    if caused_by is not None and not _is_positive_int(caused_by):
+        raise EventValidationError("caused_by must be null or a positive event id")
+
+    if topic not in KNOWN_TOPICS:
+        return
+    if schema_version != CURRENT_SCHEMA_VERSION:
+        raise EventValidationError(
+            f"unsupported schema_version {schema_version} for known topic {topic!r}"
+        )
+
+    if topic == "task.created":
+        if "task_id" in payload:
+            _require_task_id(payload)
+        if "title" in payload and not isinstance(payload["title"], str):
+            raise EventValidationError("payload.title must be a string")
+        required = payload.get("required_capabilities", [])
+        if not isinstance(required, list) or not all(
+            isinstance(item, str) and item.strip() for item in required
+        ):
+            raise EventValidationError(
+                "payload.required_capabilities must be a list of strings"
+            )
+        return
+
+    if topic in {"agent.registered", "agent.heartbeat"}:
+        _require_string(payload, "name")
+        _require_string(payload, "instance_id")
+        if payload["name"] != actor:
+            raise EventValidationError("agent event actor must match payload.name")
+        if topic == "agent.registered":
+            capacity = payload.get("capacity", 1)
+            if not _is_positive_int(capacity):
+                raise EventValidationError("payload.capacity must be a positive integer")
+            capabilities = payload.get("capabilities", [])
+            if not isinstance(capabilities, list) or not all(
+                isinstance(item, str) and item.strip() for item in capabilities
+            ):
+                raise EventValidationError("payload.capabilities must be a list of strings")
+        return
+
+    _require_task_id(payload)
+
+    if topic == "task.assigned":
+        for field in ("assignment_id", "assignee", "worker_instance_id"):
+            _require_string(payload, field)
+        if not _is_positive_int(payload.get("attempt")):
+            raise EventValidationError("payload.attempt must be a positive integer")
+    elif topic in {"task.started", "task.completed", "task.blocked"}:
+        _require_string(payload, "assignment_id")
+        _require_string(payload, "worker_instance_id")
+        if topic == "task.blocked":
+            _require_string(payload, "reason")
+    elif topic == "task.assignment_expired":
+        for field in ("assignment_id", "assignee", "worker_instance_id", "reason"):
+            _require_string(payload, field)
+    elif topic == "decision.needed":
+        for field in ("assignment_id", "decision_id", "reason"):
+            _require_string(payload, field)
+    elif topic == "decision.made":
+        for field in ("assignment_id", "decision_id"):
+            _require_string(payload, field)
+        if "decision" not in payload:
+            raise EventValidationError("payload.decision is required")
+
 
 # ---------------------------------------------------------------- storage
 
@@ -41,9 +180,9 @@ def _connect() -> sqlite3.Connection:
 def db():
     """Connection that both commits the transaction AND closes the handle.
 
-    Note: sqlite3's own `with conn:` only commits/rolls back — it does NOT
-    close, so using `with _connect() as conn:` leaks a connection (and keeps
-    the WAL/-shm files open) on every call.
+    sqlite3's own `with conn:` only commits/rolls back — it does NOT close,
+    so using `with _connect() as conn:` alone would leak a connection (and
+    keep the WAL/-shm files open) on every call.
     """
     conn = _connect()
     try:
@@ -55,8 +194,6 @@ def db():
 
 def init_db() -> None:
     with db() as conn:
-        # WAL is a persistent database property — set it once here rather
-        # than on every connection.
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(
             """
@@ -65,15 +202,20 @@ def init_db() -> None:
                 ts        REAL    NOT NULL,
                 topic     TEXT    NOT NULL,
                 actor     TEXT    NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1,
                 idempotency_key TEXT,
-                caused_by INTEGER,           -- causal parent event id (audit trail)
-                payload   TEXT    NOT NULL   -- JSON
+                caused_by INTEGER,
+                payload   TEXT    NOT NULL
             )
             """
         )
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
         if "idempotency_key" not in columns:
             conn.execute("ALTER TABLE events ADD COLUMN idempotency_key TEXT")
+        if "schema_version" not in columns:
+            conn.execute(
+                "ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS counters (
@@ -86,9 +228,9 @@ def init_db() -> None:
         for row in conn.execute("SELECT payload FROM events WHERE topic = 'task.created'"):
             try:
                 task_id = json.loads(row["payload"]).get("task_id")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
                 continue
-            if isinstance(task_id, int):
+            if _is_positive_int(task_id):
                 max_task_id = max(max_task_id, task_id)
         conn.execute(
             "INSERT OR IGNORE INTO counters (name, value) VALUES ('task_id', ?)",
@@ -106,40 +248,81 @@ def init_db() -> None:
 
 
 def next_task_id(conn: sqlite3.Connection) -> int:
-    # Atomic increment-and-read in one statement (RETURNING needs SQLite
-    # 3.35+, 2021). The separate UPDATE-then-SELECT it replaces was only
-    # safe because SQLite serializes writers; RETURNING stays correct even
-    # if connections are ever pooled or the backend changes.
     row = conn.execute(
         "UPDATE counters SET value = value + 1 WHERE name = 'task_id' RETURNING value"
     ).fetchone()
-    if row is None:  # counter row missing (e.g. manually deleted)
+    if row is None:
         conn.execute("INSERT INTO counters (name, value) VALUES ('task_id', 1)")
         return 1
     return int(row["value"])
+
+
+def row_to_dict(row: sqlite3.Row) -> dict:
+    event = dict(row)
+    event["payload"] = json.loads(event["payload"])
+    event.setdefault("schema_version", 1)
+    return event
+
+
+def _assert_idempotent_match(
+    row: sqlite3.Row,
+    *,
+    topic: str,
+    payload: dict,
+    caused_by: Optional[int],
+    schema_version: int,
+) -> None:
+    existing = row_to_dict(row)
+    stored_payload = existing["payload"]
+    if topic == "task.created" and "task_id" not in payload:
+        # task_id is a server-generated response field, not part of the
+        # caller's logical idempotent request.
+        stored_payload = dict(stored_payload)
+        stored_payload.pop("task_id", None)
+    requested = (topic, payload, caused_by, schema_version)
+    stored = (
+        existing["topic"],
+        stored_payload,
+        existing["caused_by"],
+        existing["schema_version"],
+    )
+    if stored != requested:
+        raise IdempotencyConflict(
+            "idempotency key is already attached to a different event"
+        )
 
 
 def append_event(
     topic: str,
     actor: str,
     payload: dict,
-    caused_by: Optional[int],
-    idempotency_key: Optional[str],
+    caused_by: Optional[int] = None,
+    idempotency_key: Optional[str] = None,
+    schema_version: int = CURRENT_SCHEMA_VERSION,
 ) -> dict:
+    validate_event(topic, actor, payload, caused_by, idempotency_key, schema_version)
+    requested_payload = dict(payload)
     with db() as conn:
-        if idempotency_key:
+        if idempotency_key is not None:
             row = conn.execute(
                 "SELECT * FROM events WHERE actor = ? AND idempotency_key = ?",
                 (actor, idempotency_key),
             ).fetchone()
             if row is not None:
+                _assert_idempotent_match(
+                    row,
+                    topic=topic,
+                    payload=requested_payload,
+                    caused_by=caused_by,
+                    schema_version=schema_version,
+                )
                 return row_to_dict(row)
 
-        payload = dict(payload)
+        payload = dict(requested_payload)
         if topic == "task.created":
             if "task_id" not in payload:
                 payload["task_id"] = next_task_id(conn)
-            elif isinstance(payload["task_id"], int):
+            elif _is_positive_int(payload["task_id"]):
                 conn.execute(
                     "UPDATE counters SET value = max(value, ?) WHERE name = 'task_id'",
                     (payload["task_id"],),
@@ -148,54 +331,94 @@ def append_event(
         try:
             cur = conn.execute(
                 """
-                INSERT INTO events (ts, topic, actor, idempotency_key, caused_by, payload)
-                VALUES (?,?,?,?,?,?)
+                INSERT INTO events
+                    (ts, topic, actor, schema_version, idempotency_key, caused_by, payload)
+                VALUES (?,?,?,?,?,?,?)
                 """,
-                (time.time(), topic, actor, idempotency_key, caused_by, json.dumps(payload)),
+                (
+                    time.time(),
+                    topic,
+                    actor,
+                    schema_version,
+                    idempotency_key,
+                    caused_by,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                ),
             )
         except sqlite3.IntegrityError:
-            if not idempotency_key:
+            if idempotency_key is None:
                 raise
+            # Undo any counter increment performed before a racing idempotent
+            # insert lost the unique-index race.
+            conn.rollback()
             row = conn.execute(
                 "SELECT * FROM events WHERE actor = ? AND idempotency_key = ?",
                 (actor, idempotency_key),
             ).fetchone()
             if row is None:
                 raise
+            _assert_idempotent_match(
+                row,
+                topic=topic,
+                payload=requested_payload,
+                caused_by=caused_by,
+                schema_version=schema_version,
+            )
             return row_to_dict(row)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
     return row_to_dict(row)
 
 
-def fetch_after(after_id: int, topics: Optional[list[str]]) -> list[dict]:
+def fetch_after(
+    after_id: int,
+    topics: Optional[list[str]],
+    limit: int = 1000,
+) -> list[dict]:
     q = "SELECT * FROM events WHERE id > ?"
     args: list = [after_id]
     if topics:
         q += f" AND topic IN ({','.join('?' * len(topics))})"
         args += topics
-    q += " ORDER BY id"
+    q += " ORDER BY id LIMIT ?"
+    args.append(limit)
     with db() as conn:
         return [row_to_dict(r) for r in conn.execute(q, args).fetchall()]
 
 
-def row_to_dict(row: sqlite3.Row) -> dict:
-    d = dict(row)
-    d["payload"] = json.loads(d["payload"])
-    return d
+def fetch_stream_window(
+    after_id: int,
+    topics: Optional[list[str]],
+    limit: int = 500,
+) -> tuple[list[dict], int, bool]:
+    """Scan a bounded global-id window and return matching events.
+
+    Advancing over non-matching ids prevents filtered subscribers from
+    repeatedly rescanning an ever-growing tail of unrelated events.
+    """
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?",
+            (after_id, limit),
+        ).fetchall()
+    events = [row_to_dict(row) for row in rows]
+    matching = events if not topics else [event for event in events if event["topic"] in topics]
+    scanned_to = events[-1]["id"] if events else after_id
+    return matching, scanned_to, len(events) == limit
 
 
 # ---------------------------------------------------------------- app
 
-new_event = asyncio.Condition()  # wakes live subscribers on every append
+new_event = asyncio.Condition()
+event_generation = 0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    await run_in_threadpool(init_db)
     yield
 
 
-app = FastAPI(title="agent-bus", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.2", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):
@@ -204,39 +427,71 @@ class PublishRequest(BaseModel):
     payload: dict = Field(default_factory=dict)
     caused_by: Optional[int] = None
     idempotency_key: Optional[str] = None
+    schema_version: int = CURRENT_SCHEMA_VERSION
 
 
-@app.post("/events")
+@app.post("/events", dependencies=[Depends(require_token)])
 async def publish(req: PublishRequest) -> dict:
-    event = append_event(req.topic, req.actor, req.payload, req.caused_by, req.idempotency_key)
+    global event_generation
+    try:
+        event = await run_in_threadpool(
+            append_event,
+            req.topic,
+            req.actor,
+            req.payload,
+            req.caused_by,
+            req.idempotency_key,
+            req.schema_version,
+        )
+    except EventValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     async with new_event:
+        event_generation += 1
         new_event.notify_all()
     return event
 
 
-@app.get("/events")
-async def query(after_id: int = 0, topics: Optional[str] = Query(None)) -> list[dict]:
-    topic_list = topics.split(",") if topics else None
-    return fetch_after(after_id, topic_list)
+@app.get("/events", dependencies=[Depends(require_token)])
+async def query(
+    response: Response,
+    after_id: int = 0,
+    topics: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=10_000),
+) -> list[dict]:
+    topic_list = [topic.strip() for topic in topics.split(",") if topic.strip()] if topics else None
+    events = await run_in_threadpool(fetch_after, after_id, topic_list, limit)
+    # A full page means more events may exist; callers that want everything
+    # should paginate (see BusClient.query_all) instead of trusting one page.
+    response.headers["X-Page-Full"] = "1" if len(events) == limit else "0"
+    return events
 
 
-@app.get("/events/stream")
+@app.get("/events/stream", dependencies=[Depends(require_token)])
 async def stream(request: Request, from_id: int = 0, topics: Optional[str] = Query(None)):
-    """SSE stream: replays history after from_id, then follows live events."""
-    topic_list = topics.split(",") if topics else None
+    """Replay history after from_id in bounded windows, then follow live."""
+    topic_list = [topic.strip() for topic in topics.split(",") if topic.strip()] if topics else None
 
     async def gen():
         last_id = from_id
+        observed_generation = event_generation
         while True:
             if await request.is_disconnected():
                 return
-            for ev in fetch_after(last_id, topic_list):
-                last_id = ev["id"]
-                yield f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n"
-            # wait for a new append (or timeout to send a keepalive + check disconnect)
+            events, scanned_to, full_window = await run_in_threadpool(
+                fetch_stream_window, last_id, topic_list
+            )
+            last_id = scanned_to
+            for event in events:
+                yield f"id: {event['id']}\ndata: {json.dumps(event)}\n\n"
+            if full_window:
+                continue
             try:
                 async with new_event:
-                    await asyncio.wait_for(new_event.wait(), timeout=15.0)
+                    if event_generation == observed_generation:
+                        await asyncio.wait_for(new_event.wait(), timeout=15.0)
+                    observed_generation = event_generation
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
 
@@ -245,4 +500,4 @@ async def stream(request: Request, from_id: int = 0, topics: Optional[str] = Que
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "schema_version": CURRENT_SCHEMA_VERSION}

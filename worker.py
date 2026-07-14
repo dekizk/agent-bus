@@ -1,51 +1,151 @@
-"""
-Worker agent: registers itself, waits for task.assigned events addressed to
-it, "works" the task (stub: sleep), then emits task.completed.
+"""Demo worker with leased process identity and idempotent task effects."""
 
-Usage: python worker.py <name> [--block <task_id>]
-  --block makes the worker block that task once (to demo the
-  decision.needed flow).
-"""
-
-import sys
+import argparse
+import os
+import threading
 import time
+import uuid
+
+import httpx
 
 from client import BusClient
 
-BUS_URL = "http://127.0.0.1:8765"
+BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
+HEARTBEAT_SECONDS = float(os.environ.get("AGENT_BUS_HEARTBEAT_SECONDS", "5"))
 
 
-def main():
-    name = sys.argv[1]
-    block_once = int(sys.argv[2].split("=")[1]) if len(sys.argv) > 2 and sys.argv[2].startswith("--block=") else None
+def heartbeat_loop(
+    bus: BusClient,
+    name: str,
+    instance_id: str,
+    stop: threading.Event,
+) -> None:
+    while not stop.wait(HEARTBEAT_SECONDS):
+        try:
+            bus.publish(
+                "agent.heartbeat",
+                {"name": name, "instance_id": instance_id},
+            )
+        except httpx.HTTPError as exc:
+            print(f"[{name}] heartbeat failed ({exc.__class__.__name__})", flush=True)
 
-    bus = BusClient(BUS_URL, actor=name)
-    bus.publish("agent.registered", {"name": name})
-    print(f"[{name}] registered, waiting for work", flush=True)
 
-    from_id = bus.load_offset()
-    for ev in bus.subscribe(topics=["task.assigned"], from_id=from_id):
-        p = ev["payload"]
-        if p.get("assignee") != name:
-            bus.save_offset(ev["id"])
-            continue
-        tid = p["task_id"]
-        print(f"[{name}] picked up task {tid}: {p.get('goal', '')}", flush=True)
-        bus.publish("task.started", {"task_id": tid}, caused_by=ev["id"])
-        time.sleep(0.5)  # pretend to work (LLM call goes here)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a demo agent-bus worker")
+    parser.add_argument("name")
+    parser.add_argument("--block", type=int, help="block this task once")
+    parser.add_argument("--capacity", type=int, default=1)
+    parser.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        dest="capabilities",
+        help="worker capability; repeat for more than one",
+    )
+    return parser.parse_args()
 
-        if block_once == tid:
-            block_once = None
-            bus.publish("task.blocked", {"task_id": tid,
-                        "reason": "Choose storage backend: SQLite or Postgres"},
-                        caused_by=ev["id"])
-            print(f"[{name}] BLOCKED task {tid}", flush=True)
-        else:
-            bus.publish("task.completed", {"task_id": tid,
-                        "summary": f"{name} finished: {p.get('goal', '')}"},
-                        caused_by=ev["id"])
-            print(f"[{name}] completed task {tid}", flush=True)
-        bus.save_offset(ev["id"])
+
+def main() -> None:
+    args = parse_args()
+    if args.capacity < 1:
+        raise SystemExit("--capacity must be at least 1")
+
+    name = args.name
+    instance_id = uuid.uuid4().hex
+    bus = BusClient(
+        BUS_URL,
+        actor=name,
+        offset_name=f"{name}-{instance_id}",
+    )
+    bus.cleanup_stale_offsets(name)
+    registered = bus.publish(
+        "agent.registered",
+        {
+            "name": name,
+            "instance_id": instance_id,
+            "capacity": args.capacity,
+            "capabilities": args.capabilities,
+        },
+    )
+    print(f"[{name}] registered instance {instance_id[:8]}, waiting for work", flush=True)
+
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=heartbeat_loop,
+        args=(bus, name, instance_id, stop_heartbeat),
+        daemon=True,
+        name=f"{name}-heartbeat",
+    )
+    heartbeat.start()
+
+    block_once = args.block
+    try:
+        # Assignments for this instance can only exist after its registration
+        # event, so start there instead of replaying the whole log. The saved
+        # offset only matters for reconnects within this process's lifetime.
+        for event in bus.subscribe(
+            topics=["task.assigned"],
+            from_id=max(bus.load_offset(), registered["id"]),
+        ):
+            payload = event["payload"]
+            if (
+                payload.get("assignee") != name
+                or payload.get("worker_instance_id") != instance_id
+            ):
+                bus.save_offset(event["id"])
+                continue
+
+            task_id = payload["task_id"]
+            assignment_id = payload["assignment_id"]
+            lifecycle_payload = {
+                "task_id": task_id,
+                "assignment_id": assignment_id,
+                "worker_instance_id": instance_id,
+            }
+            print(
+                f"[{name}] picked up task {task_id} attempt {payload['attempt']}: "
+                f"{payload.get('goal', '')}",
+                flush=True,
+            )
+            bus.publish(
+                "task.started",
+                lifecycle_payload,
+                caused_by=event["id"],
+                idempotency_key=f"started:{assignment_id}",
+            )
+
+            # Replace this with an executor that accepts assignment_id as its
+            # idempotency token. Orchestration retries are safe, but arbitrary
+            # external side effects must also be made idempotent by the worker.
+            time.sleep(0.5)
+
+            if block_once == task_id:
+                block_once = None
+                bus.publish(
+                    "task.blocked",
+                    {
+                        **lifecycle_payload,
+                        "reason": "Choose storage backend: SQLite or Postgres",
+                    },
+                    caused_by=event["id"],
+                    idempotency_key=f"blocked:{assignment_id}",
+                )
+                print(f"[{name}] BLOCKED task {task_id}", flush=True)
+            else:
+                bus.publish(
+                    "task.completed",
+                    {
+                        **lifecycle_payload,
+                        "summary": f"{name} finished: {payload.get('goal', '')}",
+                    },
+                    caused_by=event["id"],
+                    idempotency_key=f"completed:{assignment_id}",
+                )
+                print(f"[{name}] completed task {task_id}", flush=True)
+            bus.save_offset(event["id"])
+    finally:
+        stop_heartbeat.set()
+        heartbeat.join(timeout=1)
 
 
 if __name__ == "__main__":

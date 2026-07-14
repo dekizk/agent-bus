@@ -1,40 +1,110 @@
-"""
-Project Manager agent: a privileged subscriber on the bus.
+"""Crash-safe project-manager projection and reconciliation agent.
 
-State is DERIVED: on startup it replays the full log to rebuild the task
-graph, then follows live events. Killing and restarting the PM never loses
-work — that's the whole point of log semantics.
-
-Rule-based policy (swap `decide()` for an LLM call later):
-  - task.created            -> assign to the least-loaded registered worker
-  - task.completed          -> mark done; assign any queued unassigned tasks
-  - task.blocked            -> emit decision.needed (human in the loop)
-  - decision.made           -> unblock the task and reassign it
-  - agent.registered        -> note worker; drain unassigned queue
+The PM does not own a mutable board. It derives orchestration state from the
+event log, then reconciles missing effects using stable idempotency keys.
 """
 
 import fcntl
+import getpass
+import hashlib
+import os
 import sys
-from collections import defaultdict
+import tempfile
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable, Optional
 
 from client import BusClient
 
-BUS_URL = "http://127.0.0.1:8765"
-LOCK_PATH = Path(__file__).parent / "pm_agent.lock"
+BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
+
+
+def _lock_path() -> Path:
+    """One lock per (user, machine, bus URL), not per checkout directory.
+
+    Keyed by bus URL so two PMs from different working copies still exclude
+    each other. A PM on another machine (or another OS user) is NOT excluded;
+    that split-brain loses idempotency races and exits via reconcile()'s
+    RuntimeError rather than corrupting state.
+    """
+    digest = hashlib.sha256(BUS_URL.encode()).hexdigest()[:16]
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
+    return base / f"agent-bus-pm-{getpass.getuser()}-{digest}.lock"
+
+
+LOCK_PATH = _lock_path()
+WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
+
+ACTIVE_TASK_STATUSES = {"assigned", "started"}
+
+
+@dataclass
+class WorkerRecord:
+    name: str
+    instance_id: str
+    last_seen: float
+    capacity: int = 1
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+    last_event_id: int = 0
+
+
+@dataclass
+class TaskRecord:
+    task_id: int
+    title: str
+    status: str = "open"
+    attempt: int = 0
+    assignee: Optional[str] = None
+    worker_instance_id: Optional[str] = None
+    assignment_id: Optional[str] = None
+    assignment_event_id: Optional[int] = None
+    open_event_id: Optional[int] = None
+    block_event_id: Optional[int] = None
+    block_reason: Optional[str] = None
+    decision_id: Optional[str] = None
+    decision_needed: bool = False
+    decision_event_id: Optional[int] = None
+    required_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
 class PMState:
     def __init__(self):
-        self.workers: set[str] = set()
-        self.tasks: dict[int, dict] = {}          # task_id -> {status, assignee, title}
-        self.load: dict[str, int] = defaultdict(int)  # worker -> open task count
+        self.workers: dict[str, WorkerRecord] = {}
+        self.tasks: dict[int, TaskRecord] = {}
 
-    def least_loaded(self) -> str | None:
-        if not self.workers:
-            return None
-        return min(sorted(self.workers), key=lambda w: self.load[w])
+    def active_workers(self, now: float, lease_seconds: float) -> list[WorkerRecord]:
+        return [
+            worker
+            for worker in self.workers.values()
+            if now - worker.last_seen <= lease_seconds
+        ]
+
+    def worker_load(self, worker: WorkerRecord) -> int:
+        return sum(
+            1
+            for task in self.tasks.values()
+            if task.status in ACTIVE_TASK_STATUSES
+            and task.assignee == worker.name
+            and task.worker_instance_id == worker.instance_id
+        )
+
+    def choose_worker(
+        self,
+        task: TaskRecord,
+        now: float,
+        lease_seconds: float,
+    ) -> Optional[WorkerRecord]:
+        candidates = []
+        for worker in self.active_workers(now, lease_seconds):
+            load = self.worker_load(worker)
+            if load >= worker.capacity:
+                continue
+            if not task.required_capabilities.issubset(worker.capabilities):
+                continue
+            candidates.append((load / worker.capacity, load, worker.name, worker))
+        return min(candidates, default=(None, None, None, None))[-1]
 
 
 @contextmanager
@@ -44,77 +114,338 @@ def single_pm_lock():
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise SystemExit("[pm] another PM is already running")
-        lock_file.write(str(Path.cwd()))
+        lock_file.write(str(os.getpid()))
         lock_file.flush()
         yield
 
 
-def apply_event(state: PMState, ev: dict) -> None:
-    """Pure reducer: rebuild derived state from events already in the log."""
-    topic, p = ev["topic"], ev["payload"]
-
-    if topic == "agent.registered":
-        state.workers.add(p["name"])
-
-    elif topic == "task.created":
-        tid = p["task_id"]
-        if tid not in state.tasks:
-            state.tasks[tid] = {"status": "open", "assignee": None, "title": p.get("title", "")}
-
-    elif topic == "task.assigned":
-        t = state.tasks.get(p["task_id"])
-        if t and t["assignee"] != p["assignee"]:
-            if t["assignee"]:
-                state.load[t["assignee"]] -= 1
-            t["assignee"], t["status"] = p["assignee"], "assigned"
-            state.load[p["assignee"]] += 1
-
-    elif topic == "task.completed":
-        t = state.tasks.get(p["task_id"])
-        if t and t["status"] != "done":
-            t["status"] = "done"
-            if t["assignee"]:
-                state.load[t["assignee"]] -= 1
-
-    elif topic == "task.blocked":
-        t = state.tasks.get(p["task_id"])
-        if t and t["status"] != "blocked":
-            if t["assignee"]:
-                state.load[t["assignee"]] -= 1
-            t["status"], t["assignee"] = "blocked", None
-
-    elif topic == "decision.made":
-        t = state.tasks.get(p["task_id"])
-        if t and t["status"] == "blocked":
-            t["status"] = "open"
+def _positive_int(value: object) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
 
 
-def plan_emissions(state: PMState, ev: dict) -> list[dict]:
-    """Decide what to emit for one live event without mutating PM state."""
-    topic, p = ev["topic"], ev["payload"]
-    out: list[dict] = []
+def _payload(ev: dict) -> Optional[dict]:
+    value = ev.get("payload")
+    return value if isinstance(value, dict) else None
 
-    if topic == "task.blocked":
-        out.append({"topic": "decision.needed", "payload": {
-            "task_id": p["task_id"], "reason": p.get("reason", "unspecified")},
-            "caused_by": ev["id"],
-            "idempotency_key": f"decision-needed:{ev['id']}"})
 
-    planned_load = defaultdict(int, state.load)
-    for tid, t in state.tasks.items():
-        if t["status"] == "open" and t["assignee"] is None:
-            if not state.workers:
-                break
-            w = min(sorted(state.workers), key=lambda worker: planned_load[worker])
-            if w:
-                out.append({"topic": "task.assigned", "payload": {
-                    "task_id": tid, "assignee": w, "title": t["title"],
-                    "goal": t["title"]},  # goal-only handoff, never PM history
-                    "caused_by": ev["id"],
-                    "idempotency_key": f"assign:{tid}:{ev['id']}"})
-                planned_load[w] += 1
+def _active_assignment_matches(task: TaskRecord, ev: dict, payload: dict) -> bool:
+    if task.status not in ACTIVE_TASK_STATUSES:
+        return False
+    assignment_id = payload.get("assignment_id")
+    if assignment_id is None and ev.get("schema_version", 1) == 1:
+        if ev.get("caused_by") == task.assignment_event_id:
+            assignment_id = task.assignment_id
+    if assignment_id != task.assignment_id or ev.get("actor") != task.assignee:
+        return False
+    instance_id = payload.get("worker_instance_id")
+    if instance_id is not None and instance_id != task.worker_instance_id:
+        return False
+    return True
 
-    return out
+
+def apply_event(state: PMState, ev: dict) -> bool:
+    """Apply one event without raising on malformed or stale log entries.
+
+    Returning False means the event was irrelevant, duplicate, malformed, or
+    invalid for the current state transition. This total reducer ensures a bad
+    historical event cannot permanently poison every PM restart.
+    """
+    try:
+        if not isinstance(ev, dict):
+            return False
+        topic = ev.get("topic")
+        payload = _payload(ev)
+        event_id = _positive_int(ev.get("id"))
+        timestamp = ev.get("ts")
+        if not isinstance(topic, str) or payload is None or event_id is None:
+            return False
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            return False
+
+        if topic == "agent.registered":
+            name = payload.get("name")
+            if not isinstance(name, str) or not name or ev.get("actor") != name:
+                return False
+            instance_id = payload.get("instance_id") or f"legacy:{name}"
+            if not isinstance(instance_id, str) or not instance_id:
+                return False
+            capacity = _positive_int(payload.get("capacity", 1)) or 1
+            raw_capabilities = payload.get("capabilities", [])
+            capabilities = frozenset(
+                item for item in raw_capabilities if isinstance(item, str) and item
+            ) if isinstance(raw_capabilities, list) else frozenset()
+            existing = state.workers.get(name)
+            if existing and existing.last_event_id >= event_id:
+                return False
+            state.workers[name] = WorkerRecord(
+                name=name,
+                instance_id=instance_id,
+                last_seen=float(timestamp),
+                capacity=capacity,
+                capabilities=capabilities,
+                last_event_id=event_id,
+            )
+            return True
+
+        if topic == "agent.heartbeat":
+            name = payload.get("name")
+            instance_id = payload.get("instance_id")
+            worker = state.workers.get(name) if isinstance(name, str) else None
+            if (
+                worker is None
+                or ev.get("actor") != name
+                or instance_id != worker.instance_id
+                or event_id <= worker.last_event_id
+            ):
+                return False
+            worker.last_seen = max(worker.last_seen, float(timestamp))
+            worker.last_event_id = event_id
+            return True
+
+        task_id = _positive_int(payload.get("task_id"))
+        if task_id is None:
+            return False
+
+        if topic == "task.created":
+            if task_id in state.tasks:
+                return False
+            raw_required = payload.get("required_capabilities", [])
+            required = frozenset(
+                item for item in raw_required if isinstance(item, str) and item
+            ) if isinstance(raw_required, list) else frozenset()
+            state.tasks[task_id] = TaskRecord(
+                task_id=task_id,
+                title=payload.get("title", "") if isinstance(payload.get("title", ""), str) else "",
+                open_event_id=event_id,
+                required_capabilities=required,
+            )
+            return True
+
+        task = state.tasks.get(task_id)
+        if task is None:
+            return False
+
+        if topic == "task.assigned":
+            if ev.get("actor") != "pm":
+                return False
+            assignment_id = payload.get("assignment_id") or f"legacy:{event_id}"
+            assignee = payload.get("assignee")
+            if not isinstance(assignment_id, str) or not isinstance(assignee, str):
+                return False
+            if task.assignment_id == assignment_id:
+                return False
+            if task.status != "open" or task.assignment_id is not None:
+                return False
+            attempt = _positive_int(payload.get("attempt")) or task.attempt + 1
+            if attempt != task.attempt + 1:
+                return False
+            worker = state.workers.get(assignee)
+            worker_instance_id = payload.get("worker_instance_id")
+            if worker_instance_id is None:
+                worker_instance_id = worker.instance_id if worker else f"legacy:{assignee}"
+            if not isinstance(worker_instance_id, str) or not worker_instance_id:
+                return False
+            task.status = "assigned"
+            task.attempt = attempt
+            task.assignee = assignee
+            task.worker_instance_id = worker_instance_id
+            task.assignment_id = assignment_id
+            task.assignment_event_id = event_id
+            task.decision_needed = False
+            task.decision_event_id = None
+            task.block_reason = None
+            return True
+
+        if topic == "task.started":
+            if not _active_assignment_matches(task, ev, payload):
+                return False
+            if task.status == "started":
+                return False
+            task.status = "started"
+            return True
+
+        if topic == "task.completed":
+            if not _active_assignment_matches(task, ev, payload):
+                return False
+            task.status = "completed"
+            task.decision_needed = False
+            task.block_reason = None
+            return True
+
+        if topic == "task.blocked":
+            if not _active_assignment_matches(task, ev, payload):
+                return False
+            task.status = "blocked"
+            task.block_event_id = event_id
+            task.block_reason = payload.get("reason")
+            task.decision_id = f"decision:{task.assignment_id}"
+            task.decision_needed = False
+            task.decision_event_id = None
+            return True
+
+        if topic == "task.assignment_expired":
+            if ev.get("actor") != "pm" or task.status not in ACTIVE_TASK_STATUSES:
+                return False
+            if (
+                payload.get("assignment_id") != task.assignment_id
+                or payload.get("assignee") != task.assignee
+                or payload.get("worker_instance_id") != task.worker_instance_id
+            ):
+                return False
+            task.status = "open"
+            task.assignee = None
+            task.worker_instance_id = None
+            task.assignment_id = None
+            task.assignment_event_id = None
+            task.open_event_id = event_id
+            return True
+
+        if topic == "decision.needed":
+            if ev.get("actor") != "pm" or task.status != "blocked":
+                return False
+            if (
+                payload.get("assignment_id") != task.assignment_id
+                or payload.get("decision_id") != task.decision_id
+            ):
+                return False
+            if task.decision_needed:
+                return False
+            task.decision_needed = True
+            task.decision_event_id = event_id
+            return True
+
+        if topic == "decision.made":
+            if task.status != "blocked":
+                return False
+            assignment_id = payload.get("assignment_id")
+            decision_id = payload.get("decision_id")
+            if ev.get("schema_version", 1) == 1:
+                assignment_id = assignment_id or task.assignment_id
+                decision_id = decision_id or task.decision_id
+            if assignment_id != task.assignment_id or decision_id != task.decision_id:
+                return False
+            task.status = "open"
+            task.assignee = None
+            task.worker_instance_id = None
+            task.assignment_id = None
+            task.assignment_event_id = None
+            task.open_event_id = event_id
+            task.decision_needed = False
+            task.decision_event_id = None
+            task.block_reason = None
+            return True
+
+        return False
+    except (KeyError, OverflowError, TypeError, ValueError):
+        return False
+
+
+def plan_next_emission(
+    state: PMState,
+    now: float,
+    lease_seconds: float = WORKER_LEASE_SECONDS,
+) -> Optional[dict]:
+    """Return the next deterministic effect needed to reconcile derived state."""
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if task.status not in ACTIVE_TASK_STATUSES or task.assignment_id is None:
+            continue
+        worker = state.workers.get(task.assignee or "")
+        if worker is None:
+            reason = "worker is no longer registered"
+        elif worker.instance_id != task.worker_instance_id:
+            reason = "worker process was replaced"
+        elif now - worker.last_seen > lease_seconds:
+            reason = "worker lease expired"
+        else:
+            continue
+        return {
+            "topic": "task.assignment_expired",
+            "payload": {
+                "task_id": task.task_id,
+                "assignment_id": task.assignment_id,
+                "assignee": task.assignee,
+                "worker_instance_id": task.worker_instance_id,
+                "reason": reason,
+            },
+            "caused_by": task.assignment_event_id,
+            "idempotency_key": f"expire:{task.assignment_id}",
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if task.status == "blocked" and not task.decision_needed:
+            return {
+                "topic": "decision.needed",
+                "payload": {
+                    "task_id": task.task_id,
+                    "assignment_id": task.assignment_id,
+                    "decision_id": task.decision_id,
+                    "reason": task.block_reason or "worker requires human input",
+                },
+                "caused_by": task.block_event_id,
+                "idempotency_key": f"decision-needed:{task.assignment_id}",
+            }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if task.status != "open" or task.assignment_id is not None:
+            continue
+        worker = state.choose_worker(task, now, lease_seconds)
+        if worker is None:
+            continue
+        attempt = task.attempt + 1
+        assignment_id = f"task:{task.task_id}:attempt:{attempt}"
+        return {
+            "topic": "task.assigned",
+            "payload": {
+                "task_id": task.task_id,
+                "assignment_id": assignment_id,
+                "attempt": attempt,
+                "assignee": worker.name,
+                "worker_instance_id": worker.instance_id,
+                "title": task.title,
+                "goal": task.title,
+            },
+            "caused_by": task.open_event_id,
+            "idempotency_key": f"assign:{assignment_id}",
+        }
+    return None
+
+
+def reconcile(
+    state: PMState,
+    bus: BusClient,
+    *,
+    now: Optional[float] = None,
+    lease_seconds: float = WORKER_LEASE_SECONDS,
+    clock: Callable[[], float] = time.time,
+) -> list[dict]:
+    """Publish and optimistically apply effects until state is stable."""
+    emitted: list[dict] = []
+    for _ in range(10_000):
+        current_time = now if now is not None else clock()
+        planned = plan_next_emission(state, current_time, lease_seconds)
+        if planned is None:
+            return emitted
+        sent = bus.publish(
+            planned["topic"],
+            planned["payload"],
+            caused_by=planned.get("caused_by"),
+            idempotency_key=planned["idempotency_key"],
+        )
+        if not apply_event(state, sent):
+            raise RuntimeError(
+                f"PM emitted {sent.get('topic')}#{sent.get('id')} but could not apply it"
+            )
+        emitted.append(sent)
+        print(
+            f"[pm] reconciled -> {sent['topic']}#{sent['id']} {sent['payload']}",
+            flush=True,
+        )
+    raise RuntimeError("reconciliation did not converge")
 
 
 def main():
@@ -122,30 +453,22 @@ def main():
         bus = BusClient(BUS_URL, actor="pm")
         state = PMState()
 
-        history = bus.query(after_id=0)
-        head = max((e["id"] for e in history), default=0)
-        print(f"[pm] replaying log up to #{head}, then going live...", flush=True)
-        for ev in history:
-            apply_event(state, ev)
+        history = bus.query_all(after_id=0)
+        head = max((event["id"] for event in history), default=0)
+        print(f"[pm] replaying log up to #{head}, then reconciling...", flush=True)
+        for event in history:
+            apply_event(state, event)
 
-        for ev in bus.subscribe(from_id=head):
-            apply_event(state, ev)
-            for emit in plan_emissions(state, ev):
-                sent = bus.publish(
-                    emit["topic"],
-                    emit["payload"],
-                    caused_by=emit.get("caused_by"),
-                    idempotency_key=emit.get("idempotency_key"),
-                )
-                # Optimistically apply our own emission NOW instead of waiting
-                # for it to come back through the stream. Otherwise an unrelated
-                # event arriving in between would re-plan against stale state and
-                # double-assign the same task (with a different idempotency key,
-                # so the bus wouldn't dedupe it). Re-applying the same event when
-                # it does arrive via the stream is harmless: apply_event is
-                # idempotent (it checks current status/assignee before mutating).
-                apply_event(state, sent)
-                print(f"[pm] {ev['topic']}#{ev['id']} -> {sent['topic']}#{sent['id']} {sent['payload']}", flush=True)
+        # This closes the prototype's crash window: state replay is followed by
+        # deterministic effect reconciliation before waiting for another event.
+        reconcile(state, bus)
+
+        for event in bus.subscribe(
+            from_id=head,
+            on_idle=lambda: reconcile(state, bus),
+        ):
+            apply_event(state, event)
+            reconcile(state, bus)
 
 
 if __name__ == "__main__":

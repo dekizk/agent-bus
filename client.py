@@ -1,29 +1,43 @@
-"""
-Tiny client library for agent-bus. Agents use this to publish and subscribe.
+"""Blocking client library for agent-bus."""
 
-  bus = BusClient("http://127.0.0.1:8765", actor="worker-1")
-  bus.publish("task.completed", {"task_id": 3}, caused_by=17)
-  for ev in bus.subscribe(topics=["task.assigned"], from_id=bus.load_offset()):
-      handle(ev)
-      bus.save_offset(ev["id"])   # idempotent resume point
-"""
-
+import fcntl
+import hashlib
 import json
+import os
+import re
+import tempfile
 import time
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import httpx
 
+CURRENT_SCHEMA_VERSION = 2
+
 
 class BusClient:
-    def __init__(self, base_url: str, actor: str, offset_dir: Path = Path(".offsets")):
+    def __init__(
+        self,
+        base_url: str,
+        actor: str,
+        offset_dir: Path = Path(".offsets"),
+        offset_name: Optional[str] = None,
+        token: Optional[str] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.actor = actor
-        self.offset_file = offset_dir / f"{actor}.offset"
-        offset_dir.mkdir(exist_ok=True)
-
-    # -- publish -----------------------------------------------------------
+        token = token if token is not None else os.environ.get("AGENT_BUS_TOKEN")
+        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        offset_dir.mkdir(parents=True, exist_ok=True)
+        consumer_name = offset_name or actor
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", consumer_name) and consumer_name not in {".", ".."}:
+            safe_name = consumer_name
+        else:
+            prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", consumer_name).strip("_")[:40]
+            digest = hashlib.sha256(consumer_name.encode()).hexdigest()[:12]
+            safe_name = f"{prefix or 'consumer'}-{digest}"
+        self.offset_file = offset_dir / f"{safe_name}.offset"
+        self.offset_lock_file = offset_dir / f"{safe_name}.offset.lock"
 
     def publish(
         self,
@@ -31,70 +45,133 @@ class BusClient:
         payload: dict,
         caused_by: Optional[int] = None,
         idempotency_key: Optional[str] = None,
+        schema_version: int = CURRENT_SCHEMA_VERSION,
     ) -> dict:
         body = {
             "topic": topic,
             "actor": self.actor,
             "payload": payload,
             "caused_by": caused_by,
+            "schema_version": schema_version,
         }
-        if idempotency_key:
+        if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
-        r = httpx.post(
-            f"{self.base_url}/events",
-            json=body,
-            timeout=10,
+        response = httpx.post(
+            f"{self.base_url}/events", json=body, headers=self._headers, timeout=10
         )
-        r.raise_for_status()
-        return r.json()
+        response.raise_for_status()
+        return response.json()
 
-    # -- subscribe (blocking generator over SSE) ---------------------------
+    def subscribe(
+        self,
+        topics: Optional[list[str]] = None,
+        from_id: int = 0,
+        on_idle: Optional[Callable[[], None]] = None,
+    ) -> Iterator[dict]:
+        """Follow SSE with reconnect, resuming after the last yielded event.
 
-    def subscribe(self, topics: Optional[list[str]] = None, from_id: int = 0) -> Iterator[dict]:
-        """Blocking generator over SSE, with automatic reconnect.
-
-        If the bus restarts or the connection drops, we back off and
-        reconnect, resuming from the last event id we actually yielded —
-        so consumers never miss or re-see events across a reconnect.
+        on_idle runs on server keepalives. Coordinators can use it for
+        time-based reconciliation without introducing a second state-mutating
+        thread.
         """
         last_id = from_id
         backoff = 1.0
         while True:
+            yielded = False
             try:
-                for ev in self._stream_once(topics, last_id):
-                    last_id = ev["id"]
-                    backoff = 1.0  # healthy stream -> reset backoff
-                    yield ev
-            except (httpx.HTTPError, httpx.StreamError) as exc:
-                print(f"[{self.actor}] bus connection lost ({exc.__class__.__name__}); "
-                      f"reconnecting from #{last_id} in {backoff:.0f}s", flush=True)
+                for event in self._stream_once(topics, last_id, on_idle):
+                    yielded = True
+                    last_id = event["id"]
+                    backoff = 1.0
+                    yield event
+                # A graceful server close is still a disconnect. Avoid a tight
+                # reconnect loop if a proxy repeatedly returns an empty stream.
+                if not yielded:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+            except httpx.HTTPError as exc:
+                print(
+                    f"[{self.actor}] bus connection lost ({exc.__class__.__name__}); "
+                    f"reconnecting from #{last_id} in {backoff:.0f}s",
+                    flush=True,
+                )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    def _stream_once(self, topics: Optional[list[str]], from_id: int) -> Iterator[dict]:
-        """One SSE connection; raises httpx errors on disconnect."""
+    def _stream_once(
+        self,
+        topics: Optional[list[str]],
+        from_id: int,
+        on_idle: Optional[Callable[[], None]] = None,
+    ) -> Iterator[dict]:
         params: dict = {"from_id": from_id}
         if topics:
             params["topics"] = ",".join(topics)
         with httpx.stream(
-            "GET", f"{self.base_url}/events/stream", params=params, timeout=None
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
+            "GET",
+            f"{self.base_url}/events/stream",
+            params=params,
+            headers=self._headers,
+            timeout=None,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
                 if line.startswith("data: "):
-                    yield json.loads(line[len("data: "):])
+                    yield json.loads(line[len("data: ") :])
+                elif line.startswith(":") and on_idle is not None:
+                    on_idle()
 
-    # -- query (non-blocking history read) ---------------------------------
-
-    def query(self, after_id: int = 0, topics: Optional[list[str]] = None) -> list[dict]:
-        params: dict = {"after_id": after_id}
+    def query(
+        self,
+        after_id: int = 0,
+        topics: Optional[list[str]] = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        params: dict = {"after_id": after_id, "limit": limit}
         if topics:
             params["topics"] = ",".join(topics)
-        r = httpx.get(f"{self.base_url}/events", params=params, timeout=10)
-        r.raise_for_status()
-        return r.json()
+        response = httpx.get(
+            f"{self.base_url}/events", params=params, headers=self._headers, timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
 
-    # -- offset persistence (crash recovery) --------------------------------
+    def query_all(
+        self,
+        after_id: int = 0,
+        topics: Optional[list[str]] = None,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Read a complete snapshot using bounded pages."""
+        events: list[dict] = []
+        cursor = after_id
+        while True:
+            page = self.query(after_id=cursor, topics=topics, limit=page_size)
+            if not page:
+                return events
+            events.extend(page)
+            cursor = page[-1]["id"]
+            if len(page) < page_size:
+                return events
+
+    def cleanup_stale_offsets(self, name_prefix: str) -> int:
+        """Delete offset files left behind by earlier instances.
+
+        Matches `{name_prefix}-*.offset` (and their lock files) in this
+        client's offset directory, keeping the current instance's own files.
+        Offsets are per-instance resume points, so files from dead instances
+        are never read again and only accumulate.
+        """
+        removed = 0
+        for path in self.offset_file.parent.glob(f"{name_prefix}-*.offset*"):
+            if path.name in {self.offset_file.name, self.offset_lock_file.name}:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+        return removed
 
     def load_offset(self) -> int:
         try:
@@ -103,4 +180,28 @@ class BusClient:
             return 0
 
     def save_offset(self, event_id: int) -> None:
-        self.offset_file.write_text(str(event_id))
+        """Atomically and monotonically persist a consumer resume point."""
+        if not isinstance(event_id, int) or isinstance(event_id, bool) or event_id < 0:
+            raise ValueError("event_id must be a non-negative integer")
+
+        with self.offset_lock_file.open("a+") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            if event_id <= self.load_offset():
+                return
+
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self.offset_file.name}.",
+                dir=self.offset_file.parent,
+                text=True,
+            )
+            try:
+                with os.fdopen(fd, "w") as temp_file:
+                    temp_file.write(str(event_id))
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_name, self.offset_file)
+            finally:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass

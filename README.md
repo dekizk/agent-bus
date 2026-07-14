@@ -1,184 +1,289 @@
 # agent-bus
 
-A minimal append-only event bus for coordinating local agents, with a
-project-manager (PM) agent that assigns work by reacting to events.
+`agent-bus` is a local, append-only orchestration log for coordinating agents.
+It is designed to replace board-style agent management with event-driven
+ownership, execution attempts, recovery, and human decisions.
 
-The core idea: instead of agents polling a shared kanban board, every action
-is an immutable event in a SQLite log. Agents publish events and subscribe to
-the stream. All coordination state (who owns which task) is *derived* by
-replaying the log — so any process can be killed and restarted without losing
-work.
+The bus does not store a mutable kanban card as truth. Every action is an
+immutable SQLite event. The project manager (PM) derives current state by
+replaying those events, then reconciles any effects that are missing. Processes
+can therefore restart without relying on hidden in-memory ownership state.
+
+## v0.2 model
+
+Three identities keep retries and replays unambiguous:
+
+- `task_id` identifies the logical outcome requested by a human or agent.
+- `assignment_id` identifies one execution attempt for that task.
+- `instance_id` identifies one running worker process.
+
+A task may have several attempts but only its current attempt may change task
+state. A late completion from an expired worker is retained in the audit log
+but rejected by the PM projection.
+
+The normal lifecycle is:
+
+```text
+task.created
+    -> task.assigned (attempt 1)
+    -> task.started
+    -> task.completed
+```
+
+Recovery and human-input paths are explicit events:
+
+```text
+task.assigned -> task.assignment_expired -> task.assigned (attempt 2)
+task.started  -> task.blocked -> decision.needed -> decision.made
+              -> task.assigned (next attempt)
+```
 
 ## Components
 
-| File          | Role                                                          |
-|---------------|---------------------------------------------------------------|
-| `bus.py`      | The bus: FastAPI + SQLite. Append, query, and SSE streaming.  |
-| `client.py`   | `BusClient`: publish / subscribe / query + offset persistence. |
-| `pm_agent.py` | PM agent: replays the log, then assigns open tasks to the least-loaded worker. |
-| `worker.py`   | Demo worker: picks up `task.assigned` events addressed to it. |
-| `events.db`   | The event log (SQLite, WAL mode). The single source of truth. |
-| `.offsets/`   | Per-consumer resume points (`<actor>.offset`).                |
+| File | Role |
+|---|---|
+| `bus.py` | FastAPI, SQLite event storage, validation, queries, and SSE streaming |
+| `client.py` | Publish, bounded history reads, reconnecting subscriptions, durable offsets |
+| `pm_agent.py` | Pure projection plus deterministic post-replay reconciliation |
+| `worker.py` | Demo leased worker with idempotent lifecycle emissions |
+| `events.db` | Append-only event log and task-id counter |
+| `.offsets/` | Per-worker-instance stream resume points |
 
 ## Setup
 
 ```sh
-python3 -m venv .venv          # use Homebrew python3, not system 3.9
+python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Create the environment in `.venv`; do not use the repository root itself as a
+virtual-environment directory.
+
 ## Quick start
 
-Each in its own terminal (bus first):
+Run each process in its own terminal, bus first:
 
 ```sh
-# 1. the bus
 uvicorn bus:app --port 8765
-
-# 2. the project manager
 python pm_agent.py
-
-# 3. one or more workers
 python worker.py alice
-python worker.py bob --block=2    # bob will block task 2 once, to demo decisions
+python worker.py bob --block 2
 ```
 
-Then create a task and watch it flow:
+Create a task:
 
 ```sh
 curl -X POST http://127.0.0.1:8765/events \
   -H 'content-type: application/json' \
-  -d '{"topic":"task.created","actor":"human","payload":{"title":"demo task"}}'
+  -d '{
+    "topic":"task.created",
+    "actor":"human",
+    "idempotency_key":"task:demo",
+    "payload":{"title":"Demonstrate crash-safe orchestration"}
+  }'
 ```
 
-The PM sees `task.created`, emits `task.assigned` to the least-loaded worker;
-the worker emits `task.started` then `task.completed`. Every hop is visible in
-the log.
+The server assigns `task_id` atomically. The PM assigns a live worker and emits
+an `assignment_id`; the worker includes that assignment and its process
+`instance_id` in every subsequent lifecycle event.
 
-## How to use the bus
+Workers can advertise scheduling metadata:
 
-### Publish an event
+```sh
+python worker.py coder --capacity 2 --capability python --capability testing
+```
+
+A task may require those capabilities:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "payload": {
+    "title": "Run the Python test suite",
+    "required_capabilities": ["python", "testing"]
+  }
+}
+```
+
+## Human decisions
+
+When a worker emits `task.blocked`, the PM deterministically emits one
+`decision.needed` for that assignment. Read the event and copy its identifiers
+into the response:
+
+```sh
+curl 'http://127.0.0.1:8765/events?topics=decision.needed'
+```
 
 ```sh
 curl -X POST http://127.0.0.1:8765/events \
   -H 'content-type: application/json' \
-  -d '{"topic":"task.created","actor":"human","payload":{"title":"my task"},"idempotency_key":"my-task-1"}'
+  -d '{
+    "topic":"decision.made",
+    "actor":"human",
+    "caused_by":14,
+    "idempotency_key":"decision:14",
+    "payload":{
+      "task_id":2,
+      "assignment_id":"task:2:attempt:1",
+      "decision_id":"decision:task:2:attempt:1",
+      "decision":"SQLite"
+    }
+  }'
 ```
 
-Fields:
+The PM reopens the logical task and creates a new assignment attempt. The old
+attempt can no longer complete it.
 
-- `topic` (required) — event type, e.g. `task.created`, `decision.made`.
-- `actor` (required) — who is publishing (`human`, `pm`, worker name...).
-- `payload` — arbitrary JSON. For `task.created`, omit `task_id` and the
-  server assigns the next one atomically.
-- `caused_by` — id of the event that triggered this one (audit/causality trail).
-- `idempotency_key` — optional. Retrying a publish with the same
-  `(actor, idempotency_key)` returns the original event instead of appending
-  a duplicate. Use it for anything you might retry.
+## Crash recovery guarantees
 
-### Read history
+### PM
+
+At startup the PM:
+
+1. reads the complete log in bounded pages;
+2. rebuilds workers, tasks, attempts, and decisions through a total reducer;
+3. reconciles missing effects before waiting for another event;
+4. publishes effects with stable logical idempotency keys.
+
+This closes the crash window where the prototype could record `task.created` or
+`task.blocked` but fail before publishing the corresponding assignment or
+decision request.
+
+### Workers
+
+Workers publish lifecycle events using keys derived from `assignment_id`:
+
+```text
+started:{assignment_id}
+blocked:{assignment_id}
+completed:{assignment_id}
+```
+
+If a process crashes after publish but before persisting its stream offset, the
+replayed assignment returns the original event rather than appending another.
+Offset files themselves are replaced atomically and only move forward.
+
+A new worker instance subscribes from its own registration event — assignments
+addressed to it cannot exist earlier — so startup cost does not grow with log
+history. Offset files from previous instances of the same worker name are
+deleted at startup.
+
+An external tool call, payment, deployment, or file mutation performed by a
+worker must also use an idempotency token. The bus can make orchestration
+effects idempotent; it cannot make an arbitrary external side effect atomic.
+
+### Worker leases
+
+Each worker start gets a new random `instance_id` and publishes heartbeats. The
+PM expires an active attempt when the registered process is replaced or its
+lease becomes stale, then creates the next attempt when a capable worker is
+available.
+
+The PM also reconciles on SSE keepalives, so lease expiry does not depend on a
+new task or heartbeat arriving after a worker dies.
+
+Defaults can be changed with:
 
 ```sh
-curl 'http://127.0.0.1:8765/events'                                  # everything
-curl 'http://127.0.0.1:8765/events?after_id=15'                      # after event 15
-curl 'http://127.0.0.1:8765/events?topics=task.blocked,decision.needed'
+AGENT_BUS_HEARTBEAT_SECONDS=5
+AGENT_BUS_WORKER_LEASE_SECONDS=20
+AGENT_BUS_URL=http://127.0.0.1:8765
 ```
 
-### Follow live (SSE)
+Lease decisions are emitted into the log as `task.assignment_expired`, so task
+history remains replayable and auditable.
+
+## Versioned event contracts
+
+New built-in events use top-level `schema_version: 2` by default. Known v2
+topics are validated before they enter the log; malformed events cannot poison
+every future PM replay. Unknown topics remain permitted so applications can
+extend the bus without changing its core.
+
+Existing databases are migrated automatically. Historical rows are marked as
+schema v1 and remain replayable with legacy assignment identities derived from
+their event ids.
+
+Core v2 topics:
+
+| Topic | Emitted by | Purpose |
+|---|---|---|
+| `agent.registered` | worker | Announces a process instance, capabilities, and capacity |
+| `agent.heartbeat` | worker | Renews that process instance's lease |
+| `task.created` | human/agent | Requests a logical outcome |
+| `task.assigned` | PM | Creates a numbered execution attempt |
+| `task.started` | worker | Confirms the active attempt began |
+| `task.completed` | worker | Completes the active attempt and logical task |
+| `task.blocked` | worker | Pauses the attempt for human input |
+| `task.assignment_expired` | PM | Records loss or replacement of the assigned worker |
+| `decision.needed` | PM | Requests one human decision for a blocked attempt |
+| `decision.made` | human | Resolves that decision and permits a new attempt |
+
+## Reading and following the log
+
+History queries are bounded; use `after_id` to paginate:
 
 ```sh
-curl -N 'http://127.0.0.1:8765/events/stream?from_id=0'    # replay all, then follow
-curl -N 'http://127.0.0.1:8765/events/stream?from_id=26'   # only new events
+curl 'http://127.0.0.1:8765/events?after_id=0&limit=1000'
+curl 'http://127.0.0.1:8765/events?topics=task.assigned,task.completed'
 ```
 
-Leave this running in a terminal as a live dashboard. Ctrl-C to stop.
+A response with header `X-Page-Full: 1` filled its page, so more events may
+exist — request the next page with `after_id` set to the last event id
+received (`BusClient.query_all` does this automatically).
 
-### Act as the human in the loop
-
-When a worker blocks a task, the PM emits `decision.needed`. Answer it by
-publishing `decision.made` (set `caused_by` to the `decision.needed` event id):
+Follow history and live events over SSE:
 
 ```sh
-curl -X POST http://127.0.0.1:8765/events \
-  -H 'content-type: application/json' \
-  -d '{"topic":"decision.made","actor":"human","caused_by":14,"payload":{"task_id":2,"decision":"SQLite"}}'
+curl -N 'http://127.0.0.1:8765/events/stream?from_id=0'
 ```
 
-The PM unblocks the task and reassigns it.
+SSE history is scanned in bounded global-id windows. Filtered subscribers
+advance past unrelated events rather than repeatedly rescanning the same tail.
 
-### Inspect the raw log
+## Trust model
 
-It's just SQLite:
+The bus is designed for local, single-user orchestration. Two boundaries to
+understand before exposing it any wider:
+
+- **Perimeter auth is opt-in.** Set `AGENT_BUS_TOKEN` in the bus's environment
+  and every data route requires `Authorization: Bearer <token>`; `BusClient`
+  picks the same variable up automatically (or accepts `token=`). `/health`
+  stays open. Without the variable, anyone who can reach the port can publish.
+- **Actors are self-reported.** The token authenticates *clients*, not
+  identities: any authorized client may publish under any actor string,
+  including `pm`. Per-actor authentication would require signed events or
+  per-actor credentials, which is out of scope for a local bus.
+
+The PM's single-instance lock is per user, per machine, per bus URL (a lock
+file in the user's runtime directory keyed by a hash of `AGENT_BUS_URL`), so
+two checkouts on one machine exclude each other. PMs on different machines are
+not excluded; a split-brain PM loses idempotency races deterministically and
+exits with an error instead of corrupting the log.
+
+## Testing
 
 ```sh
-sqlite3 events.db 'SELECT id,topic,actor,caused_by,payload FROM events ORDER BY id'
+pip install -r requirements-dev.txt
+python -m unittest discover -v   # or: pytest tests/
 ```
 
-## Writing your own agent
+The suite focuses on orchestration failures: restart reconciliation, stale
+attempt rejection, worker replacement, malformed replay events, idempotent
+publish retries, and atomic monotonic offsets.
 
-```python
-from client import BusClient
+## Scope and next boundaries
 
-bus = BusClient("http://127.0.0.1:8765", actor="my-agent")
-bus.publish("agent.registered", {"name": "my-agent"})
+v0.2 remains a trusted, single-host runtime. Actor names are asserted by
+clients, not authenticated identities. The PM lock and wake-up condition are
+local-process mechanisms. Before exposing the bus to other machines, add
+authentication and replace local exclusivity/notification with shared
+infrastructure.
 
-for ev in bus.subscribe(topics=["task.assigned"], from_id=bus.load_offset()):
-    if ev["payload"].get("assignee") != "my-agent":
-        bus.save_offset(ev["id"])
-        continue
-    # ... do the work ...
-    bus.publish("task.completed",
-                {"task_id": ev["payload"]["task_id"], "summary": "done"},
-                caused_by=ev["id"])
-    bus.save_offset(ev["id"])
-```
-
-Notes:
-
-- `subscribe()` reconnects automatically with exponential backoff if the bus
-  restarts, resuming from the last event it yielded — no missed or duplicate
-  events. You don't need to handle disconnects yourself.
-- Call `save_offset()` after handling each event; on restart, pass
-  `from_id=bus.load_offset()` to resume exactly where you left off.
-- Handlers must be idempotent: after a crash you may re-see the last event.
-
-## Event vocabulary
-
-| Topic              | Emitted by | Meaning                                      |
-|--------------------|-----------|----------------------------------------------|
-| `task.created`     | human/any | New task. Server assigns `task_id` if omitted. |
-| `task.assigned`    | pm        | Task handed to a worker (`assignee`, `goal`). |
-| `task.started`     | worker    | Worker began the task.                        |
-| `task.completed`   | worker    | Task done (`summary`).                        |
-| `task.blocked`     | worker    | Worker needs a decision (`reason`).           |
-| `decision.needed`  | pm        | Surfaced to the human.                        |
-| `decision.made`    | human     | Answer; PM unblocks and reassigns.            |
-| `agent.registered` | worker    | Worker announces itself.                      |
-
-## Crash recovery
-
-Everything is designed to be killable:
-
-- **Bus** — state is in `events.db` (WAL mode); restart it and clients
-  reconnect on their own.
-- **PM** — on startup it replays the full log through a pure reducer to
-  rebuild the task graph, then goes live. Only one PM can run at a time
-  (non-blocking file lock on `pm_agent.lock`).
-- **Workers** — resume from their saved offset in `.offsets/`.
-
-Restart order after a full stop: bus, then PM, then workers.
-
-## Design notes
-
-- SQLite is the source of truth; all agent state is derived by replay.
-- Idempotent publishes are scoped by `(actor, idempotency_key)`, enforced by
-  a partial unique index.
-- `task_id`s come from a `counters` table via an atomic
-  `UPDATE ... RETURNING` (requires SQLite ≥ 3.35).
-- The PM applies its own emissions to local state immediately after
-  publishing (not when they echo back on the stream), which prevents
-  double-assigning a task when unrelated events interleave.
-- DB connections are opened per operation and explicitly closed;
-  `journal_mode=WAL` is set once at init (it persists), `busy_timeout` per
-  connection.
+Likely next layers are task dependencies, cancellation, deadlines, artifacts,
+progress events, executor adapters, snapshots, and a read-only operational UI.
+Those should remain projections and commands over the log—not a return to a
+mutable board as the source of truth.
