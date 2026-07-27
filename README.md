@@ -52,7 +52,7 @@ task.started  -> task.blocked -> decision.needed -> decision.made
 ## Setup
 
 ```sh
-python3 -m venv .venv
+python3 -m venv .venv          # Python 3.10+
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
