@@ -47,7 +47,7 @@ task.started  -> task.blocked -> decision.needed -> decision.made
 | `pm_agent.py` | Pure projection plus deterministic post-replay reconciliation |
 | `worker.py` | Demo leased worker with idempotent lifecycle emissions |
 | `events.db` | Append-only event log and task-id counter |
-| `.offsets/` | Per-worker-instance stream resume points |
+| `.offsets/` | Optional durable resume points for stable consumer identities |
 
 ## Setup
 
@@ -162,14 +162,16 @@ blocked:{assignment_id}
 completed:{assignment_id}
 ```
 
-If a process crashes after publish but before persisting its stream offset, the
-replayed assignment returns the original event rather than appending another.
-Offset files themselves are replaced atomically and only move forward.
-
 A new worker instance subscribes from its own registration event — assignments
 addressed to it cannot exist earlier — so startup cost does not grow with log
-history. Offset files from previous instances of the same worker name are
-deleted at startup.
+history. `BusClient` retains the latest event id in memory across SSE
+reconnections. A replacement process registers a new `instance_id`, so demo
+workers neither resume the previous process's assignments nor create durable
+offset files. Stable consumers that do need cross-process resume can use
+`BusClient.load_offset()` and `save_offset()`; those files are replaced
+atomically and only move forward. After all pre-v0.2.1 workers have stopped,
+their old per-instance files may be removed once; new demo workers do not
+replenish them.
 
 An external tool call, payment, deployment, or file mutation performed by a
 worker must also use an idempotency token. The bus can make orchestration
@@ -260,9 +262,10 @@ understand before exposing it any wider:
 
 The PM's single-instance lock is per user, per machine, per bus URL (a lock
 file in the user's runtime directory keyed by a hash of `AGENT_BUS_URL`), so
-two checkouts on one machine exclude each other. PMs on different machines are
-not excluded; a split-brain PM loses idempotency races deterministically and
-exits with an error instead of corrupting the log.
+two checkouts on one machine exclude each other. The lock file is opened
+without following symlinks, verified as owned by the current user, and made
+user-only. It is not distributed leadership: PMs on different machines or
+under different OS users are not excluded and must not coordinate the same bus.
 
 ## Testing
 

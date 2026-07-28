@@ -21,39 +21,6 @@ class OffsetTests(unittest.TestCase):
             self.assertEqual(Path(directory), client.offset_file.parent)
             self.assertNotIn("/", client.offset_file.name)
 
-    def test_cleanup_stale_offsets_keeps_only_current_instance(self):
-        with tempfile.TemporaryDirectory() as directory:
-            stale = BusClient(
-                "http://127.0.0.1:8765",
-                actor="alice",
-                offset_dir=Path(directory),
-                offset_name="alice-old1",
-            )
-            stale.save_offset(5)
-            other_worker = BusClient(
-                "http://127.0.0.1:8765",
-                actor="bob",
-                offset_dir=Path(directory),
-                offset_name="bob-live",
-            )
-            other_worker.save_offset(9)
-
-            current = BusClient(
-                "http://127.0.0.1:8765",
-                actor="alice",
-                offset_dir=Path(directory),
-                offset_name="alice-new2",
-            )
-            current.save_offset(7)
-            current.cleanup_stale_offsets("alice")
-
-            remaining = {path.name for path in Path(directory).iterdir()}
-            self.assertIn("alice-new2.offset", remaining)
-            self.assertIn("bob-live.offset", remaining)
-            self.assertNotIn("alice-old1.offset", remaining)
-            self.assertNotIn("alice-old1.offset.lock", remaining)
-            self.assertEqual(7, current.load_offset())
-
     def test_stream_keepalive_invokes_idle_reconciliation_callback(self):
         class FakeResponse:
             def __enter__(self):

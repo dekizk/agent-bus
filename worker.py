@@ -52,12 +52,7 @@ def main() -> None:
 
     name = args.name
     instance_id = uuid.uuid4().hex
-    bus = BusClient(
-        BUS_URL,
-        actor=name,
-        offset_name=f"{name}-{instance_id}",
-    )
-    bus.cleanup_stale_offsets(name)
+    bus = BusClient(BUS_URL, actor=name)
     registered = bus.publish(
         "agent.registered",
         {
@@ -81,18 +76,18 @@ def main() -> None:
     block_once = args.block
     try:
         # Assignments for this instance can only exist after its registration
-        # event, so start there instead of replaying the whole log. The saved
-        # offset only matters for reconnects within this process's lifetime.
+        # event, so start there instead of replaying the whole log. BusClient
+        # keeps the latest id in memory across SSE reconnects; a replacement
+        # process registers a new instance and must not resume this one's work.
         for event in bus.subscribe(
             topics=["task.assigned"],
-            from_id=max(bus.load_offset(), registered["id"]),
+            from_id=registered["id"],
         ):
             payload = event["payload"]
             if (
                 payload.get("assignee") != name
                 or payload.get("worker_instance_id") != instance_id
             ):
-                bus.save_offset(event["id"])
                 continue
 
             task_id = payload["task_id"]
@@ -142,7 +137,6 @@ def main() -> None:
                     idempotency_key=f"completed:{assignment_id}",
                 )
                 print(f"[{name}] completed task {task_id}", flush=True)
-            bus.save_offset(event["id"])
     finally:
         stop_heartbeat.set()
         heartbeat.join(timeout=1)

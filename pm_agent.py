@@ -8,6 +8,7 @@ import fcntl
 import getpass
 import hashlib
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -25,9 +26,8 @@ def _lock_path() -> Path:
     """One lock per (user, machine, bus URL), not per checkout directory.
 
     Keyed by bus URL so two PMs from different working copies still exclude
-    each other. A PM on another machine (or another OS user) is NOT excluded;
-    that split-brain loses idempotency races and exits via reconcile()'s
-    RuntimeError rather than corrupting state.
+    each other. This is only a local-process guard: a PM on another machine
+    or running as another OS user is not excluded.
     """
     digest = hashlib.sha256(BUS_URL.encode()).hexdigest()[:16]
     base = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
@@ -109,14 +109,38 @@ class PMState:
 
 @contextmanager
 def single_pm_lock():
-    with LOCK_PATH.open("w") as lock_file:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SystemExit("[pm] another PM is already running")
-        lock_file.write(str(os.getpid()))
-        lock_file.flush()
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise SystemExit("[pm] this platform cannot safely open the PM lock")
+    flags |= nofollow
+
+    fd: Optional[int] = None
+    try:
+        fd = os.open(LOCK_PATH, flags, 0o600)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise PermissionError("PM lock must be a regular file owned by this user")
+        os.fchmod(fd, 0o600)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        raise SystemExit(f"[pm] cannot safely open PM lock: {exc}") from exc
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise SystemExit("[pm] another PM is already running")
+
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, str(os.getpid()).encode())
+        os.fsync(fd)
         yield
+    finally:
+        os.close(fd)
 
 
 def _positive_int(value: object) -> Optional[int]:

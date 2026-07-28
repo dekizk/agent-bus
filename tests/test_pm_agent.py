@@ -1,5 +1,11 @@
+import fcntl
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+import pm_agent
 from pm_agent import PMState, apply_event, plan_next_emission, reconcile
 
 
@@ -73,6 +79,47 @@ def created(event_id=2, task_id=1, ts=100.0):
         {"task_id": task_id, "title": "demo"},
         ts=ts,
     )
+
+
+class PMLockTests(unittest.TestCase):
+    def test_contended_lock_is_not_truncated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "pm.lock"
+            lock_path.write_text("existing-owner")
+
+            with lock_path.open("r+") as held_lock:
+                fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch.object(pm_agent, "LOCK_PATH", lock_path):
+                    with self.assertRaisesRegex(SystemExit, "another PM"):
+                        with pm_agent.single_pm_lock():
+                            self.fail("contended lock should not be acquired")
+
+            self.assertEqual("existing-owner", lock_path.read_text())
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "O_NOFOLLOW is required")
+    def test_lock_refuses_symlink_without_modifying_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            target.write_text("do-not-truncate")
+            lock_path = Path(directory) / "pm.lock"
+            lock_path.symlink_to(target)
+
+            with patch.object(pm_agent, "LOCK_PATH", lock_path):
+                with self.assertRaisesRegex(SystemExit, "cannot safely open"):
+                    with pm_agent.single_pm_lock():
+                        self.fail("symlink lock should not be acquired")
+
+            self.assertEqual("do-not-truncate", target.read_text())
+
+    def test_new_lock_is_user_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "pm.lock"
+
+            with patch.object(pm_agent, "LOCK_PATH", lock_path):
+                with pm_agent.single_pm_lock():
+                    mode = lock_path.stat().st_mode & 0o777
+
+            self.assertEqual(0o600, mode)
 
 
 class ReconciliationTests(unittest.TestCase):

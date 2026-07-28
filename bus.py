@@ -418,7 +418,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.2", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.2.1", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

@@ -154,25 +154,6 @@ class BusClient:
             if len(page) < page_size:
                 return events
 
-    def cleanup_stale_offsets(self, name_prefix: str) -> int:
-        """Delete offset files left behind by earlier instances.
-
-        Matches `{name_prefix}-*.offset` (and their lock files) in this
-        client's offset directory, keeping the current instance's own files.
-        Offsets are per-instance resume points, so files from dead instances
-        are never read again and only accumulate.
-        """
-        removed = 0
-        for path in self.offset_file.parent.glob(f"{name_prefix}-*.offset*"):
-            if path.name in {self.offset_file.name, self.offset_lock_file.name}:
-                continue
-            try:
-                path.unlink()
-                removed += 1
-            except OSError:
-                pass
-        return removed
-
     def load_offset(self) -> int:
         try:
             return int(self.offset_file.read_text())

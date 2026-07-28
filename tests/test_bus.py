@@ -129,13 +129,18 @@ class BusApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_db_path = bus.DB_PATH
+        self.original_api_token = bus.API_TOKEN
         bus.DB_PATH = Path(self.temp_dir.name) / "events.db"
+        # API tests must not inherit authentication policy from the shell that
+        # launched the suite. The dedicated auth test enables it explicitly.
+        bus.API_TOKEN = None
         self.client_context = TestClient(bus.app)
         self.client = self.client_context.__enter__()
 
     def tearDown(self):
         self.client_context.__exit__(None, None, None)
         bus.DB_PATH = self.original_db_path
+        bus.API_TOKEN = self.original_api_token
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
@@ -190,7 +195,6 @@ class BusApiTests(unittest.TestCase):
         self.assertEqual("0", partial.headers["X-Page-Full"])
 
     def test_bearer_token_guards_data_routes_when_configured(self):
-        original_token = bus.API_TOKEN
         bus.API_TOKEN = "secret"
         try:
             body = {"topic": "custom.tick", "actor": "agent", "payload": {}}
@@ -205,7 +209,7 @@ class BusApiTests(unittest.TestCase):
             )
             self.assertEqual(200, self.client.get("/events", headers=headers).status_code)
         finally:
-            bus.API_TOKEN = original_token
+            bus.API_TOKEN = None
 
 
 if __name__ == "__main__":
