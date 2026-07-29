@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,7 +34,18 @@ class BusStorageTests(unittest.TestCase):
 
         self.assertEqual(first["id"], retried["id"])
         self.assertEqual(first["payload"]["task_id"], retried["payload"]["task_id"])
+        self.assertEqual(first["correlation_id"], retried["correlation_id"])
+        self.assertIsNotNone(first["correlation_id"])
         self.assertEqual(1, len(bus.fetch_after(0, None)))
+
+        with self.assertRaises(bus.IdempotencyConflict):
+            bus.append_event(
+                "task.created",
+                "human",
+                {"title": "crash-safe task"},
+                idempotency_key="create:one",
+                correlation_id="different-workflow",
+            )
 
     def test_reusing_idempotency_key_for_different_request_is_conflict(self):
         bus.append_event(
@@ -59,6 +71,12 @@ class BusStorageTests(unittest.TestCase):
             )
 
     def test_worker_completion_retry_appends_one_event(self):
+        parent = bus.append_event(
+            "custom.assignment",
+            "pm",
+            {},
+            correlation_id="workflow-one",
+        )
         payload = {
             "task_id": 1,
             "assignment_id": "task:1:attempt:1",
@@ -69,18 +87,115 @@ class BusStorageTests(unittest.TestCase):
             "task.completed",
             "alice",
             payload,
-            caused_by=1,
+            caused_by=parent["id"],
             idempotency_key="completed:task:1:attempt:1",
         )
         second = bus.append_event(
             "task.completed",
             "alice",
             payload,
-            caused_by=1,
+            caused_by=parent["id"],
             idempotency_key="completed:task:1:attempt:1",
         )
         self.assertEqual(first["id"], second["id"])
-        self.assertEqual(1, len(bus.fetch_after(0, None)))
+        self.assertEqual("workflow-one", first["correlation_id"])
+        completed = bus.fetch_after(0, ["task.completed"])
+        self.assertEqual(1, len(completed))
+
+    def test_correlation_is_generated_inherited_and_cannot_conflict(self):
+        root = bus.append_event("task.created", "human", {"title": "workflow"})
+        child = bus.append_event(
+            "custom.child",
+            "agent",
+            {},
+            caused_by=root["id"],
+        )
+        explicit_child = bus.append_event(
+            "custom.explicit-child",
+            "agent",
+            {},
+            caused_by=child["id"],
+            correlation_id=root["correlation_id"],
+        )
+        sibling_task = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "another task in the workflow"},
+            correlation_id=root["correlation_id"],
+        )
+
+        self.assertEqual(root["correlation_id"], child["correlation_id"])
+        self.assertEqual(root["correlation_id"], explicit_child["correlation_id"])
+        self.assertEqual(root["correlation_id"], sibling_task["correlation_id"])
+        self.assertNotEqual(
+            root["payload"]["task_id"],
+            sibling_task["payload"]["task_id"],
+        )
+
+        with self.assertRaisesRegex(bus.EventValidationError, "conflicts"):
+            bus.append_event(
+                "custom.bad-child",
+                "agent",
+                {},
+                caused_by=root["id"],
+                correlation_id="different-workflow",
+            )
+
+    def test_new_event_rejects_nonexistent_causal_parent(self):
+        with self.assertRaisesRegex(bus.EventValidationError, "does not exist"):
+            bus.append_event(
+                "custom.orphan",
+                "agent",
+                {},
+                caused_by=999,
+            )
+
+    def test_correlation_filters_history_and_stream_windows(self):
+        first = bus.append_event(
+            "custom.tick",
+            "agent",
+            {"n": 1},
+            correlation_id="workflow-a",
+        )
+        bus.append_event(
+            "custom.tick",
+            "agent",
+            {"n": 2},
+            correlation_id="workflow-b",
+        )
+        third = bus.append_event(
+            "custom.child",
+            "agent",
+            {"n": 3},
+            caused_by=first["id"],
+        )
+
+        history = bus.fetch_after(
+            0,
+            None,
+            correlation_id="workflow-a",
+        )
+        self.assertEqual([first["id"], third["id"]], [item["id"] for item in history])
+
+        events, scanned_to, full = bus.fetch_stream_window(
+            0,
+            None,
+            limit=2,
+            correlation_id="workflow-a",
+        )
+        self.assertEqual([first["id"]], [item["id"] for item in events])
+        self.assertEqual(2, scanned_to)
+        self.assertTrue(full)
+
+        events, scanned_to, full = bus.fetch_stream_window(
+            scanned_to,
+            None,
+            limit=2,
+            correlation_id="workflow-a",
+        )
+        self.assertEqual([third["id"]], [item["id"] for item in events])
+        self.assertEqual(3, scanned_to)
+        self.assertFalse(full)
 
     def test_filtered_stream_window_advances_over_unrelated_events(self):
         bus.append_event("custom.one", "agent", {})
@@ -125,6 +240,53 @@ class BusStorageTests(unittest.TestCase):
                 schema_version=1,
             )
 
+        child = bus.append_event(
+            "custom.after-legacy",
+            "agent",
+            {},
+            caused_by=1,
+        )
+        self.assertIsNone(child["correlation_id"])
+
+    def test_init_db_migrates_pre_correlation_database(self):
+        bus.DB_PATH.unlink()
+        connection = sqlite3.connect(bus.DB_PATH)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    topic TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    idempotency_key TEXT,
+                    caused_by INTEGER,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO events
+                    (ts, topic, actor, schema_version, idempotency_key, caused_by, payload)
+                VALUES (1, 'custom.legacy', 'legacy', 1, NULL, NULL, '{}')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        bus.init_db()
+
+        with bus.db() as migrated:
+            columns = {
+                row["name"] for row in migrated.execute("PRAGMA table_info(events)")
+            }
+        self.assertIn("correlation_id", columns)
+        self.assertIsNone(bus.fetch_after(0, None)[0]["correlation_id"])
+
+
 class BusApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -155,6 +317,7 @@ class BusApiTests(unittest.TestCase):
         )
         self.assertEqual(200, created.status_code)
         self.assertEqual(2, created.json()["schema_version"])
+        self.assertIsNotNone(created.json()["correlation_id"])
 
         invalid = self.client.post(
             "/events",
@@ -180,6 +343,69 @@ class BusApiTests(unittest.TestCase):
         queried = self.client.get("/events", params={"limit": 10})
         self.assertEqual(200, queried.status_code)
         self.assertEqual(1, len(queried.json()))
+
+    def test_correlation_propagation_validation_and_query(self):
+        root = self.client.post(
+            "/events",
+            json={
+                "topic": "task.created",
+                "actor": "human",
+                "correlation_id": "workflow-api",
+                "payload": {"title": "API workflow"},
+            },
+        )
+        self.assertEqual(200, root.status_code)
+
+        child = self.client.post(
+            "/events",
+            json={
+                "topic": "custom.child",
+                "actor": "agent",
+                "caused_by": root.json()["id"],
+                "payload": {},
+            },
+        )
+        self.assertEqual(200, child.status_code)
+        self.assertEqual("workflow-api", child.json()["correlation_id"])
+
+        conflict = self.client.post(
+            "/events",
+            json={
+                "topic": "custom.conflict",
+                "actor": "agent",
+                "caused_by": root.json()["id"],
+                "correlation_id": "workflow-other",
+                "payload": {},
+            },
+        )
+        self.assertEqual(422, conflict.status_code)
+
+        orphan = self.client.post(
+            "/events",
+            json={
+                "topic": "custom.orphan",
+                "actor": "agent",
+                "caused_by": 999,
+                "payload": {},
+            },
+        )
+        self.assertEqual(422, orphan.status_code)
+
+        queried = self.client.get(
+            "/events",
+            params={"correlation_id": "workflow-api"},
+        )
+        self.assertEqual(200, queried.status_code)
+        self.assertEqual(
+            [root.json()["id"], child.json()["id"]],
+            [item["id"] for item in queried.json()],
+        )
+
+        invalid_filter = self.client.get(
+            "/events",
+            params={"correlation_id": " workflow-api "},
+        )
+        self.assertEqual(422, invalid_filter.status_code)
 
     def test_full_page_is_signaled_in_response_header(self):
         for index in range(3):

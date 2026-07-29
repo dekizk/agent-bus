@@ -18,6 +18,7 @@ def event(
     ts=100.0,
     caused_by=None,
     schema_version=2,
+    correlation_id=None,
 ):
     return {
         "id": event_id,
@@ -26,6 +27,7 @@ def event(
         "actor": actor,
         "payload": payload,
         "caused_by": caused_by,
+        "correlation_id": correlation_id,
         "schema_version": schema_version,
         "idempotency_key": None,
     }
@@ -71,13 +73,14 @@ def registered(event_id=1, name="alice", instance="alice-1", ts=100.0):
     )
 
 
-def created(event_id=2, task_id=1, ts=100.0):
+def created(event_id=2, task_id=1, ts=100.0, correlation_id=None):
     return event(
         event_id,
         "task.created",
         "human",
         {"task_id": task_id, "title": "demo"},
         ts=ts,
+        correlation_id=correlation_id,
     )
 
 
@@ -123,6 +126,16 @@ class PMLockTests(unittest.TestCase):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_task_projection_retains_workflow_correlation(self):
+        state = PMState()
+        self.assertTrue(
+            apply_event(
+                state,
+                created(correlation_id="workflow-one"),
+            )
+        )
+        self.assertEqual("workflow-one", state.tasks[1].correlation_id)
+
     def test_restart_reconciles_assignment_missing_after_replay(self):
         history = [registered(), created()]
         state = PMState()

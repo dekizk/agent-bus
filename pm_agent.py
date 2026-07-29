@@ -54,6 +54,7 @@ class WorkerRecord:
 class TaskRecord:
     task_id: int
     title: str
+    correlation_id: Optional[str] = None
     status: str = "open"
     attempt: int = 0
     assignee: Optional[str] = None
@@ -242,6 +243,11 @@ def apply_event(state: PMState, ev: dict) -> bool:
             state.tasks[task_id] = TaskRecord(
                 task_id=task_id,
                 title=payload.get("title", "") if isinstance(payload.get("title", ""), str) else "",
+                correlation_id=(
+                    ev.get("correlation_id")
+                    if isinstance(ev.get("correlation_id"), str)
+                    else None
+                ),
                 open_event_id=event_id,
                 required_capabilities=required,
             )

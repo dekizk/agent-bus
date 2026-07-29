@@ -15,6 +15,7 @@ import os
 import secrets
 import sqlite3
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 DB_PATH = Path(__file__).parent / "events.db"
 CURRENT_SCHEMA_VERSION = 2
+MAX_CORRELATION_ID_LENGTH = 128
 
 # Optional perimeter auth: when AGENT_BUS_TOKEN is set, every data route
 # requires "Authorization: Bearer <token>". Actor strings are still
@@ -77,6 +79,28 @@ def _require_task_id(payload: dict) -> None:
         raise EventValidationError("payload.task_id must be a positive integer")
 
 
+def _validate_correlation_id(correlation_id: Optional[str]) -> None:
+    if correlation_id is None:
+        return
+    if (
+        not isinstance(correlation_id, str)
+        or not correlation_id.strip()
+        or correlation_id != correlation_id.strip()
+        or len(correlation_id) > MAX_CORRELATION_ID_LENGTH
+    ):
+        raise EventValidationError(
+            "correlation_id must be null or a trimmed, non-empty string "
+            f"of at most {MAX_CORRELATION_ID_LENGTH} characters"
+        )
+
+
+def _validate_query_correlation_id(correlation_id: Optional[str]) -> None:
+    try:
+        _validate_correlation_id(correlation_id)
+    except EventValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def validate_event(
     topic: str,
     actor: str,
@@ -84,6 +108,7 @@ def validate_event(
     caused_by: Optional[int],
     idempotency_key: Optional[str],
     schema_version: int,
+    correlation_id: Optional[str] = None,
 ) -> None:
     """Validate common fields and v2 contracts for built-in event topics.
 
@@ -103,6 +128,7 @@ def validate_event(
         raise EventValidationError("idempotency_key must be null or a non-empty string")
     if caused_by is not None and not _is_positive_int(caused_by):
         raise EventValidationError("caused_by must be null or a positive event id")
+    _validate_correlation_id(correlation_id)
 
     if topic not in KNOWN_TOPICS:
         return
@@ -205,6 +231,7 @@ def init_db() -> None:
                 schema_version INTEGER NOT NULL DEFAULT 1,
                 idempotency_key TEXT,
                 caused_by INTEGER,
+                correlation_id TEXT,
                 payload   TEXT    NOT NULL
             )
             """
@@ -216,6 +243,8 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
             )
+        if "correlation_id" not in columns:
+            conn.execute("ALTER TABLE events ADD COLUMN correlation_id TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS counters (
@@ -240,6 +269,12 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_topic_id ON events(topic, id)")
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_events_correlation_id
+            ON events(correlation_id, id)
+            """
+        )
+        conn.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_events_actor_idempotency
             ON events(actor, idempotency_key)
             WHERE idempotency_key IS NOT NULL
@@ -261,7 +296,41 @@ def row_to_dict(row: sqlite3.Row) -> dict:
     event = dict(row)
     event["payload"] = json.loads(event["payload"])
     event.setdefault("schema_version", 1)
+    event.setdefault("correlation_id", None)
     return event
+
+
+def _resolve_correlation_id(
+    conn: sqlite3.Connection,
+    *,
+    topic: str,
+    caused_by: Optional[int],
+    correlation_id: Optional[str],
+) -> Optional[str]:
+    """Resolve a new event's workflow identity inside its append transaction."""
+    if caused_by is not None:
+        parent = conn.execute(
+            "SELECT correlation_id FROM events WHERE id = ?",
+            (caused_by,),
+        ).fetchone()
+        if parent is None:
+            raise EventValidationError(f"caused_by event {caused_by} does not exist")
+        parent_correlation_id = parent["correlation_id"]
+        if (
+            parent_correlation_id is not None
+            and correlation_id is not None
+            and correlation_id != parent_correlation_id
+        ):
+            raise EventValidationError(
+                "correlation_id conflicts with the caused_by event"
+            )
+        return parent_correlation_id or correlation_id
+
+    if correlation_id is not None:
+        return correlation_id
+    if topic == "task.created":
+        return uuid.uuid4().hex
+    return None
 
 
 def _assert_idempotent_match(
@@ -271,6 +340,7 @@ def _assert_idempotent_match(
     payload: dict,
     caused_by: Optional[int],
     schema_version: int,
+    correlation_id: Optional[str],
 ) -> None:
     existing = row_to_dict(row)
     stored_payload = existing["payload"]
@@ -279,12 +349,24 @@ def _assert_idempotent_match(
         # caller's logical idempotent request.
         stored_payload = dict(stored_payload)
         stored_payload.pop("task_id", None)
-    requested = (topic, payload, caused_by, schema_version)
+    # Omitting correlation_id delegates generation/inheritance to the server.
+    # On a retry, the stored value is therefore the effective requested value.
+    effective_correlation_id = (
+        existing["correlation_id"] if correlation_id is None else correlation_id
+    )
+    requested = (
+        topic,
+        payload,
+        caused_by,
+        schema_version,
+        effective_correlation_id,
+    )
     stored = (
         existing["topic"],
         stored_payload,
         existing["caused_by"],
         existing["schema_version"],
+        existing["correlation_id"],
     )
     if stored != requested:
         raise IdempotencyConflict(
@@ -299,8 +381,17 @@ def append_event(
     caused_by: Optional[int] = None,
     idempotency_key: Optional[str] = None,
     schema_version: int = CURRENT_SCHEMA_VERSION,
+    correlation_id: Optional[str] = None,
 ) -> dict:
-    validate_event(topic, actor, payload, caused_by, idempotency_key, schema_version)
+    validate_event(
+        topic,
+        actor,
+        payload,
+        caused_by,
+        idempotency_key,
+        schema_version,
+        correlation_id,
+    )
     requested_payload = dict(payload)
     with db() as conn:
         if idempotency_key is not None:
@@ -315,9 +406,16 @@ def append_event(
                     payload=requested_payload,
                     caused_by=caused_by,
                     schema_version=schema_version,
+                    correlation_id=correlation_id,
                 )
                 return row_to_dict(row)
 
+        resolved_correlation_id = _resolve_correlation_id(
+            conn,
+            topic=topic,
+            caused_by=caused_by,
+            correlation_id=correlation_id,
+        )
         payload = dict(requested_payload)
         if topic == "task.created":
             if "task_id" not in payload:
@@ -332,8 +430,9 @@ def append_event(
             cur = conn.execute(
                 """
                 INSERT INTO events
-                    (ts, topic, actor, schema_version, idempotency_key, caused_by, payload)
-                VALUES (?,?,?,?,?,?,?)
+                    (ts, topic, actor, schema_version, idempotency_key, caused_by,
+                     correlation_id, payload)
+                VALUES (?,?,?,?,?,?,?,?)
                 """,
                 (
                     time.time(),
@@ -342,6 +441,7 @@ def append_event(
                     schema_version,
                     idempotency_key,
                     caused_by,
+                    resolved_correlation_id,
                     json.dumps(payload, sort_keys=True, separators=(",", ":")),
                 ),
             )
@@ -363,6 +463,7 @@ def append_event(
                 payload=requested_payload,
                 caused_by=caused_by,
                 schema_version=schema_version,
+                correlation_id=correlation_id,
             )
             return row_to_dict(row)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -373,12 +474,16 @@ def fetch_after(
     after_id: int,
     topics: Optional[list[str]],
     limit: int = 1000,
+    correlation_id: Optional[str] = None,
 ) -> list[dict]:
     q = "SELECT * FROM events WHERE id > ?"
     args: list = [after_id]
     if topics:
         q += f" AND topic IN ({','.join('?' * len(topics))})"
         args += topics
+    if correlation_id is not None:
+        q += " AND correlation_id = ?"
+        args.append(correlation_id)
     q += " ORDER BY id LIMIT ?"
     args.append(limit)
     with db() as conn:
@@ -389,6 +494,7 @@ def fetch_stream_window(
     after_id: int,
     topics: Optional[list[str]],
     limit: int = 500,
+    correlation_id: Optional[str] = None,
 ) -> tuple[list[dict], int, bool]:
     """Scan a bounded global-id window and return matching events.
 
@@ -401,7 +507,15 @@ def fetch_stream_window(
             (after_id, limit),
         ).fetchall()
     events = [row_to_dict(row) for row in rows]
-    matching = events if not topics else [event for event in events if event["topic"] in topics]
+    matching = events
+    if topics:
+        matching = [event for event in matching if event["topic"] in topics]
+    if correlation_id is not None:
+        matching = [
+            event
+            for event in matching
+            if event["correlation_id"] == correlation_id
+        ]
     scanned_to = events[-1]["id"] if events else after_id
     return matching, scanned_to, len(events) == limit
 
@@ -428,6 +542,7 @@ class PublishRequest(BaseModel):
     caused_by: Optional[int] = None
     idempotency_key: Optional[str] = None
     schema_version: int = CURRENT_SCHEMA_VERSION
+    correlation_id: Optional[str] = None
 
 
 @app.post("/events", dependencies=[Depends(require_token)])
@@ -442,6 +557,7 @@ async def publish(req: PublishRequest) -> dict:
             req.caused_by,
             req.idempotency_key,
             req.schema_version,
+            req.correlation_id,
         )
     except EventValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -459,9 +575,15 @@ async def query(
     after_id: int = 0,
     topics: Optional[str] = Query(None),
     limit: int = Query(1000, ge=1, le=10_000),
+    correlation_id: Optional[str] = Query(
+        None, min_length=1, max_length=MAX_CORRELATION_ID_LENGTH
+    ),
 ) -> list[dict]:
+    _validate_query_correlation_id(correlation_id)
     topic_list = [topic.strip() for topic in topics.split(",") if topic.strip()] if topics else None
-    events = await run_in_threadpool(fetch_after, after_id, topic_list, limit)
+    events = await run_in_threadpool(
+        fetch_after, after_id, topic_list, limit, correlation_id
+    )
     # A full page means more events may exist; callers that want everything
     # should paginate (see BusClient.query_all) instead of trusting one page.
     response.headers["X-Page-Full"] = "1" if len(events) == limit else "0"
@@ -469,8 +591,16 @@ async def query(
 
 
 @app.get("/events/stream", dependencies=[Depends(require_token)])
-async def stream(request: Request, from_id: int = 0, topics: Optional[str] = Query(None)):
+async def stream(
+    request: Request,
+    from_id: int = 0,
+    topics: Optional[str] = Query(None),
+    correlation_id: Optional[str] = Query(
+        None, min_length=1, max_length=MAX_CORRELATION_ID_LENGTH
+    ),
+):
     """Replay history after from_id in bounded windows, then follow live."""
+    _validate_query_correlation_id(correlation_id)
     topic_list = [topic.strip() for topic in topics.split(",") if topic.strip()] if topics else None
 
     async def gen():
@@ -480,7 +610,7 @@ async def stream(request: Request, from_id: int = 0, topics: Optional[str] = Que
             if await request.is_disconnected():
                 return
             events, scanned_to, full_window = await run_in_threadpool(
-                fetch_stream_window, last_id, topic_list
+                fetch_stream_window, last_id, topic_list, 500, correlation_id
             )
             last_id = scanned_to
             for event in events:

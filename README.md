@@ -9,13 +9,18 @@ immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes
 can therefore restart without relying on hidden in-memory ownership state.
 
-## v0.2 model
+## Identity model
 
-Three identities keep retries and replays unambiguous:
+Four identities keep workflows, retries, and replays unambiguous:
 
+- `correlation_id` identifies one wider workflow or user goal across tasks.
 - `task_id` identifies the logical outcome requested by a human or agent.
 - `assignment_id` identifies one execution attempt for that task.
 - `instance_id` identifies one running worker process.
+
+A correlation may contain several tasks, and each task may have several
+attempts. `caused_by` remains the direct parent event; it is not overloaded as
+the workflow identifier.
 
 A task may have several attempts but only its current attempt may change task
 state. A late completion from an expired worker is retained in the audit log
@@ -86,7 +91,9 @@ curl -X POST http://127.0.0.1:8765/events \
 
 The server assigns `task_id` atomically. The PM assigns a live worker and emits
 an `assignment_id`; the worker includes that assignment and its process
-`instance_id` in every subsequent lifecycle event.
+`instance_id` in every subsequent lifecycle event. The server also generates a
+`correlation_id` for the root task and propagates it through the resulting
+event chain.
 
 Workers can advertise scheduling metadata:
 
@@ -136,6 +143,30 @@ curl -X POST http://127.0.0.1:8765/events \
 
 The PM reopens the logical task and creates a new assignment attempt. The old
 attempt can no longer complete it.
+
+## Workflow correlation
+
+`correlation_id` is a top-level event-envelope field. A root `task.created`
+receives a random correlation automatically when the caller omits one. A new
+event with `caused_by` inherits its parent's correlation inside the same
+append transaction, so PM agents and workers do not need to copy the value
+manually.
+
+Callers may provide a correlation explicitly to group several root tasks under
+one wider goal:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "correlation_id": "release-2026-07",
+  "payload": {"title": "Run integration tests"}
+}
+```
+
+New events must reference an existing `caused_by` event. If both a child and
+its parent have correlations, they must match. `task_id` still identifies only
+one task; it is never used as a workflow identifier.
 
 ## Crash recovery guarantees
 
@@ -207,7 +238,8 @@ extend the bus without changing its core.
 
 Existing databases are migrated automatically. Historical rows are marked as
 schema v1 and remain replayable with legacy assignment identities derived from
-their event ids.
+their event ids. Existing events retain `NULL` correlation IDs; the migration
+does not invent workflow relationships that were never recorded.
 
 Core v2 topics:
 
@@ -231,6 +263,7 @@ History queries are bounded; use `after_id` to paginate:
 ```sh
 curl 'http://127.0.0.1:8765/events?after_id=0&limit=1000'
 curl 'http://127.0.0.1:8765/events?topics=task.assigned,task.completed'
+curl 'http://127.0.0.1:8765/events?correlation_id=release-2026-07'
 ```
 
 A response with header `X-Page-Full: 1` filled its page, so more events may
@@ -241,10 +274,13 @@ Follow history and live events over SSE:
 
 ```sh
 curl -N 'http://127.0.0.1:8765/events/stream?from_id=0'
+curl -N 'http://127.0.0.1:8765/events/stream?correlation_id=release-2026-07'
 ```
 
 SSE history is scanned in bounded global-id windows. Filtered subscribers
 advance past unrelated events rather than repeatedly rescanning the same tail.
+`BusClient.query()`, `query_all()`, and `subscribe()` expose the same
+`correlation_id=` filter.
 
 ## Trust model
 
@@ -276,7 +312,8 @@ python -m unittest discover -v   # or: pytest tests/
 
 The suite focuses on orchestration failures: restart reconciliation, stale
 attempt rejection, worker replacement, malformed replay events, idempotent
-publish retries, and atomic monotonic offsets.
+publish retries, correlation propagation and migration, and atomic monotonic
+offsets.
 
 ## Scope and next boundaries
 

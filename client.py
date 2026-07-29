@@ -46,6 +46,7 @@ class BusClient:
         caused_by: Optional[int] = None,
         idempotency_key: Optional[str] = None,
         schema_version: int = CURRENT_SCHEMA_VERSION,
+        correlation_id: Optional[str] = None,
     ) -> dict:
         body = {
             "topic": topic,
@@ -56,6 +57,8 @@ class BusClient:
         }
         if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
+        if correlation_id is not None:
+            body["correlation_id"] = correlation_id
         response = httpx.post(
             f"{self.base_url}/events", json=body, headers=self._headers, timeout=10
         )
@@ -67,6 +70,7 @@ class BusClient:
         topics: Optional[list[str]] = None,
         from_id: int = 0,
         on_idle: Optional[Callable[[], None]] = None,
+        correlation_id: Optional[str] = None,
     ) -> Iterator[dict]:
         """Follow SSE with reconnect, resuming after the last yielded event.
 
@@ -79,7 +83,9 @@ class BusClient:
         while True:
             yielded = False
             try:
-                for event in self._stream_once(topics, last_id, on_idle):
+                for event in self._stream_once(
+                    topics, last_id, on_idle, correlation_id
+                ):
                     yielded = True
                     last_id = event["id"]
                     backoff = 1.0
@@ -103,10 +109,13 @@ class BusClient:
         topics: Optional[list[str]],
         from_id: int,
         on_idle: Optional[Callable[[], None]] = None,
+        correlation_id: Optional[str] = None,
     ) -> Iterator[dict]:
         params: dict = {"from_id": from_id}
         if topics:
             params["topics"] = ",".join(topics)
+        if correlation_id is not None:
+            params["correlation_id"] = correlation_id
         with httpx.stream(
             "GET",
             f"{self.base_url}/events/stream",
@@ -126,10 +135,13 @@ class BusClient:
         after_id: int = 0,
         topics: Optional[list[str]] = None,
         limit: int = 1000,
+        correlation_id: Optional[str] = None,
     ) -> list[dict]:
         params: dict = {"after_id": after_id, "limit": limit}
         if topics:
             params["topics"] = ",".join(topics)
+        if correlation_id is not None:
+            params["correlation_id"] = correlation_id
         response = httpx.get(
             f"{self.base_url}/events", params=params, headers=self._headers, timeout=10
         )
@@ -141,12 +153,18 @@ class BusClient:
         after_id: int = 0,
         topics: Optional[list[str]] = None,
         page_size: int = 1000,
+        correlation_id: Optional[str] = None,
     ) -> list[dict]:
         """Read a complete snapshot using bounded pages."""
         events: list[dict] = []
         cursor = after_id
         while True:
-            page = self.query(after_id=cursor, topics=topics, limit=page_size)
+            page = self.query(
+                after_id=cursor,
+                topics=topics,
+                limit=page_size,
+                correlation_id=correlation_id,
+            )
             if not page:
                 return events
             events.extend(page)
