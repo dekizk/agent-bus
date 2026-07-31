@@ -33,7 +33,18 @@ def heartbeat_loop(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a demo agent-bus worker")
     parser.add_argument("name")
-    parser.add_argument("--block", type=int, help="block this task once")
+    outcome = parser.add_mutually_exclusive_group()
+    outcome.add_argument("--block", type=int, help="block this task once")
+    outcome.add_argument(
+        "--fail",
+        type=int,
+        help="report one retryable failure for this task",
+    )
+    outcome.add_argument(
+        "--fail-permanently",
+        type=int,
+        help="report one permanent failure for this task",
+    )
     parser.add_argument("--capacity", type=int, default=1)
     parser.add_argument(
         "--capability",
@@ -74,6 +85,8 @@ def main() -> None:
     heartbeat.start()
 
     block_once = args.block
+    fail_once = args.fail
+    fail_permanently_once = args.fail_permanently
     try:
         # Assignments for this instance can only exist after its registration
         # event, so start there instead of replaying the whole log. BusClient
@@ -114,7 +127,33 @@ def main() -> None:
             # external side effects must also be made idempotent by the worker.
             time.sleep(0.5)
 
-            if block_once == task_id:
+            if fail_once == task_id or fail_permanently_once == task_id:
+                retryable = fail_once == task_id
+                if retryable:
+                    fail_once = None
+                else:
+                    fail_permanently_once = None
+                bus.publish(
+                    "task.attempt_failed",
+                    {
+                        **lifecycle_payload,
+                        "failure_code": (
+                            "demo_retryable_failure"
+                            if retryable
+                            else "demo_permanent_failure"
+                        ),
+                        "reason": "demo worker was asked to fail this task",
+                        "retryable": retryable,
+                    },
+                    caused_by=event["id"],
+                    idempotency_key=f"attempt-failed:{assignment_id}",
+                )
+                outcome = "retryable" if retryable else "permanent"
+                print(
+                    f"[{name}] FAILED task {task_id} ({outcome})",
+                    flush=True,
+                )
+            elif block_once == task_id:
                 block_once = None
                 bus.publish(
                     "task.blocked",

@@ -29,6 +29,22 @@ DB_PATH = Path(__file__).parent / "events.db"
 CURRENT_SCHEMA_VERSION = 2
 MAX_CORRELATION_ID_LENGTH = 128
 
+
+def _read_default_max_retries() -> int:
+    raw_value = os.environ.get("AGENT_BUS_MAX_RETRIES", "2")
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "AGENT_BUS_MAX_RETRIES must be a non-negative integer"
+        ) from exc
+    if value < 0:
+        raise RuntimeError("AGENT_BUS_MAX_RETRIES must be a non-negative integer")
+    return value
+
+
+DEFAULT_MAX_RETRIES = _read_default_max_retries()
+
 # Optional perimeter auth: when AGENT_BUS_TOKEN is set, every data route
 # requires "Authorization: Bearer <token>". Actor strings are still
 # self-reported — this authenticates clients, not identities.
@@ -50,7 +66,10 @@ KNOWN_TOPICS = {
     "task.started",
     "task.completed",
     "task.blocked",
+    "task.attempt_failed",
     "task.assignment_expired",
+    "task.failed",
+    "task.retry_requested",
     "decision.needed",
     "decision.made",
 }
@@ -66,6 +85,10 @@ class IdempotencyConflict(ValueError):
 
 def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _require_string(payload: dict, field: str) -> None:
@@ -149,6 +172,17 @@ def validate_event(
             raise EventValidationError(
                 "payload.required_capabilities must be a list of strings"
             )
+        if "retry_policy" in payload:
+            retry_policy = payload["retry_policy"]
+            if (
+                not isinstance(retry_policy, dict)
+                or set(retry_policy) != {"max_retries"}
+                or not _is_nonnegative_int(retry_policy.get("max_retries"))
+            ):
+                raise EventValidationError(
+                    "payload.retry_policy must contain only a non-negative "
+                    "integer max_retries"
+                )
         return
 
     if topic in {"agent.registered", "agent.heartbeat"}:
@@ -179,9 +213,39 @@ def validate_event(
         _require_string(payload, "worker_instance_id")
         if topic == "task.blocked":
             _require_string(payload, "reason")
+    elif topic == "task.attempt_failed":
+        for field in (
+            "assignment_id",
+            "worker_instance_id",
+            "failure_code",
+            "reason",
+        ):
+            _require_string(payload, field)
+        if not isinstance(payload.get("retryable"), bool):
+            raise EventValidationError("payload.retryable must be a boolean")
     elif topic == "task.assignment_expired":
         for field in ("assignment_id", "assignee", "worker_instance_id", "reason"):
             _require_string(payload, field)
+    elif topic == "task.failed":
+        for field in ("reason_code", "reason", "last_assignment_id"):
+            _require_string(payload, field)
+        if not _is_positive_int(payload.get("attempts")):
+            raise EventValidationError("payload.attempts must be a positive integer")
+        if not _is_nonnegative_int(payload.get("retryable_failures")):
+            raise EventValidationError(
+                "payload.retryable_failures must be a non-negative integer"
+            )
+        max_retries = payload.get("max_retries")
+        if max_retries is not None and not _is_nonnegative_int(max_retries):
+            raise EventValidationError(
+                "payload.max_retries must be null or a non-negative integer"
+            )
+    elif topic == "task.retry_requested":
+        if not _is_positive_int(payload.get("additional_retries")):
+            raise EventValidationError(
+                "payload.additional_retries must be a positive integer"
+            )
+        _require_string(payload, "reason")
     elif topic == "decision.needed":
         for field in ("assignment_id", "decision_id", "reason"):
             _require_string(payload, field)
@@ -344,11 +408,16 @@ def _assert_idempotent_match(
 ) -> None:
     existing = row_to_dict(row)
     stored_payload = existing["payload"]
-    if topic == "task.created" and "task_id" not in payload:
-        # task_id is a server-generated response field, not part of the
-        # caller's logical idempotent request.
+    if topic == "task.created":
         stored_payload = dict(stored_payload)
-        stored_payload.pop("task_id", None)
+        if "task_id" not in payload:
+            # task_id is a server-generated response field, not part of the
+            # caller's logical idempotent request.
+            stored_payload.pop("task_id", None)
+        if "retry_policy" not in payload:
+            # The server materializes its current default into new task events.
+            # Omitting it remains the same logical request on a retry.
+            stored_payload.pop("retry_policy", None)
     # Omitting correlation_id delegates generation/inheritance to the server.
     # On a retry, the stored value is therefore the effective requested value.
     effective_correlation_id = (
@@ -418,6 +487,10 @@ def append_event(
         )
         payload = dict(requested_payload)
         if topic == "task.created":
+            payload.setdefault(
+                "retry_policy",
+                {"max_retries": DEFAULT_MAX_RETRIES},
+            )
             if "task_id" not in payload:
                 payload["task_id"] = next_task_id(conn)
             elif _is_positive_int(payload["task_id"]):
@@ -496,28 +569,22 @@ def fetch_stream_window(
     limit: int = 500,
     correlation_id: Optional[str] = None,
 ) -> tuple[list[dict], int, bool]:
-    """Scan a bounded global-id window and return matching events.
-
-    Advancing over non-matching ids prevents filtered subscribers from
-    repeatedly rescanning an ever-growing tail of unrelated events.
-    """
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?",
-            (after_id, limit),
-        ).fetchall()
-    events = [row_to_dict(row) for row in rows]
-    matching = events
+    """Read a bounded matching-id window without decoding unrelated events."""
+    q = "SELECT * FROM events WHERE id > ?"
+    args: list = [after_id]
     if topics:
-        matching = [event for event in matching if event["topic"] in topics]
+        q += f" AND topic IN ({','.join('?' * len(topics))})"
+        args += topics
     if correlation_id is not None:
-        matching = [
-            event
-            for event in matching
-            if event["correlation_id"] == correlation_id
-        ]
+        q += " AND correlation_id = ?"
+        args.append(correlation_id)
+    q += " ORDER BY id LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        rows = conn.execute(q, args).fetchall()
+    events = [row_to_dict(row) for row in rows]
     scanned_to = events[-1]["id"] if events else after_id
-    return matching, scanned_to, len(events) == limit
+    return events, scanned_to, len(events) == limit
 
 
 # ---------------------------------------------------------------- app
@@ -532,7 +599,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.3", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.3.0", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

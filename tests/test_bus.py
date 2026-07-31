@@ -36,6 +36,10 @@ class BusStorageTests(unittest.TestCase):
         self.assertEqual(first["payload"]["task_id"], retried["payload"]["task_id"])
         self.assertEqual(first["correlation_id"], retried["correlation_id"])
         self.assertIsNotNone(first["correlation_id"])
+        self.assertEqual(
+            {"max_retries": bus.DEFAULT_MAX_RETRIES},
+            first["payload"]["retry_policy"],
+        )
         self.assertEqual(1, len(bus.fetch_after(0, None)))
 
         with self.assertRaises(bus.IdempotencyConflict):
@@ -45,6 +49,75 @@ class BusStorageTests(unittest.TestCase):
                 {"title": "crash-safe task"},
                 idempotency_key="create:one",
                 correlation_id="different-workflow",
+            )
+
+    def test_task_retry_policy_is_persisted_and_validated(self):
+        explicit = bus.append_event(
+            "task.created",
+            "human",
+            {
+                "title": "no automatic retries",
+                "retry_policy": {"max_retries": 0},
+            },
+        )
+        self.assertEqual(
+            {"max_retries": 0},
+            explicit["payload"]["retry_policy"],
+        )
+
+        for invalid_policy in (
+            {"max_retries": -1},
+            {"max_retries": True},
+            {"max_retries": 1, "other": 2},
+            {},
+            None,
+        ):
+            with self.subTest(retry_policy=invalid_policy):
+                with self.assertRaises(bus.EventValidationError):
+                    bus.append_event(
+                        "task.created",
+                        "human",
+                        {
+                            "title": "invalid",
+                            "retry_policy": invalid_policy,
+                        },
+                    )
+
+    def test_failure_and_retry_event_contracts(self):
+        valid_attempt_failure = {
+            "task_id": 1,
+            "assignment_id": "task:1:attempt:1",
+            "worker_instance_id": "alice-1",
+            "failure_code": "tool_timeout",
+            "reason": "tool did not return",
+            "retryable": True,
+        }
+        bus.validate_event(
+            "task.attempt_failed",
+            "alice",
+            valid_attempt_failure,
+            None,
+            None,
+            2,
+        )
+
+        with self.assertRaises(bus.EventValidationError):
+            bus.validate_event(
+                "task.attempt_failed",
+                "alice",
+                {**valid_attempt_failure, "retryable": "yes"},
+                None,
+                None,
+                2,
+            )
+        with self.assertRaises(bus.EventValidationError):
+            bus.validate_event(
+                "task.retry_requested",
+                "human",
+                {"task_id": 1, "additional_retries": 0, "reason": "try again"},
+                None,
+                None,
+                2,
             )
 
     def test_reusing_idempotency_key_for_different_request_is_conflict(self):
@@ -183,8 +256,11 @@ class BusStorageTests(unittest.TestCase):
             limit=2,
             correlation_id="workflow-a",
         )
-        self.assertEqual([first["id"]], [item["id"] for item in events])
-        self.assertEqual(2, scanned_to)
+        self.assertEqual(
+            [first["id"], third["id"]],
+            [item["id"] for item in events],
+        )
+        self.assertEqual(third["id"], scanned_to)
         self.assertTrue(full)
 
         events, scanned_to, full = bus.fetch_stream_window(
@@ -193,11 +269,11 @@ class BusStorageTests(unittest.TestCase):
             limit=2,
             correlation_id="workflow-a",
         )
-        self.assertEqual([third["id"]], [item["id"] for item in events])
-        self.assertEqual(3, scanned_to)
+        self.assertEqual([], events)
+        self.assertEqual(third["id"], scanned_to)
         self.assertFalse(full)
 
-    def test_filtered_stream_window_advances_over_unrelated_events(self):
+    def test_stream_window_filters_in_sql(self):
         bus.append_event("custom.one", "agent", {})
         matching = bus.append_event("custom.match", "agent", {})
         bus.append_event("custom.two", "agent", {})
@@ -208,8 +284,8 @@ class BusStorageTests(unittest.TestCase):
             limit=2,
         )
         self.assertEqual([matching["id"]], [item["id"] for item in events])
-        self.assertEqual(2, scanned_to)
-        self.assertTrue(full)
+        self.assertEqual(matching["id"], scanned_to)
+        self.assertFalse(full)
 
         events, scanned_to, full = bus.fetch_stream_window(
             scanned_to,
@@ -217,7 +293,26 @@ class BusStorageTests(unittest.TestCase):
             limit=2,
         )
         self.assertEqual([], events)
-        self.assertEqual(3, scanned_to)
+        self.assertEqual(matching["id"], scanned_to)
+        self.assertFalse(full)
+
+    def test_filtered_stream_does_not_decode_unrelated_payloads(self):
+        with bus.db() as connection:
+            connection.execute(
+                """
+                INSERT INTO events
+                    (ts, topic, actor, schema_version, payload)
+                VALUES (1, 'telemetry.corrupt', 'agent', 1, 'not-json')
+                """
+            )
+        matching = bus.append_event("task.created", "human", {"title": "valid"})
+
+        events, scanned_to, full = bus.fetch_stream_window(
+            0,
+            ["task.created"],
+        )
+        self.assertEqual([matching["id"]], [item["id"] for item in events])
+        self.assertEqual(matching["id"], scanned_to)
         self.assertFalse(full)
 
     def test_legacy_rows_remain_readable_but_new_v1_events_are_rejected(self):

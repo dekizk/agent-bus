@@ -2,9 +2,11 @@ import fcntl
 import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
+import bus
 import pm_agent
 from pm_agent import PMState, apply_event, plan_next_emission, reconcile
 
@@ -73,14 +75,80 @@ def registered(event_id=1, name="alice", instance="alice-1", ts=100.0):
     )
 
 
-def created(event_id=2, task_id=1, ts=100.0, correlation_id=None):
+MISSING = object()
+
+
+def created(
+    event_id=2,
+    task_id=1,
+    ts=100.0,
+    correlation_id=None,
+    max_retries=MISSING,
+):
+    payload = {"task_id": task_id, "title": "demo"}
+    if max_retries is not MISSING:
+        payload["retry_policy"] = {"max_retries": max_retries}
     return event(
         event_id,
         "task.created",
         "human",
-        {"task_id": task_id, "title": "demo"},
+        payload,
         ts=ts,
         correlation_id=correlation_id,
+    )
+
+
+def assigned(event_id, attempt, *, task_id=1, worker="alice", instance="alice-1"):
+    return event(
+        event_id,
+        "task.assigned",
+        "pm",
+        {
+            "task_id": task_id,
+            "assignment_id": f"task:{task_id}:attempt:{attempt}",
+            "attempt": attempt,
+            "assignee": worker,
+            "worker_instance_id": instance,
+        },
+    )
+
+
+def expired(event_id, attempt, *, task_id=1, worker="alice", instance="alice-1"):
+    return event(
+        event_id,
+        "task.assignment_expired",
+        "pm",
+        {
+            "task_id": task_id,
+            "assignment_id": f"task:{task_id}:attempt:{attempt}",
+            "assignee": worker,
+            "worker_instance_id": instance,
+            "reason": "worker lease expired",
+        },
+    )
+
+
+def attempt_failed(
+    event_id,
+    attempt,
+    *,
+    retryable,
+    task_id=1,
+    worker="alice",
+    instance="alice-1",
+):
+    return event(
+        event_id,
+        "task.attempt_failed",
+        worker,
+        {
+            "task_id": task_id,
+            "assignment_id": f"task:{task_id}:attempt:{attempt}",
+            "worker_instance_id": instance,
+            "failure_code": "tool_timeout" if retryable else "invalid_input",
+            "reason": "executor failed",
+            "retryable": retryable,
+        },
     )
 
 
@@ -135,6 +203,15 @@ class ReconciliationTests(unittest.TestCase):
             )
         )
         self.assertEqual("workflow-one", state.tasks[1].correlation_id)
+
+    def test_task_projection_retains_persisted_retry_policy(self):
+        state = PMState()
+        self.assertTrue(apply_event(state, created(max_retries=4)))
+        self.assertEqual(4, state.tasks[1].max_retries)
+
+        legacy = PMState()
+        self.assertTrue(apply_event(legacy, created()))
+        self.assertIsNone(legacy.tasks[1].max_retries)
 
     def test_restart_reconciles_assignment_missing_after_replay(self):
         history = [registered(), created()]
@@ -259,11 +336,195 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual("assigned", state.tasks[1].status)
         self.assertEqual("bob", state.tasks[1].assignee)
 
+    def test_retry_boundary_and_crash_window_emit_one_terminal_failure(self):
+        history = [
+            registered(),
+            created(max_retries=1),
+            assigned(3, 1),
+            expired(4, 1),
+        ]
+        state = PMState()
+        for item in history:
+            self.assertTrue(apply_event(state, item))
+
+        retry = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual("task.assigned", retry["topic"])
+        self.assertEqual(2, retry["payload"]["attempt"])
+        second_assignment = event(5, "task.assigned", "pm", retry["payload"])
+        self.assertTrue(apply_event(state, second_assignment))
+        second_expiry = expired(6, 2)
+        self.assertTrue(apply_event(state, second_expiry))
+
+        planned = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual("task.failed", planned["topic"])
+        self.assertEqual("retry_budget_exhausted", planned["payload"]["reason_code"])
+        self.assertEqual(2, planned["payload"]["retryable_failures"])
+        self.assertEqual(1, planned["payload"]["max_retries"])
+        self.assertEqual(6, planned["caused_by"])
+
+        # This models a PM restart after the final expiry was committed but
+        # before its terminal effect was appended.
+        restarted = PMState()
+        crash_history = history + [second_assignment, second_expiry]
+        for item in crash_history:
+            self.assertTrue(apply_event(restarted, item))
+        bus_after_restart = FakeBus(starting_id=7)
+        emitted = reconcile(
+            restarted,
+            bus_after_restart,
+            now=101.0,
+            lease_seconds=20,
+        )
+        self.assertEqual(["task.failed"], [item["topic"] for item in emitted])
+
+        replayed = PMState()
+        for item in crash_history + bus_after_restart.events:
+            self.assertTrue(apply_event(replayed, item))
+        self.assertEqual("failed", replayed.tasks[1].status)
+        self.assertEqual(
+            [],
+            reconcile(
+                replayed,
+                FakeBus(starting_id=8),
+                now=101.0,
+                lease_seconds=20,
+            ),
+        )
+
+    def test_permanent_worker_failure_is_terminal_without_retry(self):
+        state = PMState()
+        for item in (
+            registered(),
+            created(max_retries=5),
+            assigned(3, 1),
+            attempt_failed(4, 1, retryable=False),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        emitted = reconcile(
+            state,
+            FakeBus(starting_id=5),
+            now=101.0,
+            lease_seconds=20,
+        )
+        self.assertEqual(["task.failed"], [item["topic"] for item in emitted])
+        self.assertEqual("invalid_input", emitted[0]["payload"]["reason_code"])
+        self.assertEqual(0, state.tasks[1].retryable_failures)
+        self.assertEqual("failed", state.tasks[1].status)
+
+        late = event(
+            6,
+            "task.completed",
+            "alice",
+            {
+                "task_id": 1,
+                "assignment_id": "task:1:attempt:1",
+                "worker_instance_id": "alice-1",
+            },
+        )
+        self.assertFalse(apply_event(state, late))
+        self.assertEqual("failed", state.tasks[1].status)
+
+        retry_request = event(
+            7,
+            "task.retry_requested",
+            "human",
+            {
+                "task_id": 1,
+                "additional_retries": 1,
+                "reason": "corrected the invalid input",
+            },
+            caused_by=emitted[0]["id"],
+        )
+        self.assertTrue(apply_event(state, retry_request))
+        self.assertEqual(0, state.tasks[1].max_retries)
+        retry_assignment = plan_next_emission(
+            state,
+            now=101.0,
+            lease_seconds=20,
+        )
+        self.assertEqual(2, retry_assignment["payload"]["attempt"])
+        self.assertTrue(
+            apply_event(
+                state,
+                event(8, "task.assigned", "pm", retry_assignment["payload"]),
+            )
+        )
+        self.assertTrue(apply_event(state, attempt_failed(9, 2, retryable=True)))
+        self.assertEqual(
+            "task.failed",
+            plan_next_emission(state, now=101.0, lease_seconds=20)["topic"],
+        )
+
+    def test_human_retry_extends_budget_without_resetting_attempt(self):
+        state = PMState()
+        for item in (
+            registered(),
+            created(max_retries=0),
+            assigned(3, 1),
+            attempt_failed(4, 1, retryable=True),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        terminal_bus = FakeBus(starting_id=5)
+        terminal = reconcile(
+            state,
+            terminal_bus,
+            now=101.0,
+            lease_seconds=20,
+        )
+        self.assertEqual(["task.failed"], [item["topic"] for item in terminal])
+        retry_request = event(
+            6,
+            "task.retry_requested",
+            "human",
+            {
+                "task_id": 1,
+                "additional_retries": 1,
+                "reason": "transient service is healthy again",
+            },
+            caused_by=terminal[0]["id"],
+        )
+        self.assertTrue(apply_event(state, retry_request))
+        self.assertEqual(1, state.tasks[1].retryable_failures)
+        self.assertEqual(1, state.tasks[1].max_retries)
+
+        planned = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual("task.assigned", planned["topic"])
+        self.assertEqual(2, planned["payload"]["attempt"])
+        self.assertEqual("task:1:attempt:2", planned["payload"]["assignment_id"])
+        self.assertTrue(
+            apply_event(
+                state,
+                event(7, "task.assigned", "pm", planned["payload"]),
+            )
+        )
+        self.assertTrue(apply_event(state, attempt_failed(8, 2, retryable=True)))
+        self.assertEqual(
+            "task.failed",
+            plan_next_emission(state, now=101.0, lease_seconds=20)["topic"],
+        )
+
+    def test_legacy_task_remains_unbounded(self):
+        state = PMState()
+        for item in (
+            registered(),
+            created(),
+            assigned(3, 1),
+            expired(4, 1),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        self.assertIsNone(state.tasks[1].max_retries)
+        planned = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual("task.assigned", planned["topic"])
+        self.assertEqual(2, planned["payload"]["attempt"])
+
     def test_human_decision_creates_a_new_attempt(self):
         state = PMState()
         log = [
             registered(),
-            created(),
+            created(max_retries=0),
             event(
                 3,
                 "task.assigned",
@@ -317,6 +578,7 @@ class ReconciliationTests(unittest.TestCase):
         for item in log:
             self.assertTrue(apply_event(state, item))
 
+        self.assertEqual(0, state.tasks[1].retryable_failures)
         planned = plan_next_emission(state, now=101.0, lease_seconds=20)
         self.assertEqual("task.assigned", planned["topic"])
         self.assertEqual(2, planned["payload"]["attempt"])
@@ -353,6 +615,37 @@ class ReconciliationTests(unittest.TestCase):
         malformed = event(1, "agent.registered", "alice", {})
         self.assertFalse(apply_event(state, malformed))
         self.assertEqual({}, state.workers)
+
+
+class PMMainTests(unittest.TestCase):
+    def test_pm_replays_and_subscribes_only_to_coordination_topics(self):
+        class MainBus:
+            def __init__(self):
+                self.query_calls = []
+                self.subscribe_calls = []
+
+            def query_all(self, **kwargs):
+                self.query_calls.append(kwargs)
+                return []
+
+            def subscribe(self, **kwargs):
+                self.subscribe_calls.append(kwargs)
+                return iter(())
+
+        fake_bus = MainBus()
+        with (
+            patch("pm_agent.single_pm_lock", return_value=nullcontext()),
+            patch("pm_agent.BusClient", return_value=fake_bus),
+        ):
+            pm_agent.main()
+
+        expected = list(pm_agent.PM_TOPICS)
+        self.assertEqual(
+            [{"after_id": 0, "topics": expected}],
+            fake_bus.query_calls,
+        )
+        self.assertEqual(expected, fake_bus.subscribe_calls[0]["topics"])
+        self.assertEqual(set(bus.KNOWN_TOPICS), set(pm_agent.PM_TOPICS))
 
 
 if __name__ == "__main__":

@@ -38,6 +38,21 @@ LOCK_PATH = _lock_path()
 WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
 
 ACTIVE_TASK_STATUSES = {"assigned", "started"}
+PM_TOPICS = (
+    "agent.registered",
+    "agent.heartbeat",
+    "task.created",
+    "task.assigned",
+    "task.started",
+    "task.completed",
+    "task.blocked",
+    "task.attempt_failed",
+    "task.assignment_expired",
+    "task.failed",
+    "task.retry_requested",
+    "decision.needed",
+    "decision.made",
+)
 
 
 @dataclass
@@ -57,6 +72,8 @@ class TaskRecord:
     correlation_id: Optional[str] = None
     status: str = "open"
     attempt: int = 0
+    max_retries: Optional[int] = None
+    retryable_failures: int = 0
     assignee: Optional[str] = None
     worker_instance_id: Optional[str] = None
     assignment_id: Optional[str] = None
@@ -67,6 +84,12 @@ class TaskRecord:
     decision_id: Optional[str] = None
     decision_needed: bool = False
     decision_event_id: Optional[int] = None
+    last_assignment_id: Optional[str] = None
+    last_failure_event_id: Optional[int] = None
+    last_failure_code: Optional[str] = None
+    last_failure_reason: Optional[str] = None
+    permanent_failure_pending: bool = False
+    failed_event_id: Optional[int] = None
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -150,6 +173,12 @@ def _positive_int(value: object) -> Optional[int]:
     return None
 
 
+def _nonnegative_int(value: object) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
 def _payload(ev: dict) -> Optional[dict]:
     value = ev.get("payload")
     return value if isinstance(value, dict) else None
@@ -168,6 +197,20 @@ def _active_assignment_matches(task: TaskRecord, ev: dict, payload: dict) -> boo
     if instance_id is not None and instance_id != task.worker_instance_id:
         return False
     return True
+
+
+def _clear_active_assignment(task: TaskRecord) -> None:
+    task.assignee = None
+    task.worker_instance_id = None
+    task.assignment_id = None
+    task.assignment_event_id = None
+
+
+def _retry_budget_exhausted(task: TaskRecord) -> bool:
+    return (
+        task.max_retries is not None
+        and task.retryable_failures > task.max_retries
+    )
 
 
 def apply_event(state: PMState, ev: dict) -> bool:
@@ -240,6 +283,15 @@ def apply_event(state: PMState, ev: dict) -> bool:
             required = frozenset(
                 item for item in raw_required if isinstance(item, str) and item
             ) if isinstance(raw_required, list) else frozenset()
+            retry_policy = payload.get("retry_policy")
+            if retry_policy is None:
+                max_retries = None
+            elif isinstance(retry_policy, dict):
+                max_retries = _nonnegative_int(retry_policy.get("max_retries"))
+                if max_retries is None:
+                    return False
+            else:
+                return False
             state.tasks[task_id] = TaskRecord(
                 task_id=task_id,
                 title=payload.get("title", "") if isinstance(payload.get("title", ""), str) else "",
@@ -249,6 +301,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     else None
                 ),
                 open_event_id=event_id,
+                max_retries=max_retries,
                 required_capabilities=required,
             )
             return True
@@ -315,6 +368,32 @@ def apply_event(state: PMState, ev: dict) -> bool:
             task.decision_event_id = None
             return True
 
+        if topic == "task.attempt_failed":
+            if not _active_assignment_matches(task, ev, payload):
+                return False
+            retryable = payload.get("retryable")
+            failure_code = payload.get("failure_code")
+            reason = payload.get("reason")
+            if (
+                not isinstance(retryable, bool)
+                or not isinstance(failure_code, str)
+                or not failure_code
+                or not isinstance(reason, str)
+                or not reason
+            ):
+                return False
+            task.last_assignment_id = task.assignment_id
+            task.last_failure_event_id = event_id
+            task.last_failure_code = failure_code
+            task.last_failure_reason = reason
+            task.permanent_failure_pending = not retryable
+            if retryable:
+                task.retryable_failures += 1
+            task.status = "open"
+            task.open_event_id = event_id
+            _clear_active_assignment(task)
+            return True
+
         if topic == "task.assignment_expired":
             if ev.get("actor") != "pm" or task.status not in ACTIVE_TASK_STATUSES:
                 return False
@@ -324,12 +403,76 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 or payload.get("worker_instance_id") != task.worker_instance_id
             ):
                 return False
+            task.last_assignment_id = task.assignment_id
+            task.last_failure_event_id = event_id
+            task.last_failure_code = "assignment_expired"
+            task.last_failure_reason = payload.get("reason")
+            task.retryable_failures += 1
+            task.permanent_failure_pending = False
             task.status = "open"
-            task.assignee = None
-            task.worker_instance_id = None
-            task.assignment_id = None
-            task.assignment_event_id = None
             task.open_event_id = event_id
+            _clear_active_assignment(task)
+            return True
+
+        if topic == "task.failed":
+            reason_code = payload.get("reason_code")
+            reason = payload.get("reason")
+            last_assignment_id = payload.get("last_assignment_id")
+            attempts = _positive_int(payload.get("attempts"))
+            retryable_failures = _nonnegative_int(
+                payload.get("retryable_failures")
+            )
+            payload_max_retries = payload.get("max_retries")
+            if payload_max_retries is not None:
+                payload_max_retries = _nonnegative_int(payload_max_retries)
+                if payload_max_retries is None:
+                    return False
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "open"
+                or task.last_failure_event_id is None
+                or ev.get("caused_by") != task.last_failure_event_id
+                or not isinstance(reason_code, str)
+                or not reason_code
+                or not isinstance(reason, str)
+                or not reason
+                or not isinstance(last_assignment_id, str)
+                or last_assignment_id != task.last_assignment_id
+                or attempts != task.attempt
+                or retryable_failures != task.retryable_failures
+                or payload_max_retries != task.max_retries
+                or not (
+                    task.permanent_failure_pending
+                    or _retry_budget_exhausted(task)
+                )
+            ):
+                return False
+            task.status = "failed"
+            task.failed_event_id = event_id
+            task.open_event_id = None
+            return True
+
+        if topic == "task.retry_requested":
+            additional_retries = _positive_int(payload.get("additional_retries"))
+            reason = payload.get("reason")
+            if (
+                task.status != "failed"
+                or task.failed_event_id is None
+                or ev.get("caused_by") != task.failed_event_id
+                or additional_retries is None
+                or not isinstance(reason, str)
+                or not reason
+            ):
+                return False
+            # Grant exactly this many new assignment opportunities. For an
+            # exhausted task this is equivalent to extending max_retries; for
+            # a permanent failure it deliberately does not restore the unused
+            # automatic budget that the permanent classification bypassed.
+            task.max_retries = task.retryable_failures + additional_retries - 1
+            task.status = "open"
+            task.open_event_id = event_id
+            task.permanent_failure_pending = False
+            task.failed_event_id = None
             return True
 
         if topic == "decision.needed":
@@ -357,11 +500,8 @@ def apply_event(state: PMState, ev: dict) -> bool:
             if assignment_id != task.assignment_id or decision_id != task.decision_id:
                 return False
             task.status = "open"
-            task.assignee = None
-            task.worker_instance_id = None
-            task.assignment_id = None
-            task.assignment_event_id = None
             task.open_event_id = event_id
+            _clear_active_assignment(task)
             task.decision_needed = False
             task.decision_event_id = None
             task.block_reason = None
@@ -402,6 +542,46 @@ def plan_next_emission(
             },
             "caused_by": task.assignment_event_id,
             "idempotency_key": f"expire:{task.assignment_id}",
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if (
+            task.status != "open"
+            or task.last_failure_event_id is None
+            or not (
+                task.permanent_failure_pending
+                or _retry_budget_exhausted(task)
+            )
+        ):
+            continue
+        if task.permanent_failure_pending:
+            reason_code = task.last_failure_code or "permanent_attempt_failure"
+            reason = (
+                task.last_failure_reason
+                or "worker reported a permanent failure"
+            )
+        else:
+            reason_code = "retry_budget_exhausted"
+            reason = (
+                f"retry budget exhausted after {task.retryable_failures} "
+                "retryable failures"
+            )
+        return {
+            "topic": "task.failed",
+            "payload": {
+                "task_id": task.task_id,
+                "reason_code": reason_code,
+                "reason": reason,
+                "last_assignment_id": task.last_assignment_id,
+                "attempts": task.attempt,
+                "retryable_failures": task.retryable_failures,
+                "max_retries": task.max_retries,
+            },
+            "caused_by": task.last_failure_event_id,
+            "idempotency_key": (
+                f"failed:task:{task.task_id}:failure:{task.last_failure_event_id}"
+            ),
         }
 
     for task_id in sorted(state.tasks):
@@ -483,7 +663,7 @@ def main():
         bus = BusClient(BUS_URL, actor="pm")
         state = PMState()
 
-        history = bus.query_all(after_id=0)
+        history = bus.query_all(after_id=0, topics=list(PM_TOPICS))
         head = max((event["id"] for event in history), default=0)
         print(f"[pm] replaying log up to #{head}, then reconciling...", flush=True)
         for event in history:
@@ -495,6 +675,7 @@ def main():
 
         for event in bus.subscribe(
             from_id=head,
+            topics=list(PM_TOPICS),
             on_idle=lambda: reconcile(state, bus),
         ):
             apply_event(state, event)

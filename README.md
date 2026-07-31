@@ -39,6 +39,9 @@ Recovery and human-input paths are explicit events:
 
 ```text
 task.assigned -> task.assignment_expired -> task.assigned (attempt 2)
+task.started  -> task.attempt_failed -> task.assigned (next attempt)
+              -> task.failed -> task.retry_requested
+              -> task.assigned (next monotonic attempt)
 task.started  -> task.blocked -> decision.needed -> decision.made
               -> task.assigned (next attempt)
 ```
@@ -74,6 +77,7 @@ uvicorn bus:app --port 8765
 python pm_agent.py
 python worker.py alice
 python worker.py bob --block 2
+python worker.py carol --fail 3
 ```
 
 Create a task:
@@ -93,7 +97,8 @@ The server assigns `task_id` atomically. The PM assigns a live worker and emits
 an `assignment_id`; the worker includes that assignment and its process
 `instance_id` in every subsequent lifecycle event. The server also generates a
 `correlation_id` for the root task and propagates it through the resulting
-event chain.
+event chain. New tasks store their retry policy in the event itself; the
+default is two retries after the initial attempt.
 
 Workers can advertise scheduling metadata:
 
@@ -144,6 +149,59 @@ curl -X POST http://127.0.0.1:8765/events \
 The PM reopens the logical task and creates a new assignment attempt. The old
 attempt can no longer complete it.
 
+## Bounded retries and terminal failure
+
+Every new `task.created` records a replayable retry policy:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "payload": {
+    "title": "Run integration tests",
+    "retry_policy": {"max_retries": 2}
+  }
+}
+```
+
+`max_retries` counts retries after the initial assignment. A value of `0`
+allows only the initial attempt. The server materializes
+`AGENT_BUS_MAX_RETRIES` (default `2`) when the caller omits the policy, so a
+later process configuration change cannot alter replayed task behavior.
+Historical tasks that predate this field remain unlimited rather than being
+silently assigned a new policy.
+
+A lease expiry and a retryable `task.attempt_failed` each consume one retry.
+A permanent attempt failure does not spin: the PM immediately reconciles it
+to terminal `task.failed`. Blocking for a human decision does not consume the
+retry budget.
+
+To revive a failed task, append `task.retry_requested` as a child of its latest
+`task.failed` event:
+
+```sh
+curl -X POST http://127.0.0.1:8765/events \
+  -H 'content-type: application/json' \
+  -d '{
+    "topic":"task.retry_requested",
+    "actor":"human",
+    "caused_by":21,
+    "idempotency_key":"retry:task:2:failed:21",
+    "payload":{
+      "task_id":2,
+      "additional_retries":1,
+      "reason":"The dependency is healthy again"
+    }
+  }'
+```
+
+This records exactly the requested number of new assignment opportunities; it
+never resets `attempt`. After retry exhaustion that extends the previous
+budget. After a permanent failure it does not silently restore the unused
+automatic budget. The next assignment therefore has a new, monotonically
+increasing `assignment_id`, and late output from any failed attempt remains
+unable to complete the task.
+
 ## Workflow correlation
 
 `correlation_id` is a top-level event-envelope field. A root `task.created`
@@ -174,7 +232,7 @@ one task; it is never used as a workflow identifier.
 
 At startup the PM:
 
-1. reads the complete log in bounded pages;
+1. reads coordination topics in bounded, server-filtered pages;
 2. rebuilds workers, tasks, attempts, and decisions through a total reducer;
 3. reconciles missing effects before waiting for another event;
 4. publishes effects with stable logical idempotency keys.
@@ -191,6 +249,7 @@ Workers publish lifecycle events using keys derived from `assignment_id`:
 started:{assignment_id}
 blocked:{assignment_id}
 completed:{assignment_id}
+attempt-failed:{assignment_id}
 ```
 
 A new worker instance subscribes from its own registration event — assignments
@@ -223,11 +282,13 @@ Defaults can be changed with:
 ```sh
 AGENT_BUS_HEARTBEAT_SECONDS=5
 AGENT_BUS_WORKER_LEASE_SECONDS=20
+AGENT_BUS_MAX_RETRIES=2
 AGENT_BUS_URL=http://127.0.0.1:8765
 ```
 
 Lease decisions are emitted into the log as `task.assignment_expired`, so task
-history remains replayable and auditable.
+history remains replayable and auditable. Assignment expiry and explicit
+retryable worker failure share the same bounded recovery policy.
 
 ## Versioned event contracts
 
@@ -252,7 +313,10 @@ Core v2 topics:
 | `task.started` | worker | Confirms the active attempt began |
 | `task.completed` | worker | Completes the active attempt and logical task |
 | `task.blocked` | worker | Pauses the attempt for human input |
+| `task.attempt_failed` | worker | Records a retryable or permanent execution failure |
 | `task.assignment_expired` | PM | Records loss or replacement of the assigned worker |
+| `task.failed` | PM | Terminates a task after policy exhaustion or permanent failure |
+| `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
 | `decision.made` | human | Resolves that decision and permits a new attempt |
 
@@ -277,10 +341,10 @@ curl -N 'http://127.0.0.1:8765/events/stream?from_id=0'
 curl -N 'http://127.0.0.1:8765/events/stream?correlation_id=release-2026-07'
 ```
 
-SSE history is scanned in bounded global-id windows. Filtered subscribers
-advance past unrelated events rather than repeatedly rescanning the same tail.
-`BusClient.query()`, `query_all()`, and `subscribe()` expose the same
-`correlation_id=` filter.
+SSE history applies topic and correlation filters in SQLite before payloads
+are decoded. High-volume extension topics therefore do not inflate PM replay
+or force filtered consumers to deserialize unrelated events.
+`BusClient.query()`, `query_all()`, and `subscribe()` expose the same filters.
 
 ## Trust model
 
@@ -311,13 +375,14 @@ python -m unittest discover -v   # or: pytest tests/
 ```
 
 The suite focuses on orchestration failures: restart reconciliation, stale
-attempt rejection, worker replacement, malformed replay events, idempotent
-publish retries, correlation propagation and migration, and atomic monotonic
-offsets.
+attempt rejection, retry exhaustion, permanent failures, human revival,
+worker replacement, malformed replay events, idempotent publish retries,
+correlation propagation and migration, SQL-level stream filtering, and atomic
+monotonic offsets.
 
 ## Scope and next boundaries
 
-v0.2 remains a trusted, single-host runtime. Actor names are asserted by
+v0.3 remains a trusted, single-host runtime. Actor names are asserted by
 clients, not authenticated identities. The PM lock and wake-up condition are
 local-process mechanisms. Before exposing the bus to other machines, add
 authentication and replace local exclusivity/notification with shared
