@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -7,6 +8,19 @@ from client import BusClient
 
 
 class OffsetTests(unittest.TestCase):
+    def test_stopped_subscription_does_not_connect(self):
+        stop = threading.Event()
+        stop.set()
+        with tempfile.TemporaryDirectory() as directory:
+            client = BusClient(
+                "http://127.0.0.1:8765",
+                actor="worker",
+                offset_dir=Path(directory),
+            )
+            with patch("client.httpx.stream") as stream:
+                self.assertEqual([], list(client.subscribe(stop_event=stop)))
+        stream.assert_not_called()
+
     def test_offsets_are_monotonic_and_use_safe_consumer_names(self):
         with tempfile.TemporaryDirectory() as directory:
             client = BusClient(

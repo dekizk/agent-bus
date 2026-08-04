@@ -40,6 +40,10 @@ class BusStorageTests(unittest.TestCase):
             {"max_retries": bus.DEFAULT_MAX_RETRIES},
             first["payload"]["retry_policy"],
         )
+        self.assertEqual(
+            {"mode": "controlled", "owner": "agent-bus"},
+            first["payload"]["ownership"],
+        )
         self.assertEqual(1, len(bus.fetch_after(0, None)))
 
         with self.assertRaises(bus.IdempotencyConflict):
@@ -82,6 +86,68 @@ class BusStorageTests(unittest.TestCase):
                             "retry_policy": invalid_policy,
                         },
                     )
+
+    def test_integration_context_and_ownership_contracts(self):
+        controlled = bus.append_event(
+            "task.created",
+            "bridge",
+            {
+                "title": "Imported task",
+                "context": {"repository": "agent-bus"},
+                "external_origin": {
+                    "system": "legacy",
+                    "task_ref": "work-1",
+                },
+                "ownership": {
+                    "mode": "canary",
+                    "owner": "agent-bus",
+                },
+            },
+        )
+        self.assertEqual("work-1", controlled["payload"]["external_origin"]["task_ref"])
+
+        observed = bus.append_event(
+            "integration.task_observed",
+            "bridge",
+            {
+                "title": "External task",
+                "context": {},
+                "external_origin": {
+                    "system": "legacy",
+                    "task_ref": "work-2",
+                },
+                "ownership": {
+                    "mode": "shadow",
+                    "owner": "external",
+                },
+            },
+            correlation_id="external-work-2",
+        )
+        self.assertEqual("external", observed["payload"]["ownership"]["owner"])
+        self.assertNotIn("task_id", observed["payload"])
+
+        invalid_payloads = (
+            {
+                "title": "bad context",
+                "context": ["not", "an", "object"],
+            },
+            {
+                "title": "too large",
+                "context": {"value": "x" * bus.MAX_INLINE_CONTEXT_BYTES},
+            },
+            {
+                "title": "wrong owner",
+                "ownership": {"mode": "shadow", "owner": "external"},
+            },
+            {
+                "title": "missing ownership",
+                "ownership": None,
+            },
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload["title"]):
+                with self.assertRaises(bus.EventValidationError):
+                    bus.append_event("task.created", "bridge", payload)
 
     def test_failure_and_retry_event_contracts(self):
         valid_attempt_failure = {
@@ -401,6 +467,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
+        self.assertEqual("0.4.0", bus.app.version)
         created = self.client.post(
             "/events",
             json={

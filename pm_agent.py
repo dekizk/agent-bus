@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from client import BusClient
+from topics import COORDINATION_TOPICS
 
 BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
 
@@ -38,21 +39,7 @@ LOCK_PATH = _lock_path()
 WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
 
 ACTIVE_TASK_STATUSES = {"assigned", "started"}
-PM_TOPICS = (
-    "agent.registered",
-    "agent.heartbeat",
-    "task.created",
-    "task.assigned",
-    "task.started",
-    "task.completed",
-    "task.blocked",
-    "task.attempt_failed",
-    "task.assignment_expired",
-    "task.failed",
-    "task.retry_requested",
-    "decision.needed",
-    "decision.made",
-)
+PM_TOPICS = tuple(sorted(COORDINATION_TOPICS))
 
 
 @dataclass
@@ -91,6 +78,10 @@ class TaskRecord:
     permanent_failure_pending: bool = False
     failed_event_id: Optional[int] = None
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
+    context: dict = field(default_factory=dict)
+    external_origin: Optional[dict] = None
+    ownership_mode: str = "controlled"
+    ownership_owner: str = "agent-bus"
 
 
 class PMState:
@@ -292,9 +283,31 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     return False
             else:
                 return False
+            context = payload.get("context", {})
+            if not isinstance(context, dict):
+                return False
+            external_origin = payload.get("external_origin")
+            if external_origin is not None and not isinstance(external_origin, dict):
+                return False
+            ownership = payload.get(
+                "ownership",
+                {"mode": "controlled", "owner": "agent-bus"},
+            )
+            if not isinstance(ownership, dict):
+                return False
+            ownership_pair = (ownership.get("mode"), ownership.get("owner"))
+            if ownership_pair not in {
+                ("controlled", "agent-bus"),
+                ("canary", "agent-bus"),
+            }:
+                return False
             state.tasks[task_id] = TaskRecord(
                 task_id=task_id,
-                title=payload.get("title", "") if isinstance(payload.get("title", ""), str) else "",
+                title=(
+                    payload["title"]
+                    if isinstance(payload.get("title"), str) and payload["title"]
+                    else f"Task {task_id}"
+                ),
                 correlation_id=(
                     ev.get("correlation_id")
                     if isinstance(ev.get("correlation_id"), str)
@@ -303,6 +316,14 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 open_event_id=event_id,
                 max_retries=max_retries,
                 required_capabilities=required,
+                context=dict(context),
+                external_origin=(
+                    dict(external_origin)
+                    if external_origin is not None
+                    else None
+                ),
+                ownership_mode=ownership["mode"],
+                ownership_owner=ownership["owner"],
             )
             return True
 
@@ -603,6 +624,8 @@ def plan_next_emission(
         task = state.tasks[task_id]
         if task.status != "open" or task.assignment_id is not None:
             continue
+        if task.ownership_owner != "agent-bus":
+            continue
         worker = state.choose_worker(task, now, lease_seconds)
         if worker is None:
             continue
@@ -618,6 +641,19 @@ def plan_next_emission(
                 "worker_instance_id": worker.instance_id,
                 "title": task.title,
                 "goal": task.title,
+                "context": task.context,
+                "required_capabilities": sorted(task.required_capabilities),
+                "retry_policy": {"max_retries": task.max_retries},
+                "retryable_failures": task.retryable_failures,
+                "ownership": {
+                    "mode": task.ownership_mode,
+                    "owner": task.ownership_owner,
+                },
+                **(
+                    {"external_origin": task.external_origin}
+                    if task.external_origin is not None
+                    else {}
+                ),
             },
             "caused_by": task.open_event_id,
             "idempotency_key": f"assign:{assignment_id}",

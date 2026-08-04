@@ -23,8 +23,9 @@ attempts. `caused_by` remains the direct parent event; it is not overloaded as
 the workflow identifier.
 
 A task may have several attempts but only its current attempt may change task
-state. A late completion from an expired worker is retained in the audit log
-but rejected by the PM projection.
+state. The worker runtime suppresses results after known ownership loss. If a
+result races with expiry and still reaches the log, the PM projection rejects
+it as stale.
 
 The normal lifecycle is:
 
@@ -53,7 +54,11 @@ task.started  -> task.blocked -> decision.needed -> decision.made
 | `bus.py` | FastAPI, SQLite event storage, validation, queries, and SSE streaming |
 | `client.py` | Publish, bounded history reads, reconnecting subscriptions, durable offsets |
 | `pm_agent.py` | Pure projection plus deterministic post-replay reconciliation |
-| `worker.py` | Demo leased worker with idempotent lifecycle emissions |
+| `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
+| `runtime.py` | Leased, concurrent worker runtime with ownership-loss cancellation |
+| `adoption.py` | Controlled, shadow, and deterministic canary integration helpers |
+| `topics.py` | Canonical coordination and integration topic groups |
+| `worker.py` | Demo executor wired through the reusable runtime |
 | `events.db` | Append-only event log and task-id counter |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
 
@@ -118,6 +123,125 @@ A task may require those capabilities:
   }
 }
 ```
+
+Inline executor context is also carried from task creation into every
+assignment:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "payload": {
+    "title": "Run the Python test suite",
+    "context": {"repository": "agent-bus", "suite": "integration"},
+    "required_capabilities": ["python", "testing"]
+  }
+}
+```
+
+Context and final structured results are limited to 16 KiB of encoded JSON.
+They are coordination data, not storage for prompts, transcripts, or large
+artifacts; content-addressed blob storage belongs to the next telemetry layer.
+
+## Integrating an existing agent
+
+Executors receive one immutable `AssignmentContext` and return exactly one of
+`Completed`, `Blocked`, `RetryableFailure`, or `PermanentFailure`. The runtime
+owns registration, heartbeats, subscriptions, bounded concurrency, lifecycle
+idempotency, and stale-result suppression.
+
+An existing Python agent with a `run()` method can be wrapped without teaching
+it about the bus:
+
+```python
+from client import BusClient
+from executors import Completed, InProcessExecutor
+from runtime import WorkerRuntime
+
+class ExistingAgent:
+    def run(self, assignment):
+        result = do_existing_work(
+            goal=assignment.goal,
+            context=assignment.context,
+            idempotency_key=assignment.assignment_id,
+        )
+        return Completed("agent finished", {"result_ref": result.ref})
+
+bus = BusClient("http://127.0.0.1:8765", actor="existing-agent")
+WorkerRuntime(
+    bus,
+    name="existing-agent",
+    executor=InProcessExecutor(ExistingAgent()),
+    capacity=2,
+    capabilities=["python"],
+).run()
+```
+
+`capacity` is enforced by a bounded execution pool, so the worker never runs
+more assignments concurrently than it advertises. Unexpected Python
+exceptions default to permanent failure; applications may explicitly configure
+them as retryable.
+
+### Subprocess agents
+
+`SubprocessExecutor(["agent-command", "--json"])` sends one assignment JSON
+object on stdin. Exit code `0` must return one of these JSON objects on stdout:
+
+```json
+{"status":"completed","summary":"done","result":{"ref":"artifact-1"}}
+{"status":"blocked","reason":"approval required"}
+{"status":"retryable_failure","code":"rate_limited","reason":"try later"}
+{"status":"permanent_failure","code":"invalid_goal","reason":"cannot run"}
+```
+
+Exit code `75` maps to a retryable process failure; other non-zero exits map to
+permanent failure. Input, stdout, and stderr are size-limited. Timeouts are
+retryable. When assignment ownership is lost or the runtime stops, a running
+subprocess is terminated and its result is suppressed. Shell execution is not
+used.
+
+In-process Python threads cannot be force-killed safely. Such agents should
+make external side effects idempotent with `assignment_id` and expose their own
+cooperative cancellation when needed.
+
+## Safe adoption modes
+
+`AdoptionBridge` records a stable decision for work originating in another
+system:
+
+```python
+from adoption import AdoptionBridge, AdoptionMode, CanarySelector, ExternalOrigin
+
+event = AdoptionBridge(bus).adopt(
+    origin=ExternalOrigin("legacy-system", "ticket-42"),
+    title="Handle ticket 42",
+    mode=AdoptionMode.CANARY,
+    selector=CanarySelector(10, namespace="first-rollout"),
+    context={"priority": "high"},
+)
+```
+
+- **Controlled:** emits `task.created`; agent-bus owns execution.
+- **Shadow:** emits `integration.task_observed`; the external system remains
+  owner and agent-bus does not create an executable task.
+- **Canary:** a stable hash selects a configured percentage. Selected work is
+  bus-owned; unselected work is recorded as externally owned.
+
+The bridge uses the same idempotency identity for either ownership result. A
+later attempt to reinterpret the same external origin as a different owner is
+therefore rejected instead of producing two tasks. The external system must
+honour the recorded decision: bus-owned work must be removed from its own
+execution queue. Shadow mode must never invoke a second side-effecting agent.
+
+That protection is scoped to the publishing actor because bus idempotency keys
+are unique by `(actor, idempotency_key)`. Every replica participating in one
+adoption rollout must therefore use the same bridge actor. Canary percentages
+and `include_refs` affect only external origins that have not yet been adopted;
+v0.4 deliberately has no ownership-transfer operation for an existing origin.
+
+Deadlines are intentionally not part of `AssignmentContext` yet. A timestamp
+without PM-enforced expiry semantics would imply a guarantee the bus does not
+currently provide.
 
 ## Human decisions
 
@@ -263,6 +387,10 @@ atomically and only move forward. After all pre-v0.2.1 workers have stopped,
 their old per-instance files may be removed once; new demo workers do not
 replenish them.
 
+The reusable runtime also follows assignment-expiry, terminal-failure, and
+replacement-registration events. It cancels adapters that support cancellation
+and suppresses lifecycle output once that instance no longer owns an attempt.
+
 An external tool call, payment, deployment, or file mutation performed by a
 worker must also use an idempotency token. The bus can make orchestration
 effects idempotent; it cannot make an arbitrary external side effect atomic.
@@ -302,6 +430,10 @@ schema v1 and remain replayable with legacy assignment identities derived from
 their event ids. Existing events retain `NULL` correlation IDs; the migration
 does not invent workflow relationships that were never recorded.
 
+As a v0.4 publisher-contract change, new `task.created` events must contain a
+non-empty `payload.title`. Historical titleless events remain replayable and
+receive a deterministic fallback title in the PM projection.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
@@ -319,6 +451,16 @@ Core v2 topics:
 | `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
 | `decision.made` | human | Resolves that decision and permits a new attempt |
+
+Integration topics are validated separately and deliberately excluded from PM
+replay:
+
+| Topic | Emitted by | Purpose |
+|---|---|---|
+| `integration.task_observed` | bridge | Records externally owned shadow or unselected canary work |
+
+`topics.py` is the canonical source for both groups. Tests assert that the PM
+uses exactly the coordination group and never consumes integration topics.
 
 ## Reading and following the log
 
@@ -377,18 +519,9 @@ python -m unittest discover -v   # or: pytest tests/
 The suite focuses on orchestration failures: restart reconciliation, stale
 attempt rejection, retry exhaustion, permanent failures, human revival,
 worker replacement, malformed replay events, idempotent publish retries,
-correlation propagation and migration, SQL-level stream filtering, and atomic
-monotonic offsets.
+correlation propagation and migration, SQL-level stream filtering, executor
+conformance, bounded concurrency, subprocess timeout/cancellation, stable
+canaries, single-owner adoption, real-agent integration, and atomic monotonic
+offsets.
 
-## Scope and next boundaries
 
-v0.3 remains a trusted, single-host runtime. Actor names are asserted by
-clients, not authenticated identities. The PM lock and wake-up condition are
-local-process mechanisms. Before exposing the bus to other machines, add
-authentication and replace local exclusivity/notification with shared
-infrastructure.
-
-Likely next layers are task dependencies, cancellation, deadlines, artifacts,
-progress events, executor adapters, snapshots, and a read-only operational UI.
-Those should remain projections and commands over the log—not a return to a
-mutable board as the source of truth.

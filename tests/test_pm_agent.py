@@ -9,6 +9,7 @@ from unittest.mock import patch
 import bus
 import pm_agent
 from pm_agent import PMState, apply_event, plan_next_emission, reconcile
+from topics import COORDINATION_TOPICS, INTEGRATION_TOPICS
 
 
 def event(
@@ -212,6 +213,50 @@ class ReconciliationTests(unittest.TestCase):
         legacy = PMState()
         self.assertTrue(apply_event(legacy, created()))
         self.assertIsNone(legacy.tasks[1].max_retries)
+
+    def test_assignment_carries_executor_context_and_ownership(self):
+        state = PMState()
+        self.assertTrue(apply_event(state, registered()))
+        self.assertTrue(
+            apply_event(
+                state,
+                event(
+                    2,
+                    "task.created",
+                    "bridge",
+                    {
+                        "task_id": 1,
+                        "title": "Run imported task",
+                        "context": {"repository": "agent-bus"},
+                        "required_capabilities": [],
+                        "retry_policy": {"max_retries": 2},
+                        "external_origin": {
+                            "system": "legacy",
+                            "task_ref": "work-1",
+                        },
+                        "ownership": {
+                            "mode": "canary",
+                            "owner": "agent-bus",
+                        },
+                    },
+                    correlation_id="workflow-one",
+                ),
+            )
+        )
+
+        payload = plan_next_emission(
+            state,
+            now=101.0,
+            lease_seconds=20,
+        )["payload"]
+        self.assertEqual({"repository": "agent-bus"}, payload["context"])
+        self.assertEqual({"max_retries": 2}, payload["retry_policy"])
+        self.assertEqual(0, payload["retryable_failures"])
+        self.assertEqual(
+            {"mode": "canary", "owner": "agent-bus"},
+            payload["ownership"],
+        )
+        self.assertEqual("work-1", payload["external_origin"]["task_ref"])
 
     def test_restart_reconciles_assignment_missing_after_replay(self):
         history = [registered(), created()]
@@ -645,7 +690,9 @@ class PMMainTests(unittest.TestCase):
             fake_bus.query_calls,
         )
         self.assertEqual(expected, fake_bus.subscribe_calls[0]["topics"])
-        self.assertEqual(set(bus.KNOWN_TOPICS), set(pm_agent.PM_TOPICS))
+        self.assertEqual(set(COORDINATION_TOPICS), set(pm_agent.PM_TOPICS))
+        self.assertLessEqual(set(COORDINATION_TOPICS), set(bus.KNOWN_TOPICS))
+        self.assertTrue(set(INTEGRATION_TOPICS).isdisjoint(pm_agent.PM_TOPICS))
 
 
 if __name__ == "__main__":

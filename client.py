@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Iterator, Optional
@@ -71,6 +72,7 @@ class BusClient:
         from_id: int = 0,
         on_idle: Optional[Callable[[], None]] = None,
         correlation_id: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> Iterator[dict]:
         """Follow SSE with reconnect, resuming after the last yielded event.
 
@@ -80,11 +82,15 @@ class BusClient:
         """
         last_id = from_id
         backoff = 1.0
-        while True:
+        while stop_event is None or not stop_event.is_set():
             yielded = False
             try:
                 for event in self._stream_once(
-                    topics, last_id, on_idle, correlation_id
+                    topics,
+                    last_id,
+                    on_idle,
+                    correlation_id,
+                    stop_event,
                 ):
                     yielded = True
                     last_id = event["id"]
@@ -93,7 +99,11 @@ class BusClient:
                 # A graceful server close is still a disconnect. Avoid a tight
                 # reconnect loop if a proxy repeatedly returns an empty stream.
                 if not yielded:
-                    time.sleep(backoff)
+                    if stop_event is not None:
+                        if stop_event.wait(backoff):
+                            return
+                    else:
+                        time.sleep(backoff)
                     backoff = min(backoff * 2, 30.0)
             except httpx.HTTPError as exc:
                 print(
@@ -101,7 +111,11 @@ class BusClient:
                     f"reconnecting from #{last_id} in {backoff:.0f}s",
                     flush=True,
                 )
-                time.sleep(backoff)
+                if stop_event is not None:
+                    if stop_event.wait(backoff):
+                        return
+                else:
+                    time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
     def _stream_once(
@@ -110,6 +124,7 @@ class BusClient:
         from_id: int,
         on_idle: Optional[Callable[[], None]] = None,
         correlation_id: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> Iterator[dict]:
         params: dict = {"from_id": from_id}
         if topics:
@@ -125,6 +140,8 @@ class BusClient:
         ) as response:
             response.raise_for_status()
             for line in response.iter_lines():
+                if stop_event is not None and stop_event.is_set():
+                    return
                 if line.startswith("data: "):
                     yield json.loads(line[len("data: ") :])
                 elif line.startswith(":") and on_idle is not None:

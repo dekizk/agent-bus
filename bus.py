@@ -25,6 +25,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from limits import (
+    MAX_EXTERNAL_ID_LENGTH,
+    MAX_INLINE_CONTEXT_BYTES,
+    MAX_INLINE_RESULT_BYTES,
+)
+from topics import KNOWN_TOPICS
+
 DB_PATH = Path(__file__).parent / "events.db"
 CURRENT_SCHEMA_VERSION = 2
 MAX_CORRELATION_ID_LENGTH = 128
@@ -58,23 +65,6 @@ async def require_token(request: Request) -> None:
     if not secrets.compare_digest(supplied, f"Bearer {API_TOKEN}"):
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
-KNOWN_TOPICS = {
-    "agent.registered",
-    "agent.heartbeat",
-    "task.created",
-    "task.assigned",
-    "task.started",
-    "task.completed",
-    "task.blocked",
-    "task.attempt_failed",
-    "task.assignment_expired",
-    "task.failed",
-    "task.retry_requested",
-    "decision.needed",
-    "decision.made",
-}
-
-
 class EventValidationError(ValueError):
     """A known event does not satisfy its versioned contract."""
 
@@ -100,6 +90,112 @@ def _require_string(payload: dict, field: str) -> None:
 def _require_task_id(payload: dict) -> None:
     if not _is_positive_int(payload.get("task_id")):
         raise EventValidationError("payload.task_id must be a positive integer")
+
+
+def _validate_json_object(
+    payload: dict,
+    field: str,
+    *,
+    max_bytes: int,
+) -> None:
+    value = payload.get(field, {})
+    if not isinstance(value, dict):
+        raise EventValidationError(f"payload.{field} must be a JSON object")
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise EventValidationError(
+            f"payload.{field} must contain JSON-compatible values"
+        ) from exc
+    if len(encoded) > max_bytes:
+        raise EventValidationError(
+            f"payload.{field} must not exceed {max_bytes} encoded bytes"
+        )
+
+
+def _validate_capabilities(payload: dict) -> None:
+    required = payload.get("required_capabilities", [])
+    if not isinstance(required, list) or not all(
+        isinstance(item, str) and item.strip() for item in required
+    ):
+        raise EventValidationError(
+            "payload.required_capabilities must be a list of strings"
+        )
+
+
+def _validate_retry_policy(payload: dict, *, allow_null: bool = False) -> None:
+    if "retry_policy" not in payload:
+        return
+    retry_policy = payload["retry_policy"]
+    max_retries = (
+        retry_policy.get("max_retries")
+        if isinstance(retry_policy, dict)
+        else None
+    )
+    if (
+        not isinstance(retry_policy, dict)
+        or set(retry_policy) != {"max_retries"}
+        or (
+            max_retries is None
+            and not allow_null
+        )
+        or (
+            max_retries is not None
+            and not _is_nonnegative_int(max_retries)
+        )
+    ):
+        nullable = "null or " if allow_null else ""
+        raise EventValidationError(
+            "payload.retry_policy must contain only a "
+            f"{nullable}non-negative integer max_retries"
+        )
+
+
+def _validate_external_origin(payload: dict, *, required: bool = False) -> None:
+    origin = payload.get("external_origin")
+    if origin is None and not required:
+        return
+    if not isinstance(origin, dict) or set(origin) != {"system", "task_ref"}:
+        raise EventValidationError(
+            "payload.external_origin must contain only system and task_ref"
+        )
+    for field in ("system", "task_ref"):
+        value = origin.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > MAX_EXTERNAL_ID_LENGTH
+        ):
+            raise EventValidationError(
+                f"payload.external_origin.{field} must be a non-empty string "
+                f"of at most {MAX_EXTERNAL_ID_LENGTH} characters"
+            )
+
+
+def _validate_ownership(payload: dict, *, observed: bool = False) -> None:
+    ownership = payload.get("ownership")
+    if "ownership" not in payload and not observed:
+        return
+    if not isinstance(ownership, dict) or set(ownership) != {"mode", "owner"}:
+        raise EventValidationError(
+            "payload.ownership must contain only mode and owner"
+        )
+    pair = (ownership.get("mode"), ownership.get("owner"))
+    allowed = (
+        {("shadow", "external"), ("canary", "external")}
+        if observed
+        else {("controlled", "agent-bus"), ("canary", "agent-bus")}
+    )
+    if pair not in allowed:
+        raise EventValidationError(
+            "payload.ownership mode and owner are not valid for this topic"
+        )
+    if ownership.get("mode") == "canary":
+        _validate_external_origin(payload, required=True)
 
 
 def _validate_correlation_id(correlation_id: Optional[str]) -> None:
@@ -163,26 +259,29 @@ def validate_event(
     if topic == "task.created":
         if "task_id" in payload:
             _require_task_id(payload)
-        if "title" in payload and not isinstance(payload["title"], str):
-            raise EventValidationError("payload.title must be a string")
-        required = payload.get("required_capabilities", [])
-        if not isinstance(required, list) or not all(
-            isinstance(item, str) and item.strip() for item in required
-        ):
-            raise EventValidationError(
-                "payload.required_capabilities must be a list of strings"
-            )
-        if "retry_policy" in payload:
-            retry_policy = payload["retry_policy"]
-            if (
-                not isinstance(retry_policy, dict)
-                or set(retry_policy) != {"max_retries"}
-                or not _is_nonnegative_int(retry_policy.get("max_retries"))
-            ):
-                raise EventValidationError(
-                    "payload.retry_policy must contain only a non-negative "
-                    "integer max_retries"
-                )
+        _require_string(payload, "title")
+        _validate_capabilities(payload)
+        _validate_json_object(
+            payload,
+            "context",
+            max_bytes=MAX_INLINE_CONTEXT_BYTES,
+        )
+        _validate_retry_policy(payload)
+        _validate_external_origin(payload)
+        _validate_ownership(payload)
+        return
+
+    if topic == "integration.task_observed":
+        _require_string(payload, "title")
+        _validate_capabilities(payload)
+        _validate_json_object(
+            payload,
+            "context",
+            max_bytes=MAX_INLINE_CONTEXT_BYTES,
+        )
+        _validate_retry_policy(payload)
+        _validate_external_origin(payload, required=True)
+        _validate_ownership(payload, observed=True)
         return
 
     if topic in {"agent.registered", "agent.heartbeat"}:
@@ -208,11 +307,30 @@ def validate_event(
             _require_string(payload, field)
         if not _is_positive_int(payload.get("attempt")):
             raise EventValidationError("payload.attempt must be a positive integer")
+        _validate_capabilities(payload)
+        _validate_json_object(
+            payload,
+            "context",
+            max_bytes=MAX_INLINE_CONTEXT_BYTES,
+        )
+        _validate_retry_policy(payload, allow_null=True)
+        if not _is_nonnegative_int(payload.get("retryable_failures", 0)):
+            raise EventValidationError(
+                "payload.retryable_failures must be a non-negative integer"
+            )
+        _validate_external_origin(payload)
+        _validate_ownership(payload)
     elif topic in {"task.started", "task.completed", "task.blocked"}:
         _require_string(payload, "assignment_id")
         _require_string(payload, "worker_instance_id")
         if topic == "task.blocked":
             _require_string(payload, "reason")
+        if topic == "task.completed" and "result" in payload:
+            _validate_json_object(
+                payload,
+                "result",
+                max_bytes=MAX_INLINE_RESULT_BYTES,
+            )
     elif topic == "task.attempt_failed":
         for field in (
             "assignment_id",
@@ -418,6 +536,9 @@ def _assert_idempotent_match(
             # The server materializes its current default into new task events.
             # Omitting it remains the same logical request on a retry.
             stored_payload.pop("retry_policy", None)
+        if "ownership" not in payload:
+            # Controlled ownership is a server-materialized default.
+            stored_payload.pop("ownership", None)
     # Omitting correlation_id delegates generation/inheritance to the server.
     # On a retry, the stored value is therefore the effective requested value.
     effective_correlation_id = (
@@ -490,6 +611,10 @@ def append_event(
             payload.setdefault(
                 "retry_policy",
                 {"max_retries": DEFAULT_MAX_RETRIES},
+            )
+            payload.setdefault(
+                "ownership",
+                {"mode": "controlled", "owner": "agent-bus"},
             )
             if "task_id" not in payload:
                 payload["task_id"] = next_task_id(conn)
@@ -599,7 +724,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.4.0", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

@@ -1,33 +1,64 @@
-"""Demo worker with leased process identity and idempotent task effects."""
+"""Reference worker built on the reusable v0.4 executor runtime."""
 
 import argparse
 import os
 import threading
 import time
-import uuid
-
-import httpx
 
 from client import BusClient
+from executors import (
+    AssignmentContext,
+    Blocked,
+    Completed,
+    PermanentFailure,
+    RetryableFailure,
+)
+from runtime import WorkerRuntime
 
 BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
 HEARTBEAT_SECONDS = float(os.environ.get("AGENT_BUS_HEARTBEAT_SECONDS", "5"))
 
 
-def heartbeat_loop(
-    bus: BusClient,
-    name: str,
-    instance_id: str,
-    stop: threading.Event,
-) -> None:
-    while not stop.wait(HEARTBEAT_SECONDS):
-        try:
-            bus.publish(
-                "agent.heartbeat",
-                {"name": name, "instance_id": instance_id},
-            )
-        except httpx.HTTPError as exc:
-            print(f"[{name}] heartbeat failed ({exc.__class__.__name__})", flush=True)
+class DemoExecutor:
+    """Small reference executor used by the command-line demonstration."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        block_once: int | None = None,
+        fail_once: int | None = None,
+        fail_permanently_once: int | None = None,
+    ):
+        self.name = name
+        self.block_once = block_once
+        self.fail_once = fail_once
+        self.fail_permanently_once = fail_permanently_once
+        self._lock = threading.Lock()
+
+    def execute(self, assignment: AssignmentContext):
+        # Replace this body with a real agent implementation. The surrounding
+        # runtime already owns registration, leases, concurrency, and events.
+        time.sleep(0.5)
+        with self._lock:
+            if self.fail_once == assignment.task_id:
+                self.fail_once = None
+                return RetryableFailure(
+                    "demo_retryable_failure",
+                    "demo worker was asked to fail this task",
+                )
+            if self.fail_permanently_once == assignment.task_id:
+                self.fail_permanently_once = None
+                return PermanentFailure(
+                    "demo_permanent_failure",
+                    "demo worker was asked to fail this task",
+                )
+            if self.block_once == assignment.task_id:
+                self.block_once = None
+                return Blocked("Choose storage backend: SQLite or Postgres")
+        return Completed(
+            summary=f"{self.name} finished: {assignment.goal}",
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,127 +89,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.capacity < 1:
-        raise SystemExit("--capacity must be at least 1")
-
-    name = args.name
-    instance_id = uuid.uuid4().hex
-    bus = BusClient(BUS_URL, actor=name)
-    registered = bus.publish(
-        "agent.registered",
-        {
-            "name": name,
-            "instance_id": instance_id,
-            "capacity": args.capacity,
-            "capabilities": args.capabilities,
-        },
+    executor = DemoExecutor(
+        args.name,
+        block_once=args.block,
+        fail_once=args.fail,
+        fail_permanently_once=args.fail_permanently,
     )
-    print(f"[{name}] registered instance {instance_id[:8]}, waiting for work", flush=True)
-
-    stop_heartbeat = threading.Event()
-    heartbeat = threading.Thread(
-        target=heartbeat_loop,
-        args=(bus, name, instance_id, stop_heartbeat),
-        daemon=True,
-        name=f"{name}-heartbeat",
+    bus = BusClient(BUS_URL, actor=args.name)
+    runtime = WorkerRuntime(
+        bus,
+        name=args.name,
+        executor=executor,
+        capacity=args.capacity,
+        capabilities=args.capabilities,
+        heartbeat_seconds=HEARTBEAT_SECONDS,
     )
-    heartbeat.start()
-
-    block_once = args.block
-    fail_once = args.fail
-    fail_permanently_once = args.fail_permanently
-    try:
-        # Assignments for this instance can only exist after its registration
-        # event, so start there instead of replaying the whole log. BusClient
-        # keeps the latest id in memory across SSE reconnects; a replacement
-        # process registers a new instance and must not resume this one's work.
-        for event in bus.subscribe(
-            topics=["task.assigned"],
-            from_id=registered["id"],
-        ):
-            payload = event["payload"]
-            if (
-                payload.get("assignee") != name
-                or payload.get("worker_instance_id") != instance_id
-            ):
-                continue
-
-            task_id = payload["task_id"]
-            assignment_id = payload["assignment_id"]
-            lifecycle_payload = {
-                "task_id": task_id,
-                "assignment_id": assignment_id,
-                "worker_instance_id": instance_id,
-            }
-            print(
-                f"[{name}] picked up task {task_id} attempt {payload['attempt']}: "
-                f"{payload.get('goal', '')}",
-                flush=True,
-            )
-            bus.publish(
-                "task.started",
-                lifecycle_payload,
-                caused_by=event["id"],
-                idempotency_key=f"started:{assignment_id}",
-            )
-
-            # Replace this with an executor that accepts assignment_id as its
-            # idempotency token. Orchestration retries are safe, but arbitrary
-            # external side effects must also be made idempotent by the worker.
-            time.sleep(0.5)
-
-            if fail_once == task_id or fail_permanently_once == task_id:
-                retryable = fail_once == task_id
-                if retryable:
-                    fail_once = None
-                else:
-                    fail_permanently_once = None
-                bus.publish(
-                    "task.attempt_failed",
-                    {
-                        **lifecycle_payload,
-                        "failure_code": (
-                            "demo_retryable_failure"
-                            if retryable
-                            else "demo_permanent_failure"
-                        ),
-                        "reason": "demo worker was asked to fail this task",
-                        "retryable": retryable,
-                    },
-                    caused_by=event["id"],
-                    idempotency_key=f"attempt-failed:{assignment_id}",
-                )
-                outcome = "retryable" if retryable else "permanent"
-                print(
-                    f"[{name}] FAILED task {task_id} ({outcome})",
-                    flush=True,
-                )
-            elif block_once == task_id:
-                block_once = None
-                bus.publish(
-                    "task.blocked",
-                    {
-                        **lifecycle_payload,
-                        "reason": "Choose storage backend: SQLite or Postgres",
-                    },
-                    caused_by=event["id"],
-                    idempotency_key=f"blocked:{assignment_id}",
-                )
-                print(f"[{name}] BLOCKED task {task_id}", flush=True)
-            else:
-                bus.publish(
-                    "task.completed",
-                    {
-                        **lifecycle_payload,
-                        "summary": f"{name} finished: {payload.get('goal', '')}",
-                    },
-                    caused_by=event["id"],
-                    idempotency_key=f"completed:{assignment_id}",
-                )
-                print(f"[{name}] completed task {task_id}", flush=True)
-    finally:
-        stop_heartbeat.set()
-        heartbeat.join(timeout=1)
+    runtime.run()
 
 
 if __name__ == "__main__":
