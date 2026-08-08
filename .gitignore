@@ -11,6 +11,9 @@ include/
 share/
 pyvenv.cfg
 
+# macOS
+.DS_Store
+
 # Runtime state (rebuilt on startup)
 events.db
 events.db-wal

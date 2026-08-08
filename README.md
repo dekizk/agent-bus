@@ -141,7 +141,8 @@ assignment:
 
 Context and final structured results are limited to 16 KiB of encoded JSON.
 They are coordination data, not storage for prompts, transcripts, or large
-artifacts; content-addressed blob storage belongs to the next telemetry layer.
+artifacts; content-addressed blob storage belongs in a separate
+telemetry/artifact layer.
 
 ## Integrating an existing agent
 
@@ -524,4 +525,18 @@ conformance, bounded concurrency, subprocess timeout/cancellation, stable
 canaries, single-owner adoption, real-agent integration, and atomic monotonic
 offsets.
 
+## Scope and next boundaries
 
+v0.4 remains a trusted, single-host runtime. Actor names are asserted by
+clients, not authenticated identities. The PM lock and wake-up condition are
+local-process mechanisms. Before exposing the bus to other machines, add
+authentication and replace local exclusivity/notification with shared
+infrastructure.
+
+The next version will be selected after several genuine integration trials.
+Candidate layers include task dependencies and DAG orchestration, and model/tool
+telemetry with content-addressed blob storage. Cancellation, deadlines,
+snapshots, and a read-only operational UI remain later candidates. Trial
+evidence, rather than version numbering alone, should determine their order.
+Those features should remain projections and commands over the log—not a return
+to a mutable board as the source of truth.

@@ -1,0 +1,89 @@
+"""Run Hermes Agent as an agent-bus worker."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from client import BusClient
+from examples.hermes.hermes_executor import HermesExecutor
+from runtime import WorkerRuntime
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the optional Hermes Agent executor example"
+    )
+    parser.add_argument("--name", default="hermes")
+    parser.add_argument(
+        "--bus-url",
+        default=os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765"),
+    )
+    parser.add_argument("--working-directory", type=Path, required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--provider", required=True)
+    parser.add_argument(
+        "--toolsets",
+        default="clarify",
+        help="explicit comma-separated Hermes toolsets; defaults to clarify only",
+    )
+    parser.add_argument(
+        "--hermes-command",
+        default="hermes",
+        help="Hermes executable path",
+    )
+    parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--capacity", type=int, default=1)
+    parser.add_argument(
+        "--capability",
+        action="append",
+        dest="capabilities",
+        default=[],
+        help="advertised capability; repeat for more than one",
+    )
+    parser.add_argument(
+        "--unsafe-user-config",
+        action="store_true",
+        help="allow Hermes user rules/plugins/hooks instead of safe mode",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    toolsets = tuple(item.strip() for item in args.toolsets.split(",") if item.strip())
+
+    def report_usage(assignment_id: str, usage: dict[str, object]) -> None:
+        print(
+            f"[hermes] usage {assignment_id}: "
+            + json.dumps(usage, sort_keys=True, separators=(",", ":"))
+        )
+
+    executor = HermesExecutor(
+        working_directory=args.working_directory,
+        model=args.model,
+        provider=args.provider,
+        toolsets=toolsets,
+        command=(args.hermes_command,),
+        timeout=args.timeout,
+        safe_mode=not args.unsafe_user_config,
+        usage_callback=report_usage,
+    )
+    bus = BusClient(args.bus_url, actor=args.name)
+    runtime = WorkerRuntime(
+        bus,
+        name=args.name,
+        executor=executor,
+        capacity=args.capacity,
+        capabilities=args.capabilities or ["hermes"],
+        heartbeat_seconds=float(
+            os.environ.get("AGENT_BUS_HEARTBEAT_SECONDS", "5")
+        ),
+    )
+    runtime.run()
+
+
+if __name__ == "__main__":
+    main()
