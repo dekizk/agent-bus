@@ -7,6 +7,7 @@ event log, then reconciles missing effects using stable idempotency keys.
 import fcntl
 import getpass
 import hashlib
+import json
 import os
 import stat
 import sys
@@ -71,6 +72,7 @@ class TaskRecord:
     decision_id: Optional[str] = None
     decision_needed: bool = False
     decision_event_id: Optional[int] = None
+    decisions: list[dict] = field(default_factory=list)
     last_assignment_id: Optional[str] = None
     last_failure_event_id: Optional[int] = None
     last_failure_code: Optional[str] = None
@@ -515,10 +517,38 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             assignment_id = payload.get("assignment_id")
             decision_id = payload.get("decision_id")
-            if ev.get("schema_version", 1) == 1:
+            schema_version = ev.get("schema_version", 1)
+            if schema_version == 1:
                 assignment_id = assignment_id or task.assignment_id
                 decision_id = decision_id or task.decision_id
             if assignment_id != task.assignment_id or decision_id != task.decision_id:
+                return False
+            if schema_version != 1 and (
+                not task.decision_needed
+                or ev.get("caused_by") != task.decision_event_id
+            ):
+                return False
+            if "decision" in payload:
+                actor = ev.get("actor")
+                if not isinstance(actor, str) or not actor.strip():
+                    return False
+                decision = json.loads(
+                    json.dumps(
+                        payload["decision"],
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    )
+                )
+                task.decisions.append(
+                    {
+                        "event_id": event_id,
+                        "actor": actor,
+                        "assignment_id": assignment_id,
+                        "decision_id": decision_id,
+                        "decision": decision,
+                    }
+                )
+            elif schema_version != 1:
                 return False
             task.status = "open"
             task.open_event_id = event_id
@@ -642,6 +672,7 @@ def plan_next_emission(
                 "title": task.title,
                 "goal": task.title,
                 "context": task.context,
+                "decisions": json.loads(json.dumps(task.decisions)),
                 "required_capabilities": sorted(task.required_capabilities),
                 "retry_policy": {"max_retries": task.max_retries},
                 "retryable_failures": task.retryable_failures,

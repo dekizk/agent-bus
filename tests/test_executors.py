@@ -25,6 +25,15 @@ def assignment(**overrides):
         "attempt": 2,
         "goal": "Run the integration suite",
         "context": {"repository": "agent-bus", "flags": ["fast"]},
+        "decisions": (
+            {
+                "event_id": 17,
+                "actor": "human",
+                "assignment_id": "task:4:attempt:1",
+                "decision_id": "decision:task:4:attempt:1",
+                "decision": {"database": "SQLite"},
+            },
+        ),
         "required_capabilities": ("python", "testing"),
         "max_retries": 3,
         "retryable_failures": 1,
@@ -206,19 +215,66 @@ class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
 
 
 class AssignmentContextTests(unittest.TestCase):
+    def test_v04_positional_constructor_order_remains_compatible(self):
+        value = AssignmentContext(
+            "workflow-one",
+            4,
+            "task:4:attempt:2",
+            19,
+            2,
+            "Run the integration suite",
+            {"repository": "agent-bus"},
+            ("python",),
+            3,
+            1,
+            "alice",
+            "alice-1",
+            "canary",
+            "agent-bus",
+            {"system": "legacy", "task_ref": "work-4"},
+        )
+        self.assertEqual((), value.decisions)
+        self.assertEqual("work-4", value.external_origin["task_ref"])
+
     def test_context_is_immutable_and_serializes_for_adapters(self):
         value = assignment()
         with self.assertRaises(TypeError):
             value.context["repository"] = "other"
         with self.assertRaises(TypeError):
             value.external_origin["task_ref"] = "other"
+        with self.assertRaises(TypeError):
+            value.decisions[0]["decision"]["database"] = "Postgres"
 
         serialized = value.to_dict()
         self.assertEqual(["fast"], serialized["context"]["flags"])
+        self.assertEqual("SQLite", serialized["decisions"][0]["decision"]["database"])
         self.assertEqual("canary", serialized["ownership"]["mode"])
 
     def test_assignment_event_contract_is_parsed(self):
         source = assignment()
+        event = {
+            "id": source.assignment_event_id,
+            "correlation_id": source.correlation_id,
+            "payload": {
+                "task_id": source.task_id,
+                "assignment_id": source.assignment_id,
+                "attempt": source.attempt,
+                "goal": source.goal,
+                "context": source.to_dict()["context"],
+                "decisions": source.to_dict()["decisions"],
+                "required_capabilities": list(source.required_capabilities),
+                "retry_policy": {"max_retries": source.max_retries},
+                "retryable_failures": source.retryable_failures,
+                "assignee": source.assignee,
+                "worker_instance_id": source.worker_instance_id,
+                "ownership": source.to_dict()["ownership"],
+                "external_origin": source.to_dict()["external_origin"],
+            },
+        }
+        self.assertEqual(source, AssignmentContext.from_event(event))
+
+    def test_historical_assignment_without_decisions_remains_compatible(self):
+        source = assignment(decisions=())
         event = {
             "id": source.assignment_event_id,
             "correlation_id": source.correlation_id,
@@ -234,10 +290,9 @@ class AssignmentContextTests(unittest.TestCase):
                 "assignee": source.assignee,
                 "worker_instance_id": source.worker_instance_id,
                 "ownership": source.to_dict()["ownership"],
-                "external_origin": source.to_dict()["external_origin"],
             },
         }
-        self.assertEqual(source, AssignmentContext.from_event(event))
+        self.assertEqual((), AssignmentContext.from_event(event).decisions)
 
 
 if __name__ == "__main__":

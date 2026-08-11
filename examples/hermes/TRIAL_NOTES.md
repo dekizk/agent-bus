@@ -40,6 +40,35 @@ Roadmap evidence so far:
 - telemetry remains useful, but more genuine multi-step tasks are needed before
   deciding whether telemetry or DAG orchestration should be prioritized next.
 
+## 2026-08-11 — repository audit and human-decision trial
+
+Tasks: a read-only audit of the disposable agent-bus copy, followed by a task
+that intentionally omitted its required release target.
+
+Result:
+
+- the file audit completed through the normal lifecycle and returned three
+  concise findings;
+- the missing-input task correctly emitted `task.blocked`, and the PM emitted
+  `decision.needed`;
+- the human response `Use staging` was recorded as `decision.made`, and the PM
+  created a second assignment;
+- the second assignment retained the original `release_target: null` context
+  but did not carry the decision, so the stateless Hermes process correctly
+  blocked again.
+
+Friction and resolution:
+
+1. Reopening a task was insufficient unless the accepted human answer became
+   part of the next executor input. This was an executor-contract gap rather
+   than a Hermes-specific adapter problem.
+2. v0.4.1 adds chronological immutable decision records to PM state,
+   `task.assigned`, and `AssignmentContext`. Historical assignments default to
+   an empty history. Reducer replay, multiple decisions, and an end-to-end
+   blocked-to-completed flow are covered by regression tests.
+3. A live Hermes re-test of the v0.4.1 path remains required before marking the
+   integration trial complete.
+
 ## Template for the next task
 
 - Date and task category:

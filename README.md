@@ -151,6 +151,12 @@ Executors receive one immutable `AssignmentContext` and return exactly one of
 owns registration, heartbeats, subscriptions, bounded concurrency, lifecycle
 idempotency, and stale-result suppression.
 
+`AssignmentContext.decisions` is a chronological, immutable tuple of accepted
+human-decision records. Each record identifies the `decision.made` event, its
+actor, the blocked assignment and decision IDs, and the JSON decision value.
+Historical assignments created before v0.4.1 parse this field as an empty
+tuple.
+
 An existing Python agent with a `run()` method can be wrapped without teaching
 it about the bus:
 
@@ -271,8 +277,14 @@ curl -X POST http://127.0.0.1:8765/events \
   }'
 ```
 
-The PM reopens the logical task and creates a new assignment attempt. The old
-attempt can no longer complete it.
+The PM accepts the response only for the current pending decision, records it
+in its replay projection, reopens the logical task, and creates a new assignment
+attempt. The assignment contains a chronological `decisions` array, so a
+stateless or replacement executor can use the human input without mutating the
+original task context. The old attempt can no longer complete the task.
+
+Keep decisions compact coordination data. Prompts, transcripts, and large
+artifacts still belong in an external telemetry/artifact layer.
 
 ## Bounded retries and terminal failure
 
@@ -442,7 +454,7 @@ Core v2 topics:
 | `agent.registered` | worker | Announces a process instance, capabilities, and capacity |
 | `agent.heartbeat` | worker | Renews that process instance's lease |
 | `task.created` | human/agent | Requests a logical outcome |
-| `task.assigned` | PM | Creates a numbered execution attempt |
+| `task.assigned` | PM | Creates a numbered execution attempt with prior human decisions |
 | `task.started` | worker | Confirms the active attempt began |
 | `task.completed` | worker | Completes the active attempt and logical task |
 | `task.blocked` | worker | Pauses the attempt for human input |
@@ -451,7 +463,7 @@ Core v2 topics:
 | `task.failed` | PM | Terminates a task after policy exhaustion or permanent failure |
 | `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
-| `decision.made` | human | Resolves that decision and permits a new attempt |
+| `decision.made` | human | Records a response that is carried into the next attempt |
 
 Integration topics are validated separately and deliberately excluded from PM
 replay:
@@ -527,7 +539,7 @@ offsets.
 
 ## Scope and next boundaries
 
-v0.4 remains a trusted, single-host runtime. Actor names are asserted by
+v0.4.1 remains a trusted, single-host runtime. Actor names are asserted by
 clients, not authenticated identities. The PM lock and wake-up condition are
 local-process mechanisms. Before exposing the bus to other machines, add
 authentication and replace local exclusivity/notification with shared

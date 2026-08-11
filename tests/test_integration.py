@@ -5,7 +5,7 @@ from pathlib import Path
 
 import bus
 from adoption import AdoptionBridge, AdoptionMode, ExternalOrigin
-from executors import Completed, InProcessExecutor
+from executors import Blocked, Completed, InProcessExecutor
 from pm_agent import PMState, PM_TOPICS, apply_event, reconcile
 from runtime import WorkerRuntime
 
@@ -96,6 +96,97 @@ class ExistingAgentIntegrationTests(unittest.TestCase):
         self.assertEqual(1, task.attempt)
         completed = bus.fetch_after(0, ["task.completed"])
         self.assertEqual({"ticket": 42}, completed[0]["payload"]["result"])
+
+    def test_human_decision_reaches_the_replacement_attempt(self):
+        root = bus.append_event(
+            "task.created",
+            "human",
+            {
+                "title": "Prepare release instructions",
+                "context": {"release_target": None},
+                "required_capabilities": ["release"],
+                "retry_policy": {"max_retries": 0},
+            },
+        )
+        worker_bus = DirectClient("alice")
+        worker_bus.publish(
+            "agent.registered",
+            {
+                "name": "alice",
+                "instance_id": "alice-decision-test",
+                "capacity": 1,
+                "capabilities": ["release"],
+            },
+            idempotency_key="registered:alice-decision-test",
+        )
+
+        def replay_and_reconcile():
+            state = PMState()
+            for item in bus.fetch_after(0, list(PM_TOPICS)):
+                apply_event(state, item)
+            return state, reconcile(state, DirectClient("pm"), now=time.time())
+
+        _, first_emissions = replay_and_reconcile()
+        first_assignment = first_emissions[0]
+
+        class DecisionAwareAgent:
+            def __init__(self):
+                self.received = []
+
+            def run(self, assignment):
+                self.received.append(assignment)
+                if not assignment.decisions:
+                    return Blocked("release target required")
+                target = assignment.decisions[-1]["decision"]["release_target"]
+                return Completed("release target received", {"release_target": target})
+
+        agent = DecisionAwareAgent()
+
+        def run_assignment(assignment):
+            WorkerRuntime(
+                worker_bus,
+                name="alice",
+                instance_id="alice-decision-test",
+                executor=InProcessExecutor(agent),
+                capacity=1,
+                capabilities=["release"],
+                heartbeat_seconds=100,
+                log=lambda message: None,
+            ).run([assignment])
+
+        run_assignment(first_assignment)
+        _, decision_emissions = replay_and_reconcile()
+        decision_needed = decision_emissions[0]
+        self.assertEqual("decision.needed", decision_needed["topic"])
+
+        worker_bus = DirectClient("human")
+        worker_bus.publish(
+            "decision.made",
+            {
+                "task_id": root["payload"]["task_id"],
+                "assignment_id": decision_needed["payload"]["assignment_id"],
+                "decision_id": decision_needed["payload"]["decision_id"],
+                "decision": {"release_target": "staging"},
+            },
+            caused_by=decision_needed["id"],
+            idempotency_key=f"decision:{decision_needed['id']}",
+        )
+
+        worker_bus = DirectClient("alice")
+        _, second_emissions = replay_and_reconcile()
+        second_assignment = second_emissions[0]
+        self.assertEqual("task.assigned", second_assignment["topic"])
+        run_assignment(second_assignment)
+
+        self.assertEqual((), agent.received[0].decisions)
+        self.assertEqual(
+            {"release_target": "staging"},
+            dict(agent.received[1].decisions[-1]["decision"]),
+        )
+        replayed = PMState()
+        for item in bus.fetch_after(0, list(PM_TOPICS)):
+            apply_event(replayed, item)
+        self.assertEqual("completed", replayed.tasks[root["payload"]["task_id"]].status)
 
 
 if __name__ == "__main__":

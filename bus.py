@@ -117,6 +117,40 @@ def _validate_json_object(
         )
 
 
+def _validate_decisions(payload: dict) -> None:
+    decisions = payload.get("decisions", [])
+    if not isinstance(decisions, list):
+        raise EventValidationError("payload.decisions must be a JSON array")
+    try:
+        json.dumps(decisions, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise EventValidationError(
+            "payload.decisions must contain JSON-compatible values"
+        ) from exc
+    expected_fields = {
+        "event_id",
+        "actor",
+        "assignment_id",
+        "decision_id",
+        "decision",
+    }
+    for index, decision in enumerate(decisions):
+        if not isinstance(decision, dict) or set(decision) != expected_fields:
+            raise EventValidationError(
+                f"payload.decisions[{index}] has an invalid shape"
+            )
+        if not _is_positive_int(decision["event_id"]):
+            raise EventValidationError(
+                f"payload.decisions[{index}].event_id must be a positive integer"
+            )
+        for field in ("actor", "assignment_id", "decision_id"):
+            value = decision[field]
+            if not isinstance(value, str) or not value.strip():
+                raise EventValidationError(
+                    f"payload.decisions[{index}].{field} must be a non-empty string"
+                )
+
+
 def _validate_capabilities(payload: dict) -> None:
     required = payload.get("required_capabilities", [])
     if not isinstance(required, list) or not all(
@@ -313,6 +347,7 @@ def validate_event(
             "context",
             max_bytes=MAX_INLINE_CONTEXT_BYTES,
         )
+        _validate_decisions(payload)
         _validate_retry_policy(payload, allow_null=True)
         if not _is_nonnegative_int(payload.get("retryable_failures", 0)):
             raise EventValidationError(
@@ -372,6 +407,12 @@ def validate_event(
             _require_string(payload, field)
         if "decision" not in payload:
             raise EventValidationError("payload.decision is required")
+        try:
+            json.dumps(payload["decision"], allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise EventValidationError(
+                "payload.decision must be JSON-compatible"
+            ) from exc
 
 
 # ---------------------------------------------------------------- storage
@@ -724,7 +765,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.4.1", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

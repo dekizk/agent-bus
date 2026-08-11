@@ -550,6 +550,134 @@ class ReconciliationTests(unittest.TestCase):
             plan_next_emission(state, now=101.0, lease_seconds=20)["topic"],
         )
 
+    def test_multiple_human_decisions_are_carried_forward(self):
+        first_decision = {
+            "event_id": 6,
+            "actor": "human",
+            "assignment_id": "task:1:attempt:1",
+            "decision_id": "decision:task:1:attempt:1",
+            "decision": {"database": "SQLite"},
+        }
+        log = [
+            registered(),
+            created(max_retries=0),
+            event(
+                3,
+                "task.assigned",
+                "pm",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:1",
+                    "attempt": 1,
+                    "assignee": "alice",
+                    "worker_instance_id": "alice-1",
+                },
+                caused_by=2,
+            ),
+            event(
+                4,
+                "task.blocked",
+                "alice",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:1",
+                    "worker_instance_id": "alice-1",
+                    "reason": "choose database",
+                },
+                caused_by=3,
+            ),
+            event(
+                5,
+                "decision.needed",
+                "pm",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:1",
+                    "decision_id": "decision:task:1:attempt:1",
+                    "reason": "choose database",
+                },
+                caused_by=4,
+            ),
+            event(
+                6,
+                "decision.made",
+                "human",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:1",
+                    "decision_id": "decision:task:1:attempt:1",
+                    "decision": {"database": "SQLite"},
+                },
+                caused_by=5,
+            ),
+            event(
+                7,
+                "task.assigned",
+                "pm",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:2",
+                    "attempt": 2,
+                    "assignee": "alice",
+                    "worker_instance_id": "alice-1",
+                    "decisions": [first_decision],
+                },
+                caused_by=6,
+            ),
+            event(
+                8,
+                "task.blocked",
+                "alice",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:2",
+                    "worker_instance_id": "alice-1",
+                    "reason": "choose region",
+                },
+                caused_by=7,
+            ),
+            event(
+                9,
+                "decision.needed",
+                "pm",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:2",
+                    "decision_id": "decision:task:1:attempt:2",
+                    "reason": "choose region",
+                },
+                caused_by=8,
+            ),
+            event(
+                10,
+                "decision.made",
+                "operator",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:2",
+                    "decision_id": "decision:task:1:attempt:2",
+                    "decision": {"region": "ap-southeast-2"},
+                },
+                caused_by=9,
+            ),
+        ]
+        state = PMState()
+        for item in log:
+            self.assertTrue(apply_event(state, item))
+
+        planned = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual("task:1:attempt:3", planned["payload"]["assignment_id"])
+        self.assertEqual(
+            [first_decision, {
+                "event_id": 10,
+                "actor": "operator",
+                "assignment_id": "task:1:attempt:2",
+                "decision_id": "decision:task:1:attempt:2",
+                "decision": {"region": "ap-southeast-2"},
+            }],
+            planned["payload"]["decisions"],
+        )
+
     def test_legacy_task_remains_unbounded(self):
         state = PMState()
         for item in (
@@ -628,6 +756,26 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual("task.assigned", planned["topic"])
         self.assertEqual(2, planned["payload"]["attempt"])
         self.assertEqual("task:1:attempt:2", planned["payload"]["assignment_id"])
+        self.assertEqual(
+            [
+                {
+                    "event_id": 6,
+                    "actor": "human",
+                    "assignment_id": "task:1:attempt:1",
+                    "decision_id": "decision:task:1:attempt:1",
+                    "decision": "SQLite",
+                }
+            ],
+            planned["payload"]["decisions"],
+        )
+
+        restarted = PMState()
+        for item in log:
+            self.assertTrue(apply_event(restarted, item))
+        self.assertEqual(
+            planned,
+            plan_next_emission(restarted, now=101.0, lease_seconds=20),
+        )
 
     def test_worker_replacement_expires_old_attempt(self):
         state = PMState()

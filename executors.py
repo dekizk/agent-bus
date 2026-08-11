@@ -63,6 +63,37 @@ def _immutable_json_object(value: object, field_name: str) -> Mapping[str, Any]:
     return _freeze(normalized)
 
 
+def _immutable_decisions(
+    value: object,
+) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("decisions must be a JSON array")
+    try:
+        normalized = json.loads(
+            json.dumps(list(value), allow_nan=False, separators=(",", ":"))
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("decisions must contain JSON-compatible values") from exc
+    for index, decision in enumerate(normalized):
+        if not isinstance(decision, dict):
+            raise ValueError(f"decisions[{index}] must be an object")
+        if set(decision) != {
+            "event_id",
+            "actor",
+            "assignment_id",
+            "decision_id",
+            "decision",
+        }:
+            raise ValueError(f"decisions[{index}] has an invalid shape")
+        _positive_int(decision["event_id"], f"decisions[{index}].event_id")
+        for field_name in ("actor", "assignment_id", "decision_id"):
+            _nonempty_string(
+                decision[field_name],
+                f"decisions[{index}].{field_name}",
+            )
+    return _freeze(normalized)
+
+
 def json_size(value: object) -> int:
     return len(
         json.dumps(
@@ -92,6 +123,7 @@ class AssignmentContext:
     ownership_mode: str = "controlled"
     ownership_owner: str = "agent-bus"
     external_origin: Optional[Mapping[str, Any]] = None
+    decisions: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         _positive_int(self.task_id, "task_id")
@@ -120,6 +152,7 @@ class AssignmentContext:
             "context",
             _immutable_json_object(self.context, "context"),
         )
+        object.__setattr__(self, "decisions", _immutable_decisions(self.decisions))
         if self.external_origin is not None:
             object.__setattr__(
                 self,
@@ -152,6 +185,7 @@ class AssignmentContext:
             attempt=payload.get("attempt"),
             goal=payload.get("goal") or payload.get("title"),
             context=payload.get("context", {}),
+            decisions=payload.get("decisions", []),
             required_capabilities=tuple(raw_capabilities),
             max_retries=retry_policy.get("max_retries"),
             retryable_failures=payload.get("retryable_failures", 0),
@@ -171,6 +205,7 @@ class AssignmentContext:
             "attempt": self.attempt,
             "goal": self.goal,
             "context": _thaw(self.context),
+            "decisions": _thaw(self.decisions),
             "required_capabilities": list(self.required_capabilities),
             "retry_policy": {"max_retries": self.max_retries},
             "retryable_failures": self.retryable_failures,

@@ -186,6 +186,49 @@ class BusStorageTests(unittest.TestCase):
                 2,
             )
 
+    def test_assignment_decision_history_contract(self):
+        payload = {
+            "task_id": 1,
+            "assignment_id": "task:1:attempt:2",
+            "attempt": 2,
+            "assignee": "alice",
+            "worker_instance_id": "alice-1",
+            "decisions": [
+                {
+                    "event_id": 8,
+                    "actor": "human",
+                    "assignment_id": "task:1:attempt:1",
+                    "decision_id": "decision:task:1:attempt:1",
+                    "decision": {"release_target": "staging"},
+                }
+            ],
+        }
+        bus.validate_event("task.assigned", "pm", payload, None, None, 2)
+
+        for invalid in (
+            {},
+            [{"event_id": 8}],
+            [
+                {
+                    "event_id": 0,
+                    "actor": "human",
+                    "assignment_id": "task:1:attempt:1",
+                    "decision_id": "decision:task:1:attempt:1",
+                    "decision": "staging",
+                }
+            ],
+        ):
+            with self.subTest(decisions=invalid):
+                with self.assertRaises(bus.EventValidationError):
+                    bus.validate_event(
+                        "task.assigned",
+                        "pm",
+                        {**payload, "decisions": invalid},
+                        None,
+                        None,
+                        2,
+                    )
+
     def test_reusing_idempotency_key_for_different_request_is_conflict(self):
         bus.append_event(
             "task.created",
@@ -467,7 +510,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.4.0", bus.app.version)
+        self.assertEqual("0.4.1", bus.app.version)
         created = self.client.post(
             "/events",
             json={
