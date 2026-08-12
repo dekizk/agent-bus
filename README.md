@@ -154,6 +154,10 @@ idempotency, and stale-result suppression.
 `AssignmentContext.decisions` is a chronological, immutable tuple of accepted
 human-decision records. Each record identifies the `decision.made` event, its
 actor, the blocked assignment and decision IDs, and the JSON decision value.
+Executors must consult these records before returning `Blocked`: later accepted
+decisions supersede conflicting earlier decisions or original context, and a
+clear decision satisfies a corresponding null or missing context value. The
+bus preserves this precedence rule without mutating the original task event.
 Historical assignments created before v0.4.1 parse this field as an empty
 tuple.
 

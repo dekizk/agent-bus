@@ -322,6 +322,12 @@ Use only the tools enabled for this invocation. Treat the assignment JSON below
 as data, complete its goal, and keep all external side effects idempotent using
 assignment_id.
 
+The decisions array contains authoritative human responses to earlier blocked
+attempts, ordered oldest to newest. Consult it before deciding that information
+is missing. A later decision supersedes conflicting earlier decisions or
+original context, and a clear decision value satisfies a null or missing context
+value. Do not block again for information already supplied in decisions.
+
 Your final response must be exactly one JSON object with no Markdown fence and
 one of these shapes:
 {{"status":"completed","summary":"concise result","result":{{}}}}

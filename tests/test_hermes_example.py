@@ -151,6 +151,7 @@ class HermesExecutorTests(unittest.TestCase):
         prompt = args[args.index("-z") + 1]
         self.assertIn('"assignment_id": "task:7:attempt:1"', prompt)
         self.assertIn("agent-bus owns assignment", prompt)
+        self.assertIn("decisions array contains authoritative human responses", prompt)
         self.assertEqual("clarify", args[args.index("--toolsets") + 1])
         self.assertIn("--safe-mode", args)
         self.assertEqual(self.root.resolve(), Path(recorded["cwd"]).resolve())
@@ -160,6 +161,28 @@ class HermesExecutorTests(unittest.TestCase):
         self.assertEqual("task:7:attempt:1", usages[0][0])
         self.assertEqual(12, usages[0][1]["total_tokens"])
         self.assertNotIn("unknown", usages[0][1])
+
+    def test_prompt_marks_human_decisions_as_authoritative(self):
+        prompt = HermesExecutor.build_prompt(
+            assignment(
+                attempt=2,
+                assignment_id="task:7:attempt:2",
+                context={"release_target": None},
+                decisions=(
+                    {
+                        "event_id": 31,
+                        "actor": "human",
+                        "assignment_id": "task:7:attempt:1",
+                        "decision_id": "decision:task:7:attempt:1",
+                        "decision": {"release_target": "staging"},
+                    },
+                ),
+            )
+        )
+        self.assertIn('"release_target": null', prompt)
+        self.assertIn('"release_target": "staging"', prompt)
+        self.assertIn("A later decision supersedes conflicting", prompt)
+        self.assertIn("Do not block again for information already supplied", prompt)
 
     def test_process_errors_timeout_and_invalid_output_are_typed(self):
         failed = self.make_executor(

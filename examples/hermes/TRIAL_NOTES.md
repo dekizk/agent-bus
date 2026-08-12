@@ -66,8 +66,12 @@ Friction and resolution:
    `task.assigned`, and `AssignmentContext`. Historical assignments default to
    an empty history. Reducer replay, multiple decisions, and an end-to-end
    blocked-to-completed flow are covered by regression tests.
-3. A live Hermes re-test of the v0.4.1 path remains required before marking the
-   integration trial complete.
+3. The live Hermes re-test passed after the adapter made decision precedence
+   explicit. Attempt 5 retained the immutable original `release_target: null`
+   context, received the accumulated decision history, applied the latest
+   structured `release_target: staging` response, and emitted `task.completed`
+   with staging-specific instructions. This confirms the repaired path works
+   with a real stateless agent, not only the in-process regression fixture.
 
 ## Template for the next task
 
