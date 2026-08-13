@@ -29,6 +29,7 @@ from limits import (
     MAX_EXTERNAL_ID_LENGTH,
     MAX_INLINE_CONTEXT_BYTES,
     MAX_INLINE_RESULT_BYTES,
+    MAX_TASK_DEPENDENCIES,
 )
 from topics import KNOWN_TOPICS
 
@@ -149,6 +150,56 @@ def _validate_decisions(payload: dict) -> None:
                 raise EventValidationError(
                     f"payload.decisions[{index}].{field} must be a non-empty string"
                 )
+
+
+def _validate_task_dependencies(payload: dict) -> None:
+    depends_on = payload.get("depends_on", [])
+    if not isinstance(depends_on, list):
+        raise EventValidationError("payload.depends_on must be a JSON array")
+    if len(depends_on) > MAX_TASK_DEPENDENCIES:
+        raise EventValidationError(
+            f"payload.depends_on must contain at most {MAX_TASK_DEPENDENCIES} tasks"
+        )
+    if not all(_is_positive_int(task_id) for task_id in depends_on):
+        raise EventValidationError(
+            "payload.depends_on must contain only positive task ids"
+        )
+    if len(depends_on) != len(set(depends_on)):
+        raise EventValidationError("payload.depends_on must not contain duplicates")
+
+
+def _validate_dependency_refs(payload: dict) -> None:
+    refs = payload.get("dependency_refs", [])
+    if not isinstance(refs, list):
+        raise EventValidationError("payload.dependency_refs must be a JSON array")
+    if len(refs) > MAX_TASK_DEPENDENCIES:
+        raise EventValidationError(
+            "payload.dependency_refs must contain at most "
+            f"{MAX_TASK_DEPENDENCIES} references"
+        )
+    seen: set[int] = set()
+    for index, ref in enumerate(refs):
+        if not isinstance(ref, dict) or set(ref) != {
+            "task_id",
+            "completion_event_id",
+        }:
+            raise EventValidationError(
+                f"payload.dependency_refs[{index}] has an invalid shape"
+            )
+        if not _is_positive_int(ref["task_id"]):
+            raise EventValidationError(
+                f"payload.dependency_refs[{index}].task_id must be a positive integer"
+            )
+        if not _is_positive_int(ref["completion_event_id"]):
+            raise EventValidationError(
+                "payload.dependency_refs"
+                f"[{index}].completion_event_id must be a positive integer"
+            )
+        if ref["task_id"] in seen:
+            raise EventValidationError(
+                "payload.dependency_refs must not contain duplicate task ids"
+            )
+        seen.add(ref["task_id"])
 
 
 def _validate_capabilities(payload: dict) -> None:
@@ -301,6 +352,7 @@ def validate_event(
             max_bytes=MAX_INLINE_CONTEXT_BYTES,
         )
         _validate_retry_policy(payload)
+        _validate_task_dependencies(payload)
         _validate_external_origin(payload)
         _validate_ownership(payload)
         return
@@ -348,6 +400,7 @@ def validate_event(
             max_bytes=MAX_INLINE_CONTEXT_BYTES,
         )
         _validate_decisions(payload)
+        _validate_dependency_refs(payload)
         _validate_retry_policy(payload, allow_null=True)
         if not _is_nonnegative_int(payload.get("retryable_failures", 0)):
             raise EventValidationError(
@@ -393,6 +446,18 @@ def validate_event(
             raise EventValidationError(
                 "payload.max_retries must be null or a non-negative integer"
             )
+    elif topic == "task.dependency_failed":
+        if actor != "pm":
+            raise EventValidationError("task.dependency_failed must be emitted by pm")
+        if not _is_positive_int(payload.get("dependency_task_id")):
+            raise EventValidationError(
+                "payload.dependency_task_id must be a positive integer"
+            )
+        if not _is_positive_int(payload.get("dependency_event_id")):
+            raise EventValidationError(
+                "payload.dependency_event_id must be a positive integer"
+            )
+        _require_string(payload, "reason")
     elif topic == "task.retry_requested":
         if not _is_positive_int(payload.get("additional_retries")):
             raise EventValidationError(
@@ -523,14 +588,35 @@ def row_to_dict(row: sqlite3.Row) -> dict:
     return event
 
 
+def _find_task_created(
+    conn: sqlite3.Connection,
+    task_id: int,
+) -> Optional[sqlite3.Row]:
+    # v0.5 deliberately derives this local-scale lookup from the immutable log.
+    # It is O(task.created rows) and runs inside the append transaction. Before
+    # high-volume use, replace it with a transactionally maintained
+    # task_id -> created_event_id projection table or an indexed stored column.
+    for row in conn.execute(
+        "SELECT * FROM events WHERE topic = 'task.created' ORDER BY id"
+    ):
+        try:
+            if json.loads(row["payload"]).get("task_id") == task_id:
+                return row
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None
+
+
 def _resolve_correlation_id(
     conn: sqlite3.Connection,
     *,
     topic: str,
     caused_by: Optional[int],
     correlation_id: Optional[str],
+    payload: dict,
 ) -> Optional[str]:
     """Resolve a new event's workflow identity inside its append transaction."""
+    resolved = correlation_id
     if caused_by is not None:
         parent = conn.execute(
             "SELECT correlation_id FROM events WHERE id = ?",
@@ -541,16 +627,34 @@ def _resolve_correlation_id(
         parent_correlation_id = parent["correlation_id"]
         if (
             parent_correlation_id is not None
-            and correlation_id is not None
-            and correlation_id != parent_correlation_id
+            and resolved is not None
+            and resolved != parent_correlation_id
         ):
             raise EventValidationError(
                 "correlation_id conflicts with the caused_by event"
             )
-        return parent_correlation_id or correlation_id
+        resolved = parent_correlation_id or resolved
 
-    if correlation_id is not None:
-        return correlation_id
+    if topic == "task.created":
+        for dependency_task_id in payload.get("depends_on", []):
+            dependency = _find_task_created(conn, dependency_task_id)
+            if dependency is None:
+                raise EventValidationError(
+                    f"dependency task {dependency_task_id} does not exist"
+                )
+            dependency_correlation_id = dependency["correlation_id"]
+            if dependency_correlation_id is None:
+                raise EventValidationError(
+                    f"dependency task {dependency_task_id} has no workflow identity"
+                )
+            if resolved is not None and resolved != dependency_correlation_id:
+                raise EventValidationError(
+                    "all dependencies must belong to the same correlation_id"
+                )
+            resolved = dependency_correlation_id
+
+    if resolved is not None:
+        return resolved
     if topic == "task.created":
         return uuid.uuid4().hex
     return None
@@ -580,6 +684,8 @@ def _assert_idempotent_match(
         if "ownership" not in payload:
             # Controlled ownership is a server-materialized default.
             stored_payload.pop("ownership", None)
+        if "depends_on" not in payload:
+            stored_payload.pop("depends_on", None)
     # Omitting correlation_id delegates generation/inheritance to the server.
     # On a retry, the stored value is therefore the effective requested value.
     effective_correlation_id = (
@@ -646,6 +752,7 @@ def append_event(
             topic=topic,
             caused_by=caused_by,
             correlation_id=correlation_id,
+            payload=requested_payload,
         )
         payload = dict(requested_payload)
         if topic == "task.created":
@@ -657,9 +764,14 @@ def append_event(
                 "ownership",
                 {"mode": "controlled", "owner": "agent-bus"},
             )
+            payload.setdefault("depends_on", [])
             if "task_id" not in payload:
                 payload["task_id"] = next_task_id(conn)
             elif _is_positive_int(payload["task_id"]):
+                if _find_task_created(conn, payload["task_id"]) is not None:
+                    raise EventValidationError(
+                        f"task_id {payload['task_id']} already exists"
+                    )
                 conn.execute(
                     "UPDATE counters SET value = max(value, ?) WHERE name = 'task_id'",
                     (payload["task_id"],),
@@ -729,6 +841,12 @@ def fetch_after(
         return [row_to_dict(r) for r in conn.execute(q, args).fetchall()]
 
 
+def fetch_event(event_id: int) -> Optional[dict]:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    return row_to_dict(row) if row is not None else None
+
+
 def fetch_stream_window(
     after_id: int,
     topics: Optional[list[str]],
@@ -765,7 +883,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.4.1", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.5.0", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):
@@ -859,6 +977,16 @@ async def stream(
                 yield ": keepalive\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/events/{event_id}", dependencies=[Depends(require_token)])
+async def get_event(event_id: int) -> dict:
+    if event_id <= 0:
+        raise HTTPException(status_code=422, detail="event_id must be positive")
+    event = await run_in_threadpool(fetch_event, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="event not found")
+    return event
 
 
 @app.get("/health")

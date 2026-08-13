@@ -110,6 +110,22 @@ class OffsetTests(unittest.TestCase):
             get.call_args.kwargs["params"]["correlation_id"],
         )
 
+    def test_get_event_uses_direct_lookup_endpoint(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"id": 7}
+        with tempfile.TemporaryDirectory() as directory:
+            client = BusClient(
+                "http://127.0.0.1:8765",
+                actor="worker",
+                offset_dir=Path(directory),
+            )
+            with patch("client.httpx.get", return_value=response) as get:
+                self.assertEqual({"id": 7}, client.get_event(7))
+        self.assertEqual("http://127.0.0.1:8765/events/7", get.call_args.args[0])
+        with self.assertRaises(ValueError):
+            client.get_event(0)
+
     def test_query_all_preserves_correlation_across_pages(self):
         with tempfile.TemporaryDirectory() as directory:
             client = BusClient(

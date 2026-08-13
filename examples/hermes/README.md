@@ -102,6 +102,13 @@ or `task.attempt_failed`. Small cost/token metadata is printed by the worker but
 is not written into the coordination event log; a future telemetry layer can
 persist it separately.
 
+Hermes also receives resolved upstream completions through
+`AssignmentContext.dependencies`. To trial the v0.5 DAG path, create an initial
+task, then create a second task with `payload.depends_on` containing the first
+task's id and the same capability. The PM waits for the first completion and
+passes its summary/result to Hermes by immutable event reference; do not copy
+the result into the second task's context.
+
 ## Expanding tool authority
 
 For a disposable read-only-style repository review, you may explicitly enable

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
 
+from limits import MAX_TASK_DEPENDENCIES
+
 DEFAULT_MAX_PROTOCOL_BYTES = 64 * 1024
 
 
@@ -94,6 +96,47 @@ def _immutable_decisions(
     return _freeze(normalized)
 
 
+def _immutable_dependencies(
+    value: object,
+) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("dependencies must be a JSON array")
+    if len(value) > MAX_TASK_DEPENDENCIES:
+        raise ValueError(
+            f"dependencies must contain at most {MAX_TASK_DEPENDENCIES} entries"
+        )
+    try:
+        normalized = json.loads(
+            json.dumps(list(value), allow_nan=False, separators=(",", ":"))
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("dependencies must contain JSON-compatible values") from exc
+    seen: set[int] = set()
+    for index, dependency in enumerate(normalized):
+        if not isinstance(dependency, dict) or set(dependency) != {
+            "task_id",
+            "completion_event_id",
+            "summary",
+            "result",
+        }:
+            raise ValueError(f"dependencies[{index}] has an invalid shape")
+        task_id = _positive_int(
+            dependency["task_id"], f"dependencies[{index}].task_id"
+        )
+        _positive_int(
+            dependency["completion_event_id"],
+            f"dependencies[{index}].completion_event_id",
+        )
+        if not isinstance(dependency["summary"], str):
+            raise ValueError(f"dependencies[{index}].summary must be a string")
+        if not isinstance(dependency["result"], dict):
+            raise ValueError(f"dependencies[{index}].result must be a JSON object")
+        if task_id in seen:
+            raise ValueError("dependencies must not contain duplicate task ids")
+        seen.add(task_id)
+    return _freeze(normalized)
+
+
 def json_size(value: object) -> int:
     return len(
         json.dumps(
@@ -124,6 +167,7 @@ class AssignmentContext:
     ownership_owner: str = "agent-bus"
     external_origin: Optional[Mapping[str, Any]] = None
     decisions: tuple[Mapping[str, Any], ...] = ()
+    dependencies: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         _positive_int(self.task_id, "task_id")
@@ -153,6 +197,11 @@ class AssignmentContext:
             _immutable_json_object(self.context, "context"),
         )
         object.__setattr__(self, "decisions", _immutable_decisions(self.decisions))
+        object.__setattr__(
+            self,
+            "dependencies",
+            _immutable_dependencies(self.dependencies),
+        )
         if self.external_origin is not None:
             object.__setattr__(
                 self,
@@ -177,7 +226,15 @@ class AssignmentContext:
         raw_capabilities = payload.get("required_capabilities", [])
         if not isinstance(raw_capabilities, list):
             raise ValueError("required_capabilities must be a list")
-        return cls(
+        dependency_refs = payload.get("dependency_refs", [])
+        dependencies = payload.get("dependencies")
+        if dependency_refs and dependencies is None:
+            raise ValueError(
+                "assignment dependency_refs must be resolved before parsing"
+            )
+        if dependencies is None:
+            dependencies = []
+        assignment = cls(
             correlation_id=event.get("correlation_id"),
             task_id=payload.get("task_id"),
             assignment_id=payload.get("assignment_id"),
@@ -194,7 +251,22 @@ class AssignmentContext:
             ownership_mode=ownership.get("mode"),
             ownership_owner=ownership.get("owner"),
             external_origin=payload.get("external_origin"),
+            dependencies=dependencies,
         )
+        if not isinstance(dependency_refs, list):
+            raise ValueError("assignment dependency_refs must be a list")
+        expected_refs = [
+            {
+                "task_id": dependency["task_id"],
+                "completion_event_id": dependency["completion_event_id"],
+            }
+            for dependency in assignment.dependencies
+        ]
+        if dependency_refs != expected_refs:
+            raise ValueError(
+                "resolved dependencies must match assignment dependency_refs"
+            )
+        return assignment
 
     def to_dict(self) -> dict:
         result = {
@@ -206,6 +278,7 @@ class AssignmentContext:
             "goal": self.goal,
             "context": _thaw(self.context),
             "decisions": _thaw(self.decisions),
+            "dependencies": _thaw(self.dependencies),
             "required_capabilities": list(self.required_capabilities),
             "retry_policy": {"max_retries": self.max_retries},
             "retryable_failures": self.retryable_failures,

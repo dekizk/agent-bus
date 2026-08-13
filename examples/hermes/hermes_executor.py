@@ -328,6 +328,10 @@ is missing. A later decision supersedes conflicting earlier decisions or
 original context, and a clear decision value satisfies a null or missing context
 value. Do not block again for information already supplied in decisions.
 
+The dependencies array contains immutable, resolved completions for every
+upstream task, in the declared depends_on order. Use their summary and result
+as inputs; do not ask the human to copy upstream output into context.
+
 Your final response must be exactly one JSON object with no Markdown fence and
 one of these shapes:
 {{"status":"completed","summary":"concise result","result":{{}}}}

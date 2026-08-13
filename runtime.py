@@ -22,10 +22,11 @@ from executors import (
     json_size,
     mutable_json,
 )
-from limits import MAX_INLINE_RESULT_BYTES
+from limits import MAX_INLINE_DEPENDENCY_BYTES, MAX_INLINE_RESULT_BYTES
 
 DEFAULT_HEARTBEAT_SECONDS = 5.0
 DEFAULT_PUBLISH_RETRY_SECONDS = 1.0
+DEFAULT_DEPENDENCY_FETCH_ATTEMPTS = 3
 RUNTIME_TOPICS = (
     "agent.registered",
     "task.assigned",
@@ -53,6 +54,7 @@ class WorkerRuntime:
         instance_id: Optional[str] = None,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
         publish_retry_seconds: float = DEFAULT_PUBLISH_RETRY_SECONDS,
+        dependency_fetch_attempts: int = DEFAULT_DEPENDENCY_FETCH_ATTEMPTS,
         unexpected_exceptions_retryable: bool = False,
         log: Callable[[str], None] = print,
     ):
@@ -62,6 +64,12 @@ class WorkerRuntime:
             raise ValueError("capacity must be a positive integer")
         if heartbeat_seconds <= 0 or publish_retry_seconds <= 0:
             raise ValueError("heartbeat and publish retry intervals must be positive")
+        if (
+            not isinstance(dependency_fetch_attempts, int)
+            or isinstance(dependency_fetch_attempts, bool)
+            or dependency_fetch_attempts < 1
+        ):
+            raise ValueError("dependency_fetch_attempts must be a positive integer")
         normalized_capabilities = tuple(dict.fromkeys(capabilities))
         if not all(isinstance(item, str) and item.strip() for item in normalized_capabilities):
             raise ValueError("capabilities must contain non-empty strings")
@@ -76,6 +84,7 @@ class WorkerRuntime:
         self.instance_id = instance_id or uuid.uuid4().hex
         self.heartbeat_seconds = heartbeat_seconds
         self.publish_retry_seconds = publish_retry_seconds
+        self.dependency_fetch_attempts = dependency_fetch_attempts
         self.unexpected_exceptions_retryable = unexpected_exceptions_retryable
         self.log = log
 
@@ -178,9 +187,15 @@ class WorkerRuntime:
         ):
             return
         try:
-            assignment = AssignmentContext.from_event(event)
-        except (TypeError, ValueError) as exc:
-            self.log(f"[{self.name}] ignored malformed assignment: {exc}")
+            resolved_event = self._resolve_dependency_refs_with_retry(event)
+            if resolved_event is None:
+                return
+            assignment = AssignmentContext.from_event(resolved_event)
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
+            self.log(
+                f"[{self.name}] could not resolve assignment safely: {exc}; stopping"
+            )
+            self.stop()
             return
 
         with self._lock:
@@ -193,6 +208,87 @@ class WorkerRuntime:
             self._owned.add(assignment.assignment_id)
             future = self._pool.submit(self._execute_assignment, assignment)
             self._futures[assignment.assignment_id] = future
+
+    def _resolve_dependency_refs_with_retry(self, event: dict) -> Optional[dict]:
+        for attempt in range(1, self.dependency_fetch_attempts + 1):
+            try:
+                return self._resolve_dependency_refs(event)
+            except httpx.HTTPStatusError as exc:
+                if 400 <= exc.response.status_code < 500:
+                    raise
+                error: httpx.HTTPError = exc
+            except httpx.HTTPError as exc:
+                error = exc
+
+            if attempt >= self.dependency_fetch_attempts:
+                raise error
+            self.log(
+                f"[{self.name}] dependency lookup failed "
+                f"({error.__class__.__name__}); retrying "
+                f"({attempt + 1}/{self.dependency_fetch_attempts})"
+            )
+            if self.stop_event.wait(self.publish_retry_seconds):
+                return None
+        return None
+
+    def _resolve_dependency_refs(self, event: dict) -> dict:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("assignment payload must be an object")
+        refs = payload.get("dependency_refs", [])
+        if not isinstance(refs, list):
+            raise ValueError("assignment dependency_refs must be a list")
+        if not refs:
+            return event
+
+        dependencies = []
+        for index, ref in enumerate(refs):
+            if not isinstance(ref, dict) or set(ref) != {
+                "task_id",
+                "completion_event_id",
+            }:
+                raise ValueError(f"dependency_refs[{index}] has an invalid shape")
+            task_id = ref.get("task_id")
+            completion_event_id = ref.get("completion_event_id")
+            if (
+                not isinstance(task_id, int)
+                or isinstance(task_id, bool)
+                or task_id <= 0
+                or not isinstance(completion_event_id, int)
+                or isinstance(completion_event_id, bool)
+                or completion_event_id <= 0
+            ):
+                raise ValueError(f"dependency_refs[{index}] has invalid ids")
+            completion = self.bus.get_event(completion_event_id)
+            completion_payload = completion.get("payload")
+            if (
+                completion.get("id") != completion_event_id
+                or completion.get("topic") != "task.completed"
+                or completion.get("correlation_id") != event.get("correlation_id")
+                or not isinstance(completion_payload, dict)
+                or completion_payload.get("task_id") != task_id
+            ):
+                raise ValueError(
+                    f"dependency_refs[{index}] does not identify the expected completion"
+                )
+            result = completion_payload.get("result", {})
+            summary = completion_payload.get("summary", "")
+            if not isinstance(result, dict) or not isinstance(summary, str):
+                raise ValueError(
+                    f"dependency_refs[{index}] completion payload is malformed"
+                )
+            dependencies.append(
+                {
+                    "task_id": task_id,
+                    "completion_event_id": completion_event_id,
+                    "summary": summary,
+                    "result": result,
+                }
+            )
+
+        resolved = dict(event)
+        resolved["payload"] = {**payload, "dependencies": dependencies}
+        return resolved
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -260,14 +356,20 @@ class WorkerRuntime:
                 f"[{self.name}] executing task {assignment.task_id} "
                 f"attempt {assignment.attempt}: {assignment.goal}"
             )
-            try:
-                outcome = ensure_outcome(self.executor.execute(assignment))
-            except Exception as exc:
-                reason = f"executor raised {exc.__class__.__name__}: {exc}"
-                if self.unexpected_exceptions_retryable:
-                    outcome = RetryableFailure("executor_exception", reason)
-                else:
-                    outcome = PermanentFailure("executor_exception", reason)
+            if json_size(assignment.dependencies) > MAX_INLINE_DEPENDENCY_BYTES:
+                outcome = PermanentFailure(
+                    "dependency_input_too_large",
+                    "resolved dependency input exceeds the inline execution limit",
+                )
+            else:
+                try:
+                    outcome = ensure_outcome(self.executor.execute(assignment))
+                except Exception as exc:
+                    reason = f"executor raised {exc.__class__.__name__}: {exc}"
+                    if self.unexpected_exceptions_retryable:
+                        outcome = RetryableFailure("executor_exception", reason)
+                    else:
+                        outcome = PermanentFailure("executor_exception", reason)
 
             if isinstance(outcome, Completed):
                 if json_size(outcome.result) > MAX_INLINE_RESULT_BYTES:

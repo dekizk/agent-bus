@@ -87,6 +87,100 @@ class BusStorageTests(unittest.TestCase):
                         },
                     )
 
+    def test_dependencies_are_existing_acyclic_same_workflow_edges(self):
+        root = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "root"},
+            correlation_id="workflow-one",
+        )
+        dependent = bus.append_event(
+            "task.created",
+            "human",
+            {
+                "title": "dependent",
+                "depends_on": [root["payload"]["task_id"]],
+            },
+        )
+
+        self.assertEqual("workflow-one", dependent["correlation_id"])
+        self.assertEqual([root["payload"]["task_id"]], dependent["payload"]["depends_on"])
+
+        with self.assertRaisesRegex(bus.EventValidationError, "does not exist"):
+            bus.append_event(
+                "task.created",
+                "human",
+                {"title": "forward edge", "depends_on": [999]},
+            )
+        with self.assertRaisesRegex(bus.EventValidationError, "duplicates"):
+            bus.append_event(
+                "task.created",
+                "human",
+                {"title": "duplicate edge", "depends_on": [1, 1]},
+            )
+        with self.assertRaisesRegex(bus.EventValidationError, "at most"):
+            bus.append_event(
+                "task.created",
+                "human",
+                {
+                    "title": "too much fan-in",
+                    "depends_on": list(range(1, bus.MAX_TASK_DEPENDENCIES + 2)),
+                },
+            )
+
+        other = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "other"},
+            correlation_id="workflow-two",
+        )
+        with self.assertRaisesRegex(bus.EventValidationError, "same correlation_id"):
+            bus.append_event(
+                "task.created",
+                "human",
+                {
+                    "title": "cross-workflow fan-in",
+                    "depends_on": [
+                        root["payload"]["task_id"],
+                        other["payload"]["task_id"],
+                    ],
+                },
+            )
+
+    def test_dependency_reference_and_failure_contracts(self):
+        assignment = {
+            "task_id": 2,
+            "assignment_id": "task:2:attempt:1",
+            "attempt": 1,
+            "assignee": "alice",
+            "worker_instance_id": "alice-1",
+            "dependency_refs": [
+                {"task_id": 1, "completion_event_id": 10},
+            ],
+        }
+        bus.validate_event("task.assigned", "pm", assignment, 10, None, 2)
+        with self.assertRaises(bus.EventValidationError):
+            bus.validate_event(
+                "task.assigned",
+                "pm",
+                {**assignment, "dependency_refs": [{"task_id": 1}]},
+                10,
+                None,
+                2,
+            )
+
+        failure = {
+            "task_id": 2,
+            "dependency_task_id": 1,
+            "dependency_event_id": 11,
+            "reason": "dependency task 1 failed",
+        }
+        bus.validate_event("task.dependency_failed", "pm", failure, 11, None, 2)
+        with self.assertRaises(bus.EventValidationError):
+            bus.validate_event(
+                "task.dependency_failed", "worker", failure, 11, None, 2
+            )
+
     def test_integration_context_and_ownership_contracts(self):
         controlled = bus.append_event(
             "task.created",
@@ -510,7 +604,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.4.1", bus.app.version)
+        self.assertEqual("0.5.0", bus.app.version)
         created = self.client.post(
             "/events",
             json={
@@ -548,6 +642,9 @@ class BusApiTests(unittest.TestCase):
         queried = self.client.get("/events", params={"limit": 10})
         self.assertEqual(200, queried.status_code)
         self.assertEqual(1, len(queried.json()))
+        fetched = self.client.get(f"/events/{created.json()['id']}")
+        self.assertEqual(created.json(), fetched.json())
+        self.assertEqual(404, self.client.get("/events/999").status_code)
 
     def test_correlation_propagation_validation_and_query(self):
         root = self.client.post(

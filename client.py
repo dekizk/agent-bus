@@ -165,6 +165,17 @@ class BusClient:
         response.raise_for_status()
         return response.json()
 
+    def get_event(self, event_id: int) -> dict:
+        if not isinstance(event_id, int) or isinstance(event_id, bool) or event_id <= 0:
+            raise ValueError("event_id must be a positive integer")
+        response = httpx.get(
+            f"{self.base_url}/events/{event_id}",
+            headers=self._headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def query_all(
         self,
         after_id: int = 0,

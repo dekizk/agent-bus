@@ -36,6 +36,15 @@ task.created
     -> task.completed
 ```
 
+Tasks may also form a directed acyclic graph (DAG). A dependent remains
+unassigned until every declared upstream task has completed:
+
+```text
+task.created (A) -> task.completed (A)
+                                  -> task.assigned (B, depends_on A)
+task.failed (A)                   -> task.dependency_failed (B)
+```
+
 Recovery and human-input paths are explicit events:
 
 ```text
@@ -139,7 +148,8 @@ assignment:
 }
 ```
 
-Context and final structured results are limited to 16 KiB of encoded JSON.
+Context and each final structured result are limited to 16 KiB of encoded JSON.
+Resolved dependency input is limited to 32 KiB in aggregate.
 They are coordination data, not storage for prompts, transcripts, or large
 artifacts; content-addressed blob storage belongs in a separate
 telemetry/artifact layer.
@@ -160,6 +170,12 @@ clear decision satisfies a corresponding null or missing context value. The
 bus preserves this precedence rule without mutating the original task event.
 Historical assignments created before v0.4.1 parse this field as an empty
 tuple.
+
+`AssignmentContext.dependencies` is an immutable tuple of resolved upstream
+completions in the task's declared `depends_on` order. Each entry contains the
+upstream `task_id`, immutable `completion_event_id`, summary, and structured
+result. Executors consume this field directly; publishers do not copy upstream
+results into downstream context.
 
 An existing Python agent with a `run()` method can be wrapped without teaching
 it about the bus:
@@ -367,6 +383,50 @@ New events must reference an existing `caused_by` event. If both a child and
 its parent have correlations, they must match. `task_id` still identifies only
 one task; it is never used as a workflow identifier.
 
+## DAG orchestration
+
+A task declares dependency edges when it is created:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "payload": {
+    "title": "Plan fixes from the audit",
+    "depends_on": [4],
+    "required_capabilities": ["hermes"]
+  }
+}
+```
+
+Every dependency must already exist, appear only once, and belong to the same
+`correlation_id`. Because new nodes may point only to existing nodes, the bus
+cannot accept a cycle. A dependent with no explicit correlation inherits the
+workflow identity of its dependencies. Fan-in is capped at 128 direct
+dependencies per task. These rules support chains, fan-in, and fan-out while
+keeping the graph reconstructible from immutable `task.created` events; there
+is no mutable DAG table or board.
+
+The PM derives readiness during replay. It assigns a task only after every
+dependency has a valid `task.completed` event. The persisted `task.assigned`
+contains compact `dependency_refs` pairs (`task_id` and `completion_event_id`),
+not copied results. The worker retrieves those immutable completion events via
+`GET /events/{event_id}`, verifies their task and workflow identities, and then
+constructs `AssignmentContext.dependencies` for the executor. This keeps each
+result stored once in the coordination log. A transient lookup failure is
+retried three times before the worker stops. Malformed references and 4xx
+responses stop it immediately; continuing to heartbeat after silently skipping
+an owned assignment would otherwise leave that task assigned forever. Stopping
+allows the lease and normal reassignment path to recover safely.
+
+If an upstream task reaches `task.failed` or `task.dependency_failed`, the PM
+emits a deterministic `task.dependency_failed` for each affected downstream
+task and cascades that state through the graph without assigning doomed work.
+This v0.5 terminal propagation is deliberately conservative: reviving an
+upstream task does not silently revive already failed descendants. Recreate
+those descendants as new tasks after the upstream recovery so the new intent
+and causal history are explicit.
+
 ## Crash recovery guarantees
 
 ### PM
@@ -374,13 +434,13 @@ one task; it is never used as a workflow identifier.
 At startup the PM:
 
 1. reads coordination topics in bounded, server-filtered pages;
-2. rebuilds workers, tasks, attempts, and decisions through a total reducer;
+2. rebuilds workers, tasks, dependency edges, attempts, and decisions through a total reducer;
 3. reconciles missing effects before waiting for another event;
 4. publishes effects with stable logical idempotency keys.
 
-This closes the crash window where the prototype could record `task.created` or
-`task.blocked` but fail before publishing the corresponding assignment or
-decision request.
+This closes the crash window where the prototype could record `task.created`,
+an upstream completion, or `task.blocked` but fail before publishing the
+corresponding ready assignment, dependency failure, or decision request.
 
 ### Workers
 
@@ -451,20 +511,25 @@ As a v0.4 publisher-contract change, new `task.created` events must contain a
 non-empty `payload.title`. Historical titleless events remain replayable and
 receive a deterministic fallback title in the PM projection.
 
+v0.5 adds optional `payload.depends_on` to `task.created` and
+`payload.dependency_refs` to PM assignments without changing the schema version;
+their absence retains the historical single-task behavior.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
 |---|---|---|
 | `agent.registered` | worker | Announces a process instance, capabilities, and capacity |
 | `agent.heartbeat` | worker | Renews that process instance's lease |
-| `task.created` | human/agent | Requests a logical outcome |
-| `task.assigned` | PM | Creates a numbered execution attempt with prior human decisions |
+| `task.created` | human/agent | Requests a logical outcome and optional existing dependency edges |
+| `task.assigned` | PM | Creates a numbered execution attempt with decisions and completion references |
 | `task.started` | worker | Confirms the active attempt began |
 | `task.completed` | worker | Completes the active attempt and logical task |
 | `task.blocked` | worker | Pauses the attempt for human input |
 | `task.attempt_failed` | worker | Records a retryable or permanent execution failure |
 | `task.assignment_expired` | PM | Records loss or replacement of the assigned worker |
 | `task.failed` | PM | Terminates a task after policy exhaustion or permanent failure |
+| `task.dependency_failed` | PM | Terminates downstream work whose prerequisite failed |
 | `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
 | `decision.made` | human | Records a response that is carried into the next attempt |
@@ -487,6 +552,7 @@ History queries are bounded; use `after_id` to paginate:
 curl 'http://127.0.0.1:8765/events?after_id=0&limit=1000'
 curl 'http://127.0.0.1:8765/events?topics=task.assigned,task.completed'
 curl 'http://127.0.0.1:8765/events?correlation_id=release-2026-07'
+curl 'http://127.0.0.1:8765/events/42'
 ```
 
 A response with header `X-Page-Full: 1` filled its page, so more events may
@@ -536,23 +602,23 @@ python -m unittest discover -v   # or: pytest tests/
 The suite focuses on orchestration failures: restart reconciliation, stale
 attempt rejection, retry exhaustion, permanent failures, human revival,
 worker replacement, malformed replay events, idempotent publish retries,
-correlation propagation and migration, SQL-level stream filtering, executor
-conformance, bounded concurrency, subprocess timeout/cancellation, stable
-canaries, single-owner adoption, real-agent integration, and atomic monotonic
-offsets.
+correlation propagation and migration, DAG validation, chain/fan-in/fan-out
+readiness, dependency-failure cascades, result-reference resolution, SQL-level
+stream filtering, executor conformance, bounded concurrency, subprocess
+timeout/cancellation, stable canaries, single-owner adoption, real-agent
+integration, and atomic monotonic offsets.
 
 ## Scope and next boundaries
 
-v0.4.1 remains a trusted, single-host runtime. Actor names are asserted by
-clients, not authenticated identities. The PM lock and wake-up condition are
-local-process mechanisms. Before exposing the bus to other machines, add
-authentication and replace local exclusivity/notification with shared
-infrastructure.
+v0.5 remains a trusted, single-process, single-host runtime. Actor names are
+asserted by clients, not authenticated identities. The PM lock and SSE wake-up
+condition are process-local mechanisms; do not run the FastAPI app with
+multiple uvicorn workers. Before distributing the bus, add authenticated actor
+identity and replace local exclusivity/notification with shared infrastructure.
 
-The next version will be selected after several genuine integration trials.
-Candidate layers include task dependencies and DAG orchestration, and model/tool
-telemetry with content-addressed blob storage. Cancellation, deadlines,
-snapshots, and a read-only operational UI remain later candidates. Trial
-evidence, rather than version numbering alone, should determine their order.
-Those features should remain projections and commands over the log—not a return
-to a mutable board as the source of truth.
+The next version should be selected after genuine trials of the new DAG path.
+Likely candidates are model/tool telemetry with content-addressed blob storage,
+or cancellation/deadline semantics if multi-step runs show that control is the
+more immediate gap. Snapshots and a read-only operational UI remain later
+candidates. These features should remain projections and commands over the
+log—not a return to a mutable board as the source of truth.

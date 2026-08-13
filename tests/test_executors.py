@@ -294,6 +294,40 @@ class AssignmentContextTests(unittest.TestCase):
         }
         self.assertEqual((), AssignmentContext.from_event(event).decisions)
 
+    def test_resolved_dependencies_are_immutable_and_required_for_refs(self):
+        source = assignment()
+        event = {
+            "id": source.assignment_event_id,
+            "correlation_id": source.correlation_id,
+            "payload": {
+                "task_id": source.task_id,
+                "assignment_id": source.assignment_id,
+                "attempt": source.attempt,
+                "goal": source.goal,
+                "assignee": source.assignee,
+                "worker_instance_id": source.worker_instance_id,
+                "dependency_refs": [
+                    {"task_id": 1, "completion_event_id": 18},
+                ],
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "must be resolved"):
+            AssignmentContext.from_event(event)
+
+        event["payload"]["dependencies"] = [
+            {
+                "task_id": 1,
+                "completion_event_id": 18,
+                "summary": "prepared input",
+                "result": {"value": 42},
+            }
+        ]
+        parsed = AssignmentContext.from_event(event)
+        self.assertEqual(42, parsed.dependencies[0]["result"]["value"])
+        with self.assertRaises(TypeError):
+            parsed.dependencies[0]["result"]["value"] = 7
+        self.assertEqual(42, parsed.to_dict()["dependencies"][0]["result"]["value"])
+
 
 if __name__ == "__main__":
     unittest.main()

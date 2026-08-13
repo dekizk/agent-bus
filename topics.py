@@ -12,6 +12,7 @@ COORDINATION_TOPICS = frozenset(
         "task.attempt_failed",
         "task.assignment_expired",
         "task.failed",
+        "task.dependency_failed",
         "task.retry_requested",
         "decision.needed",
         "decision.made",

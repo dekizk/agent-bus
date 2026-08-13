@@ -183,6 +183,8 @@ class HermesExecutorTests(unittest.TestCase):
         self.assertIn('"release_target": "staging"', prompt)
         self.assertIn("A later decision supersedes conflicting", prompt)
         self.assertIn("Do not block again for information already supplied", prompt)
+        self.assertIn("dependencies array", prompt)
+        self.assertIn("declared depends_on order", prompt)
 
     def test_process_errors_timeout_and_invalid_output_are_typed(self):
         failed = self.make_executor(

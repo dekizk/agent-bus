@@ -8,7 +8,14 @@ from executors import Blocked, Completed, PermanentFailure, RetryableFailure
 from runtime import RUNTIME_TOPICS, WorkerRuntime
 
 
-def assigned_event(task_id=1, attempt=1, *, event_id=10, instance="alice-1"):
+def assigned_event(
+    task_id=1,
+    attempt=1,
+    *,
+    event_id=10,
+    instance="alice-1",
+    dependency_refs=(),
+):
     return {
         "id": event_id,
         "ts": 100.0,
@@ -27,6 +34,7 @@ def assigned_event(task_id=1, attempt=1, *, event_id=10, instance="alice-1"):
             "retry_policy": {"max_retries": 2},
             "retryable_failures": attempt - 1,
             "ownership": {"mode": "controlled", "owner": "agent-bus"},
+            "dependency_refs": list(dependency_refs),
         },
     }
 
@@ -34,12 +42,13 @@ def assigned_event(task_id=1, attempt=1, *, event_id=10, instance="alice-1"):
 class FakeBus:
     actor = "alice"
 
-    def __init__(self, events=()):
+    def __init__(self, events=(), stored_events=()):
         self.events = list(events)
         self.published = []
         self.subscribe_calls = []
         self._next_id = 100
         self._lock = threading.Lock()
+        self.stored_events = {event["id"]: event for event in stored_events}
 
     def publish(self, topic, payload, **kwargs):
         with self._lock:
@@ -59,6 +68,9 @@ class FakeBus:
     def subscribe(self, **kwargs):
         self.subscribe_calls.append(kwargs)
         return iter(self.events)
+
+    def get_event(self, event_id):
+        return self.stored_events[event_id]
 
 
 class StaticExecutor:
@@ -176,6 +188,238 @@ class RuntimeOutcomeTests(unittest.TestCase):
         runtime.run()
         self.assertTrue(runtime.stop_event.is_set())
         self.assertEqual(0, executor.calls)
+
+    def test_dependency_references_are_resolved_for_the_executor(self):
+        completion = {
+            "id": 9,
+            "topic": "task.completed",
+            "correlation_id": "workflow-one",
+            "payload": {
+                "task_id": 1,
+                "summary": "prepared data",
+                "result": {"value": 42},
+            },
+        }
+        assignment_event = assigned_event(
+            task_id=2,
+            dependency_refs=({"task_id": 1, "completion_event_id": 9},),
+        )
+
+        class CapturingExecutor:
+            received = None
+
+            def execute(self, assignment):
+                self.received = assignment
+                return Completed("done")
+
+        executor = CapturingExecutor()
+        fake_bus = FakeBus([assignment_event], stored_events=[completion])
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run()
+
+        self.assertEqual(42, executor.received.dependencies[0]["result"]["value"])
+        self.assertNotIn("dependencies", assignment_event["payload"])
+        self.assertEqual("task.completed", fake_bus.published[-1]["topic"])
+
+    def test_transient_dependency_lookup_recovers_before_worker_stop(self):
+        completion = {
+            "id": 9,
+            "topic": "task.completed",
+            "correlation_id": "workflow-one",
+            "payload": {
+                "task_id": 1,
+                "summary": "prepared data",
+                "result": {"value": 42},
+            },
+        }
+
+        class FlakyBus(FakeBus):
+            lookup_calls = 0
+
+            def get_event(self, event_id):
+                self.lookup_calls += 1
+                if self.lookup_calls < 3:
+                    request = httpx.Request("GET", f"http://bus/events/{event_id}")
+                    raise httpx.ConnectError("temporary disconnect", request=request)
+                return super().get_event(event_id)
+
+        class CapturingExecutor:
+            received = None
+
+            def execute(self, assignment):
+                self.received = assignment
+                return Completed("done")
+
+        executor = CapturingExecutor()
+        fake_bus = FlakyBus(
+            [
+                assigned_event(
+                    task_id=2,
+                    dependency_refs=(
+                        {"task_id": 1, "completion_event_id": 9},
+                    ),
+                )
+            ],
+            stored_events=[completion],
+        )
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            publish_retry_seconds=0.001,
+            log=lambda message: None,
+        ).run()
+
+        self.assertEqual(3, fake_bus.lookup_calls)
+        self.assertEqual(42, executor.received.dependencies[0]["result"]["value"])
+        self.assertEqual("task.completed", fake_bus.published[-1]["topic"])
+
+    def test_exhausted_transient_dependency_lookup_stops_worker(self):
+        class OfflineBus(FakeBus):
+            lookup_calls = 0
+
+            def get_event(self, event_id):
+                self.lookup_calls += 1
+                request = httpx.Request("GET", f"http://bus/events/{event_id}")
+                raise httpx.ConnectError("offline", request=request)
+
+        class MustNotRun:
+            calls = 0
+
+            def execute(self, assignment):
+                self.calls += 1
+                return Completed("unexpected")
+
+        executor = MustNotRun()
+        fake_bus = OfflineBus(
+            [
+                assigned_event(
+                    task_id=2,
+                    dependency_refs=(
+                        {"task_id": 1, "completion_event_id": 9},
+                    ),
+                )
+            ]
+        )
+        runtime = WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            publish_retry_seconds=0.001,
+            log=lambda message: None,
+        )
+        runtime.run()
+
+        self.assertEqual(3, fake_bus.lookup_calls)
+        self.assertEqual(0, executor.calls)
+        self.assertTrue(runtime.stop_event.is_set())
+        self.assertEqual(["agent.registered"], [event["topic"] for event in fake_bus.published])
+
+    def test_dependency_lookup_4xx_stops_without_retry(self):
+        class MissingEventBus(FakeBus):
+            lookup_calls = 0
+
+            def get_event(self, event_id):
+                self.lookup_calls += 1
+                request = httpx.Request("GET", f"http://bus/events/{event_id}")
+                response = httpx.Response(404, request=request)
+                raise httpx.HTTPStatusError(
+                    "event not found",
+                    request=request,
+                    response=response,
+                )
+
+        fake_bus = MissingEventBus(
+            [
+                assigned_event(
+                    task_id=2,
+                    dependency_refs=(
+                        {"task_id": 1, "completion_event_id": 9},
+                    ),
+                )
+            ]
+        )
+        runtime = WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=StaticExecutor(Completed("unexpected")),
+            heartbeat_seconds=100,
+            publish_retry_seconds=0.001,
+            log=lambda message: None,
+        )
+        runtime.run()
+
+        self.assertEqual(1, fake_bus.lookup_calls)
+        self.assertTrue(runtime.stop_event.is_set())
+
+    def test_dependency_fetch_attempts_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "dependency_fetch_attempts"):
+            WorkerRuntime(
+                FakeBus(),
+                name="alice",
+                executor=StaticExecutor(Completed("done")),
+                dependency_fetch_attempts=0,
+            )
+
+    def test_aggregate_dependency_input_is_bounded_before_executor_runs(self):
+        completions = []
+        refs = []
+        for task_id in range(1, 4):
+            event_id = 20 + task_id
+            refs.append({"task_id": task_id, "completion_event_id": event_id})
+            completions.append(
+                {
+                    "id": event_id,
+                    "topic": "task.completed",
+                    "correlation_id": "workflow-one",
+                    "payload": {
+                        "task_id": task_id,
+                        "summary": "large",
+                        "result": {"value": "x" * 12_000},
+                    },
+                }
+            )
+
+        class MustNotRun:
+            calls = 0
+
+            def execute(self, assignment):
+                self.calls += 1
+                return Completed("unexpected")
+
+        executor = MustNotRun()
+        fake_bus = FakeBus(
+            [assigned_event(task_id=4, dependency_refs=refs)],
+            stored_events=completions,
+        )
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run()
+
+        self.assertEqual(0, executor.calls)
+        failure = fake_bus.published[-1]
+        self.assertEqual("task.attempt_failed", failure["topic"])
+        self.assertEqual(
+            "dependency_input_too_large",
+            failure["payload"]["failure_code"],
+        )
+        self.assertFalse(failure["payload"]["retryable"])
 
 
 class RuntimeOwnershipTests(unittest.TestCase):

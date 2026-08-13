@@ -79,6 +79,9 @@ class TaskRecord:
     last_failure_reason: Optional[str] = None
     permanent_failure_pending: bool = False
     failed_event_id: Optional[int] = None
+    dependency_failed_event_id: Optional[int] = None
+    completion_event_id: Optional[int] = None
+    depends_on: tuple[int, ...] = ()
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
     context: dict = field(default_factory=dict)
     external_origin: Optional[dict] = None
@@ -303,6 +306,26 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 ("canary", "agent-bus"),
             }:
                 return False
+            raw_depends_on = payload.get("depends_on", [])
+            if not isinstance(raw_depends_on, list):
+                return False
+            depends_on: list[int] = []
+            for dependency_task_id in raw_depends_on:
+                dependency_task_id = _positive_int(dependency_task_id)
+                if (
+                    dependency_task_id is None
+                    or dependency_task_id in depends_on
+                    or dependency_task_id not in state.tasks
+                ):
+                    return False
+                dependency = state.tasks[dependency_task_id]
+                correlation_id = ev.get("correlation_id")
+                if (
+                    not isinstance(correlation_id, str)
+                    or dependency.correlation_id != correlation_id
+                ):
+                    return False
+                depends_on.append(dependency_task_id)
             state.tasks[task_id] = TaskRecord(
                 task_id=task_id,
                 title=(
@@ -316,6 +339,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     else None
                 ),
                 open_event_id=event_id,
+                depends_on=tuple(depends_on),
                 max_retries=max_retries,
                 required_capabilities=required,
                 context=dict(context),
@@ -347,6 +371,23 @@ def apply_event(state: PMState, ev: dict) -> bool:
             attempt = _positive_int(payload.get("attempt")) or task.attempt + 1
             if attempt != task.attempt + 1:
                 return False
+            expected_refs = [
+                {
+                    "task_id": dependency_task_id,
+                    "completion_event_id": state.tasks[
+                        dependency_task_id
+                    ].completion_event_id,
+                }
+                for dependency_task_id in task.depends_on
+            ]
+            if (
+                any(
+                    ref["completion_event_id"] is None
+                    for ref in expected_refs
+                )
+                or payload.get("dependency_refs", []) != expected_refs
+            ):
+                return False
             worker = state.workers.get(assignee)
             worker_instance_id = payload.get("worker_instance_id")
             if worker_instance_id is None:
@@ -376,6 +417,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             if not _active_assignment_matches(task, ev, payload):
                 return False
             task.status = "completed"
+            task.completion_event_id = event_id
             task.decision_needed = False
             task.block_reason = None
             return True
@@ -472,6 +514,38 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             task.status = "failed"
             task.failed_event_id = event_id
+            task.open_event_id = None
+            return True
+
+        if topic == "task.dependency_failed":
+            dependency_task_id = _positive_int(payload.get("dependency_task_id"))
+            dependency_event_id = _positive_int(payload.get("dependency_event_id"))
+            reason = payload.get("reason")
+            dependency = (
+                state.tasks.get(dependency_task_id)
+                if dependency_task_id is not None
+                else None
+            )
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "open"
+                or task.assignment_id is not None
+                or dependency_task_id not in task.depends_on
+                or dependency is None
+                or dependency.status not in {"failed", "dependency_failed"}
+                or dependency_event_id
+                != (
+                    dependency.failed_event_id
+                    if dependency.status == "failed"
+                    else dependency.dependency_failed_event_id
+                )
+                or ev.get("caused_by") != dependency_event_id
+                or not isinstance(reason, str)
+                or not reason
+            ):
+                return False
+            task.status = "dependency_failed"
+            task.dependency_failed_event_id = event_id
             task.open_event_id = None
             return True
 
@@ -597,6 +671,39 @@ def plan_next_emission(
 
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if task.status != "open" or task.assignment_id is not None:
+            continue
+        for dependency_task_id in task.depends_on:
+            dependency = state.tasks[dependency_task_id]
+            if dependency.status not in {"failed", "dependency_failed"}:
+                continue
+            dependency_event_id = (
+                dependency.failed_event_id
+                if dependency.status == "failed"
+                else dependency.dependency_failed_event_id
+            )
+            if dependency_event_id is None:
+                continue
+            return {
+                "topic": "task.dependency_failed",
+                "payload": {
+                    "task_id": task.task_id,
+                    "dependency_task_id": dependency_task_id,
+                    "dependency_event_id": dependency_event_id,
+                    "reason": (
+                        f"dependency task {dependency_task_id} ended in "
+                        f"{dependency.status}"
+                    ),
+                },
+                "caused_by": dependency_event_id,
+                "idempotency_key": (
+                    f"dependency-failed:task:{task.task_id}:"
+                    f"dependency:{dependency_task_id}:event:{dependency_event_id}"
+                ),
+            }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
         if (
             task.status != "open"
             or task.last_failure_event_id is None
@@ -656,6 +763,11 @@ def plan_next_emission(
             continue
         if task.ownership_owner != "agent-bus":
             continue
+        if any(
+            state.tasks[dependency_task_id].status != "completed"
+            for dependency_task_id in task.depends_on
+        ):
+            continue
         worker = state.choose_worker(task, now, lease_seconds)
         if worker is None:
             continue
@@ -673,6 +785,15 @@ def plan_next_emission(
                 "goal": task.title,
                 "context": task.context,
                 "decisions": json.loads(json.dumps(task.decisions)),
+                "dependency_refs": [
+                    {
+                        "task_id": dependency_task_id,
+                        "completion_event_id": state.tasks[
+                            dependency_task_id
+                        ].completion_event_id,
+                    }
+                    for dependency_task_id in task.depends_on
+                ],
                 "required_capabilities": sorted(task.required_capabilities),
                 "retry_policy": {"max_retries": task.max_retries},
                 "retryable_failures": task.retryable_failures,
@@ -686,7 +807,14 @@ def plan_next_emission(
                     else {}
                 ),
             },
-            "caused_by": task.open_event_id,
+            "caused_by": (
+                max(
+                    state.tasks[dependency_task_id].completion_event_id
+                    for dependency_task_id in task.depends_on
+                )
+                if task.depends_on and task.attempt == 0
+                else task.open_event_id
+            ),
             "idempotency_key": f"assign:{assignment_id}",
         }
     return None

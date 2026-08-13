@@ -17,8 +17,88 @@ class DirectClient:
     def publish(self, topic, payload, **kwargs):
         return bus.append_event(topic, self.actor, payload, **kwargs)
 
+    def get_event(self, event_id):
+        event = bus.fetch_event(event_id)
+        if event is None:
+            raise LookupError(event_id)
+        return event
+
 
 class ExistingAgentIntegrationTests(unittest.TestCase):
+    def test_two_step_dag_schedules_and_resolves_upstream_result(self):
+        first = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "Produce a value", "required_capabilities": ["python"]},
+            correlation_id="workflow-dag",
+        )
+        second = bus.append_event(
+            "task.created",
+            "human",
+            {
+                "title": "Consume the value",
+                "required_capabilities": ["python"],
+                "depends_on": [first["payload"]["task_id"]],
+            },
+        )
+        worker_bus = DirectClient("alice")
+        worker_bus.publish(
+            "agent.registered",
+            {
+                "name": "alice",
+                "instance_id": "alice-dag",
+                "capacity": 1,
+                "capabilities": ["python"],
+            },
+        )
+
+        received = []
+
+        class DagAgent:
+            def run(self, assignment):
+                received.append(assignment)
+                if assignment.task_id == first["payload"]["task_id"]:
+                    return Completed("produced", {"value": 42})
+                return Completed(
+                    "consumed",
+                    {"doubled": assignment.dependencies[0]["result"]["value"] * 2},
+                )
+
+        def replay_and_reconcile():
+            state = PMState()
+            for item in bus.fetch_after(0, list(PM_TOPICS)):
+                self.assertTrue(apply_event(state, item))
+            return reconcile(state, DirectClient("pm"), now=time.time())
+
+        first_assignment = replay_and_reconcile()[0]
+        self.assertEqual(first["payload"]["task_id"], first_assignment["payload"]["task_id"])
+        WorkerRuntime(
+            worker_bus,
+            name="alice",
+            instance_id="alice-dag",
+            executor=InProcessExecutor(DagAgent()),
+            capabilities=["python"],
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run([first_assignment])
+
+        second_assignment = replay_and_reconcile()[0]
+        self.assertEqual(second["payload"]["task_id"], second_assignment["payload"]["task_id"])
+        self.assertNotIn("dependencies", second_assignment["payload"])
+        WorkerRuntime(
+            worker_bus,
+            name="alice",
+            instance_id="alice-dag",
+            executor=InProcessExecutor(DagAgent()),
+            capabilities=["python"],
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run([second_assignment])
+
+        completed = bus.fetch_after(0, ["task.completed"])
+        self.assertEqual(84, completed[-1]["payload"]["result"]["doubled"])
+        self.assertEqual(42, received[-1].dependencies[0]["result"]["value"])
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_db_path = bus.DB_PATH

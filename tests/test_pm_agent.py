@@ -85,8 +85,11 @@ def created(
     ts=100.0,
     correlation_id=None,
     max_retries=MISSING,
+    depends_on=(),
 ):
     payload = {"task_id": task_id, "title": "demo"}
+    if depends_on:
+        payload["depends_on"] = list(depends_on)
     if max_retries is not MISSING:
         payload["retry_policy"] = {"max_retries": max_retries}
     return event(
@@ -153,6 +156,21 @@ def attempt_failed(
     )
 
 
+def completed(event_id, attempt, *, task_id=1, worker="alice", instance="alice-1"):
+    return event(
+        event_id,
+        "task.completed",
+        worker,
+        {
+            "task_id": task_id,
+            "assignment_id": f"task:{task_id}:attempt:{attempt}",
+            "worker_instance_id": instance,
+            "summary": "done",
+            "result": {"task": task_id},
+        },
+    )
+
+
 class PMLockTests(unittest.TestCase):
     def test_contended_lock_is_not_truncated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -195,6 +213,190 @@ class PMLockTests(unittest.TestCase):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_chain_waits_for_completion_then_assigns_by_reference(self):
+        state = PMState()
+        workflow = "workflow-dag"
+        for item in (
+            registered(),
+            created(event_id=2, task_id=1, correlation_id=workflow),
+            created(
+                event_id=3,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        root_assignment = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual(1, root_assignment["payload"]["task_id"])
+        self.assertEqual([], root_assignment["payload"]["dependency_refs"])
+        self.assertTrue(
+            apply_event(
+                state,
+                event(4, "task.assigned", "pm", root_assignment["payload"]),
+            )
+        )
+        self.assertIsNone(plan_next_emission(state, now=101.0, lease_seconds=20))
+        self.assertTrue(apply_event(state, completed(5, 1, task_id=1)))
+
+        child_assignment = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual(2, child_assignment["payload"]["task_id"])
+        self.assertEqual(
+            [{"task_id": 1, "completion_event_id": 5}],
+            child_assignment["payload"]["dependency_refs"],
+        )
+        self.assertEqual(5, child_assignment["caused_by"])
+
+    def test_fan_in_and_fan_out_are_replay_derived(self):
+        state = PMState()
+        workflow = "workflow-dag"
+        registration = registered()
+        registration["payload"]["capacity"] = 3
+        for item in (
+            registration,
+            created(event_id=2, task_id=1, correlation_id=workflow),
+            created(event_id=3, task_id=2, correlation_id=workflow),
+            created(
+                event_id=4,
+                task_id=3,
+                correlation_id=workflow,
+                depends_on=(1, 2),
+            ),
+            created(
+                event_id=5,
+                task_id=4,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        for event_id, task_id in ((6, 1), (8, 2)):
+            planned = plan_next_emission(state, now=101.0, lease_seconds=20)
+            self.assertEqual(task_id, planned["payload"]["task_id"])
+            self.assertTrue(
+                apply_event(state, event(event_id, "task.assigned", "pm", planned["payload"]))
+            )
+            self.assertTrue(
+                apply_event(state, completed(event_id + 1, 1, task_id=task_id))
+            )
+
+        fan_in = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual(3, fan_in["payload"]["task_id"])
+        self.assertEqual(
+            [
+                {"task_id": 1, "completion_event_id": 7},
+                {"task_id": 2, "completion_event_id": 9},
+            ],
+            fan_in["payload"]["dependency_refs"],
+        )
+        self.assertTrue(
+            apply_event(state, event(10, "task.assigned", "pm", fan_in["payload"]))
+        )
+        fan_out = plan_next_emission(state, now=101.0, lease_seconds=20)
+        self.assertEqual(4, fan_out["payload"]["task_id"])
+
+    def test_terminal_dependency_failure_cascades_without_assignment(self):
+        state = PMState()
+        workflow = "workflow-dag"
+        for item in (
+            registered(),
+            created(event_id=2, task_id=1, correlation_id=workflow, max_retries=0),
+            created(
+                event_id=3,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+            created(
+                event_id=4,
+                task_id=3,
+                correlation_id=workflow,
+                depends_on=(2,),
+            ),
+            assigned(5, 1, task_id=1),
+            attempt_failed(6, 1, task_id=1, retryable=False),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        emitted = reconcile(
+            state,
+            FakeBus(starting_id=7),
+            now=101.0,
+            lease_seconds=20,
+        )
+        self.assertEqual(
+            ["task.failed", "task.dependency_failed", "task.dependency_failed"],
+            [item["topic"] for item in emitted],
+        )
+        self.assertEqual("dependency_failed", state.tasks[2].status)
+        self.assertEqual("dependency_failed", state.tasks[3].status)
+        self.assertFalse(
+            any(item["topic"] == "task.assigned" for item in emitted)
+        )
+
+    def test_restart_reconciles_ready_dependency_once(self):
+        workflow = "workflow-dag"
+        history = [
+            registered(),
+            created(event_id=2, task_id=1, correlation_id=workflow),
+            created(
+                event_id=3,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+            assigned(4, 1, task_id=1),
+            completed(5, 1, task_id=1),
+        ]
+        state = PMState()
+        for item in history:
+            self.assertTrue(apply_event(state, item))
+        first_bus = FakeBus(starting_id=6)
+        emitted = reconcile(state, first_bus, now=101.0, lease_seconds=20)
+        self.assertEqual(["task.assigned"], [item["topic"] for item in emitted])
+
+        replayed = PMState()
+        for item in history + first_bus.events:
+            self.assertTrue(apply_event(replayed, item))
+        self.assertEqual(
+            [],
+            reconcile(
+                replayed,
+                FakeBus(starting_id=7),
+                now=101.0,
+                lease_seconds=20,
+            ),
+        )
+
+    def test_reducer_rejects_forward_and_cross_workflow_dependencies(self):
+        state = PMState()
+        self.assertFalse(
+            apply_event(
+                state,
+                created(
+                    task_id=2,
+                    correlation_id="workflow-one",
+                    depends_on=(1,),
+                ),
+            )
+        )
+        self.assertTrue(
+            apply_event(state, created(task_id=1, correlation_id="workflow-one"))
+        )
+        self.assertFalse(
+            apply_event(
+                state,
+                created(
+                    event_id=2,
+                    task_id=2,
+                    correlation_id="workflow-two",
+                    depends_on=(1,),
+                ),
+            )
+        )
+
     def test_task_projection_retains_workflow_correlation(self):
         state = PMState()
         self.assertTrue(
