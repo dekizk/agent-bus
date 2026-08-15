@@ -9,7 +9,7 @@ from unittest.mock import patch
 import bus
 import pm_agent
 from pm_agent import PMState, apply_event, plan_next_emission, reconcile
-from topics import COORDINATION_TOPICS, INTEGRATION_TOPICS
+from topics import COORDINATION_TOPICS, INTEGRATION_TOPICS, TELEMETRY_TOPICS
 
 
 def event(
@@ -1043,6 +1043,7 @@ class PMMainTests(unittest.TestCase):
         self.assertEqual(set(COORDINATION_TOPICS), set(pm_agent.PM_TOPICS))
         self.assertLessEqual(set(COORDINATION_TOPICS), set(bus.KNOWN_TOPICS))
         self.assertTrue(set(INTEGRATION_TOPICS).isdisjoint(pm_agent.PM_TOPICS))
+        self.assertTrue(set(TELEMETRY_TOPICS).isdisjoint(pm_agent.PM_TOPICS))
 
 
 if __name__ == "__main__":

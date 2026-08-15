@@ -5,11 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import uuid
 from pathlib import Path
 
+from artifacts import ArtifactStore
 from client import BusClient
 from examples.hermes.hermes_executor import HermesExecutor
 from runtime import WorkerRuntime
+from telemetry import BusTelemetrySink, ProducerIdentity
+
+HERMES_ADAPTER_VERSION = "0.6.0"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,12 +53,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="allow Hermes user rules/plugins/hooks instead of safe mode",
     )
+    parser.add_argument(
+        "--capture-content",
+        action="store_true",
+        help="opt in to storing prompts and model output as local artifacts",
+    )
+    parser.add_argument(
+        "--artifact-directory",
+        type=Path,
+        default=Path(os.environ.get("AGENT_BUS_ARTIFACT_DIR", "artifacts")),
+        help="local content-addressed store used only with --capture-content",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     toolsets = tuple(item.strip() for item in args.toolsets.split(",") if item.strip())
+    instance_id = uuid.uuid4().hex
+    bus = BusClient(args.bus_url, actor=args.name)
+    artifact_store = (
+        ArtifactStore(args.artifact_directory) if args.capture_content else None
+    )
+    telemetry = BusTelemetrySink(
+        bus,
+        producer=ProducerIdentity(
+            "examples.hermes",
+            instance_id,
+            HERMES_ADAPTER_VERSION,
+        ),
+        artifact_store=artifact_store,
+        capture_content=args.capture_content,
+    )
 
     def report_usage(assignment_id: str, usage: dict[str, object]) -> None:
         print(
@@ -70,12 +101,13 @@ def main(argv: list[str] | None = None) -> None:
         timeout=args.timeout,
         safe_mode=not args.unsafe_user_config,
         usage_callback=report_usage,
+        telemetry_sink=telemetry,
     )
-    bus = BusClient(args.bus_url, actor=args.name)
     runtime = WorkerRuntime(
         bus,
         name=args.name,
         executor=executor,
+        instance_id=instance_id,
         capacity=args.capacity,
         capabilities=args.capabilities or ["hermes"],
         heartbeat_seconds=float(

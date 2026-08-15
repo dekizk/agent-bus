@@ -66,7 +66,9 @@ task.started  -> task.blocked -> decision.needed -> decision.made
 | `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
 | `runtime.py` | Leased, concurrent worker runtime with ownership-loss cancellation |
 | `adoption.py` | Controlled, shadow, and deterministic canary integration helpers |
-| `topics.py` | Canonical coordination and integration topic groups |
+| `telemetry.py` | Optional model/tool telemetry sink, lifecycle helpers, and producer identity |
+| `artifacts.py` | Atomic, content-addressed local storage for opt-in captured content |
+| `topics.py` | Canonical coordination, integration, and telemetry topic groups |
 | `worker.py` | Demo executor wired through the reusable runtime |
 | `events.db` | Append-only event log and task-id counter |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
@@ -151,8 +153,52 @@ assignment:
 Context and each final structured result are limited to 16 KiB of encoded JSON.
 Resolved dependency input is limited to 32 KiB in aggregate.
 They are coordination data, not storage for prompts, transcripts, or large
-artifacts; content-addressed blob storage belongs in a separate
-telemetry/artifact layer.
+artifacts. v0.6 keeps that content out of SQLite by default and can store
+explicitly opted-in captures in a separate content-addressed artifact store.
+
+## Telemetry and artifacts
+
+Telemetry is observational and is never consumed by the PM. Model and tool
+lifecycles use their own canonical topic group, so coordination replay remains
+small even when an executor emits many telemetry events. Each telemetry event
+retains `correlation_id`, `task_id`, `assignment_id`, worker process identity,
+and a stable invocation or tool-call id. The top-level `producer` envelope
+identifies the implementation and process that emitted it; provider and model
+identity remain invocation fields.
+
+Executors can use the framework-neutral sink without depending on PM internals:
+
+```python
+from telemetry import BusTelemetrySink, ProducerIdentity
+
+telemetry = BusTelemetrySink(
+    bus,
+    producer=ProducerIdentity(
+        implementation="my-agent-adapter",
+        instance_id=worker_instance_id,
+        version="1.0.0",
+    ),
+)
+```
+
+The sink supports `model_started/completed/failed` and
+`tool_started/completed/failed`. Started and terminal events use deterministic
+idempotency keys. A terminal event is caused by its start event when available,
+and all events retain the assignment workflow correlation. Telemetry publishing
+must remain best-effort from an executor: an observability outage must not alter
+task ownership or outcome.
+
+Prompts, outputs, tool arguments, credentials, and transcripts are never added
+to telemetry metadata automatically. Content capture is opt-in and requires an
+`ArtifactStore`; events then contain only `{sha256, size_bytes, media_type,
+kind}` references. Files are written atomically, deduplicated by SHA-256, made
+user-only, and verified on reads. One artifact is limited to 16 MiB.
+
+The store performs no automatic deletion. A digest can be shared by several
+immutable events, so retention may delete only blobs proven unreferenced by the
+event log. Treat the artifact directory as sensitive local data: use a private
+directory, redact before capture, never capture credentials, and apply your own
+backup and retention policy. `artifacts/` is ignored by Git.
 
 ## Integrating an existing agent
 
@@ -304,7 +350,8 @@ stateless or replacement executor can use the human input without mutating the
 original task context. The old attempt can no longer complete the task.
 
 Keep decisions compact coordination data. Prompts, transcripts, and large
-artifacts still belong in an external telemetry/artifact layer.
+artifacts belong in the separate content-addressed store and should appear in
+telemetry only as compact references.
 
 ## Bounded retries and terminal failure
 
@@ -505,7 +552,8 @@ extend the bus without changing its core.
 Existing databases are migrated automatically. Historical rows are marked as
 schema v1 and remain replayable with legacy assignment identities derived from
 their event ids. Existing events retain `NULL` correlation IDs; the migration
-does not invent workflow relationships that were never recorded.
+does not invent workflow relationships that were never recorded. v0.6 also
+adds a nullable top-level `producer` column; historical events retain `NULL`.
 
 As a v0.4 publisher-contract change, new `task.created` events must contain a
 non-empty `payload.title`. Historical titleless events remain replayable and
@@ -541,8 +589,20 @@ replay:
 |---|---|---|
 | `integration.task_observed` | bridge | Records externally owned shadow or unselected canary work |
 
-`topics.py` is the canonical source for both groups. Tests assert that the PM
-uses exactly the coordination group and never consumes integration topics.
+Telemetry topics are also validated and deliberately excluded from PM replay:
+
+| Topic | Purpose |
+|---|---|
+| `telemetry.model.started` | Records the start of one stable model invocation |
+| `telemetry.model.completed` | Records duration, bounded usage metadata, and optional artifact refs |
+| `telemetry.model.failed` | Records a typed retryable/permanent invocation failure |
+| `telemetry.tool.started` | Records one tool-call start and optional parent invocation |
+| `telemetry.tool.completed` | Records tool duration and optional artifact refs |
+| `telemetry.tool.failed` | Records a typed retryable/permanent tool failure |
+
+`topics.py` is the canonical source for all three groups. Tests assert that the
+PM uses exactly the coordination group and never consumes integration or
+telemetry topics.
 
 ## Reading and following the log
 
@@ -552,6 +612,7 @@ History queries are bounded; use `after_id` to paginate:
 curl 'http://127.0.0.1:8765/events?after_id=0&limit=1000'
 curl 'http://127.0.0.1:8765/events?topics=task.assigned,task.completed'
 curl 'http://127.0.0.1:8765/events?correlation_id=release-2026-07'
+curl 'http://127.0.0.1:8765/events?topics=telemetry.model.completed&correlation_id=release-2026-07'
 curl 'http://127.0.0.1:8765/events/42'
 ```
 
@@ -602,23 +663,30 @@ python -m unittest discover -v   # or: pytest tests/
 The suite focuses on orchestration failures: restart reconciliation, stale
 attempt rejection, retry exhaustion, permanent failures, human revival,
 worker replacement, malformed replay events, idempotent publish retries,
-correlation propagation and migration, DAG validation, chain/fan-in/fan-out
+correlation/producer migration, DAG validation, chain/fan-in/fan-out
 readiness, dependency-failure cascades, result-reference resolution, SQL-level
 stream filtering, executor conformance, bounded concurrency, subprocess
 timeout/cancellation, stable canaries, single-owner adoption, real-agent
-integration, and atomic monotonic offsets.
+integration, telemetry isolation/idempotency, artifact integrity, and atomic
+monotonic offsets.
 
 ## Scope and next boundaries
 
-v0.5 remains a trusted, single-process, single-host runtime. Actor names are
+v0.6 shipped telemetry and content-addressed artifacts ahead of the earlier
+management-controls slot because the v0.4/v0.5 Hermes trials showed immediate
+usage, cost, and retry-observability needs. Management controls, cancellation,
+and deadlines remain candidates for the next control-plane iteration.
+
+v0.6 remains a trusted, single-process, single-host runtime. Actor names are
 asserted by clients, not authenticated identities. The PM lock and SSE wake-up
 condition are process-local mechanisms; do not run the FastAPI app with
 multiple uvicorn workers. Before distributing the bus, add authenticated actor
 identity and replace local exclusivity/notification with shared infrastructure.
 
-The next version should be selected after genuine trials of the new DAG path.
-Likely candidates are model/tool telemetry with content-addressed blob storage,
-or cancellation/deadline semantics if multi-step runs show that control is the
-more immediate gap. Snapshots and a read-only operational UI remain later
-candidates. These features should remain projections and commands over the
-log—not a return to a mutable board as the source of truth.
+The next version should be selected after genuine trials of telemetry under
+normal completion, retry, and worker-replacement paths. Cancellation/deadline
+semantics are the leading control-plane candidate. Projection indexes become
+worthwhile when measured append or replay cost warrants them; snapshots and a
+read-only operational UI remain later candidates. These features should remain
+projections and commands over the log—not a return to a mutable board as the
+source of truth.

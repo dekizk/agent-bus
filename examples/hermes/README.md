@@ -49,7 +49,8 @@ hermes auth status YOUR_PROVIDER
 
 This command uses a temporary event database and directory, invokes one paid
 Hermes request with only the `clarify` toolset, replays the event log, and
-requires the task to finish as `completed`:
+requires the task to finish as `completed` with one model telemetry start and
+one terminal model telemetry event:
 
 ```sh
 python -m examples.hermes.live_smoke \
@@ -58,6 +59,21 @@ python -m examples.hermes.live_smoke \
 ```
 
 It does not connect to or modify the repository's normal `events.db`.
+
+To complete the v0.6 artifact trial with disposable, non-sensitive content,
+persist and automatically verify the captured prompt/output references:
+
+```sh
+python -m examples.hermes.live_smoke \
+  --provider YOUR_PROVIDER \
+  --model YOUR_MODEL \
+  --capture-content \
+  --artifact-directory /tmp/agent-bus-hermes-v06-smoke-artifacts
+```
+
+The command fails unless it finds and integrity-checks exactly one model-input
+and one model-output reference. Without `--capture-content`, it instead fails
+if any content reference appears, preserving the default privacy boundary.
 
 ## Run Hermes as a normal worker
 
@@ -98,9 +114,35 @@ curl -X POST http://127.0.0.1:8765/events \
 
 The adapter asks Hermes to return exactly one of the standard executor JSON
 outcomes. `WorkerRuntime` translates it into `task.completed`, `task.blocked`,
-or `task.attempt_failed`. Small cost/token metadata is printed by the worker but
-is not written into the coordination event log; a future telemetry layer can
-persist it separately.
+or `task.attempt_failed`. The v0.6 adapter also writes bounded model identity,
+duration, outcome type, and Hermes cost/token metadata to the separate
+`telemetry.model.*` stream. The PM never subscribes to these topics.
+
+Inspect telemetry for one workflow using the `correlation_id` returned by
+`task.created`:
+
+```sh
+curl 'http://127.0.0.1:8765/events?topics=telemetry.model.started,telemetry.model.completed,telemetry.model.failed&correlation_id=YOUR_CORRELATION_ID'
+```
+
+Prompts and model output are not captured by default. For a disposable,
+non-sensitive trial only, explicitly enable content-addressed capture:
+
+```sh
+python -m examples.hermes.run_worker \
+  --name hermes \
+  --working-directory /tmp/agent-bus-hermes-trial \
+  --provider YOUR_PROVIDER \
+  --model YOUR_MODEL \
+  --toolsets clarify \
+  --capability hermes \
+  --capture-content \
+  --artifact-directory /tmp/agent-bus-hermes-artifacts
+```
+
+SQLite receives only immutable SHA-256 references. The referenced local files
+can still contain sensitive task data, so redact before capture, use a private
+directory, and remove only blobs you have proven are no longer referenced.
 
 Hermes also receives resolved upstream completions through
 `AssignmentContext.dependencies`. To trial the v0.5 DAG path, create an initial

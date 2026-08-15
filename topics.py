@@ -25,4 +25,15 @@ INTEGRATION_TOPICS = frozenset(
     }
 )
 
-KNOWN_TOPICS = COORDINATION_TOPICS | INTEGRATION_TOPICS
+TELEMETRY_TOPICS = frozenset(
+    {
+        "telemetry.model.started",
+        "telemetry.model.completed",
+        "telemetry.model.failed",
+        "telemetry.tool.started",
+        "telemetry.tool.completed",
+        "telemetry.tool.failed",
+    }
+)
+
+KNOWN_TOPICS = COORDINATION_TOPICS | INTEGRATION_TOPICS | TELEMETRY_TOPICS

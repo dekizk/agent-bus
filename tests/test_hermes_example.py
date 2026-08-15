@@ -6,10 +6,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from examples.hermes.hermes_executor import HermesExecutor
-from examples.hermes import run_worker
+from examples.hermes import live_smoke, run_worker
+from artifacts import ArtifactStore
 from executors import (
     AssignmentContext,
     Blocked,
@@ -162,6 +163,30 @@ class HermesExecutorTests(unittest.TestCase):
         self.assertEqual(12, usages[0][1]["total_tokens"])
         self.assertNotIn("unknown", usages[0][1])
 
+    def test_model_telemetry_is_emitted_without_controlling_the_outcome(self):
+        telemetry = Mock()
+        telemetry.model_started.return_value = {"id": 88}
+        executor = self.make_executor(
+            {"status": "completed", "summary": "done", "result": {}},
+            telemetry_sink=telemetry,
+        )
+
+        result = executor.execute(assignment())
+
+        self.assertIsInstance(result, Completed)
+        started = telemetry.model_started.call_args.kwargs
+        self.assertEqual("task:7:attempt:1:model:1", started["invocation_id"])
+        self.assertEqual("fake-provider", started["provider"])
+        self.assertIn("ASSIGNMENT_JSON", started["input_content"])
+        completed = telemetry.model_completed.call_args.kwargs
+        self.assertEqual(88, completed["caused_by"])
+        self.assertEqual(12, completed["usage"]["total_tokens"])
+
+        telemetry.model_started.side_effect = RuntimeError("telemetry offline")
+        telemetry.model_completed.side_effect = RuntimeError("telemetry offline")
+        unaffected = executor.execute(assignment())
+        self.assertIsInstance(unaffected, Completed)
+
     def test_prompt_marks_human_decisions_as_authoritative(self):
         prompt = HermesExecutor.build_prompt(
             assignment(
@@ -304,11 +329,41 @@ class HermesWorkerWiringTests(unittest.TestCase):
             bus_client,
             name="hermes",
             executor=executor,
+            instance_id=ANY,
             capacity=1,
             capabilities=["research"],
             heartbeat_seconds=5.0,
         )
         runtime.run.assert_called_once_with()
+
+
+class HermesLiveSmokeTests(unittest.TestCase):
+    def test_artifact_capture_verification_requires_explicit_complete_refs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(Path(directory))
+            input_ref = store.put_text("prompt", kind="model_input")
+            output_ref = store.put_text("result", kind="model_output")
+            events = [
+                {"payload": {"artifacts": [input_ref]}},
+                {"payload": {"artifacts": [output_ref]}},
+            ]
+
+            self.assertEqual(
+                [input_ref, output_ref],
+                live_smoke.verify_artifact_capture(events, store, required=True),
+            )
+            self.assertEqual(
+                [],
+                live_smoke.verify_artifact_capture(
+                    [{"payload": {"artifacts": []}}],
+                    None,
+                    required=False,
+                ),
+            )
+            with self.assertRaisesRegex(RuntimeError, "without explicit opt-in"):
+                live_smoke.verify_artifact_capture(events, store, required=False)
+            with self.assertRaisesRegex(RuntimeError, "input and output"):
+                live_smoke.verify_artifact_capture(events[:1], store, required=True)
 
 
 if __name__ == "__main__":

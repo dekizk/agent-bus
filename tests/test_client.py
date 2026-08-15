@@ -97,6 +97,11 @@ class OffsetTests(unittest.TestCase):
                     "custom.tick",
                     {},
                     correlation_id="workflow-one",
+                    producer={
+                        "implementation": "test-client",
+                        "instance_id": "process-1",
+                        "version": None,
+                    },
                 )
             with patch("client.httpx.get", return_value=response) as get:
                 client.query(correlation_id="workflow-one")
@@ -104,6 +109,10 @@ class OffsetTests(unittest.TestCase):
         self.assertEqual(
             "workflow-one",
             post.call_args.kwargs["json"]["correlation_id"],
+        )
+        self.assertEqual(
+            "process-1",
+            post.call_args.kwargs["json"]["producer"]["instance_id"],
         )
         self.assertEqual(
             "workflow-one",

@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
@@ -22,6 +23,7 @@ from executors import (
     outcome_from_dict,
 )
 from limits import MAX_INLINE_RESULT_BYTES
+from telemetry import TelemetrySink
 
 DEFAULT_TIMEOUT_SECONDS = 600.0
 DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
@@ -80,6 +82,7 @@ class HermesExecutor:
         safe_mode: bool = True,
         environment: Optional[Mapping[str, str]] = None,
         usage_callback: Optional[UsageCallback] = None,
+        telemetry_sink: Optional[TelemetrySink] = None,
     ):
         self.command = self._strings(command, "command")
         self.toolsets = tuple(
@@ -130,6 +133,7 @@ class HermesExecutor:
         self.safe_mode = bool(safe_mode)
         self.environment = normalized_environment
         self.usage_callback = usage_callback
+        self.telemetry_sink = telemetry_sink
 
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen] = {}
@@ -150,6 +154,18 @@ class HermesExecutor:
                     "hermes_executor_closed",
                     "Hermes executor is closed",
                 )
+
+        # This adapter currently performs exactly one model invocation per
+        # assignment. If internal retries are added, keep ids deterministic
+        # and increment the suffix (:model:2, :model:3) rather than reusing
+        # this id or replacing it with a random value.
+        invocation_id = f"{assignment.assignment_id}:model:1"
+        telemetry_started_at = time.monotonic()
+        telemetry_started_id = self._telemetry_started(
+            assignment,
+            invocation_id,
+            prompt,
+        )
 
         with tempfile.TemporaryDirectory(prefix="agent-bus-hermes-") as temp_dir:
             usage_path = Path(temp_dir) / "usage.json"
@@ -173,19 +189,35 @@ class HermesExecutor:
                     start_new_session=os.name == "posix",
                 )
             except OSError as exc:
-                return PermanentFailure(
+                outcome = PermanentFailure(
                     "hermes_start_failed",
                     f"could not start Hermes: {self._brief(exc)}",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                )
+                return outcome
 
             with self._lock:
                 if self._closed or assignment.assignment_id in self._cancelled:
                     self._terminate(process)
                     self._cancelled.discard(assignment.assignment_id)
-                    return RetryableFailure(
+                    outcome = RetryableFailure(
                         "hermes_cancelled",
                         "Hermes execution lost assignment ownership",
                     )
+                    self._telemetry_finished(
+                        assignment,
+                        invocation_id,
+                        telemetry_started_at,
+                        telemetry_started_id,
+                        outcome,
+                    )
+                    return outcome
                 self._processes[assignment.assignment_id] = process
 
             stdout = bytearray()
@@ -246,33 +278,83 @@ class HermesExecutor:
                 cancelled = assignment.assignment_id in self._cancelled
                 self._cancelled.discard(assignment.assignment_id)
             if cancelled:
-                return RetryableFailure(
+                outcome = RetryableFailure(
                     "hermes_cancelled",
                     "Hermes execution lost assignment ownership",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                )
+                return outcome
             if timed_out:
-                return RetryableFailure(
+                outcome = RetryableFailure(
                     "hermes_timeout",
                     f"Hermes exceeded the {self.timeout:g}-second timeout",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                )
+                return outcome
             if io_error is not None:
-                return RetryableFailure(
+                outcome = RetryableFailure(
                     "hermes_io_failed",
                     f"Hermes process I/O failed: {self._brief(io_error)}",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                )
+                return outcome
             if overflow.is_set():
-                return PermanentFailure(
+                outcome = PermanentFailure(
                     "hermes_output_too_large",
                     "Hermes stdout or stderr exceeded the configured limit",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                )
+                return outcome
 
             stderr_text = bytes(stderr).decode("utf-8", errors="replace").strip()
             if process.returncode != 0:
                 reason = stderr_text or f"Hermes exited with {process.returncode}"
-                return RetryableFailure(
+                outcome = RetryableFailure(
                     "hermes_process_failed",
                     self._brief(reason),
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                )
+                return outcome
 
             try:
                 output = bytes(stdout).decode("utf-8")
@@ -280,16 +362,108 @@ class HermesExecutor:
                 self._validate_outcome_text(value)
                 outcome = outcome_from_dict(value)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-                return PermanentFailure(
+                outcome = PermanentFailure(
                     "invalid_hermes_output",
                     f"Hermes did not return a valid executor outcome: {self._brief(exc)}",
                 )
+                self._telemetry_finished(
+                    assignment,
+                    invocation_id,
+                    telemetry_started_at,
+                    telemetry_started_id,
+                    outcome,
+                    usage=usage,
+                    output=bytes(stdout),
+                    model_completed=True,
+                )
+                return outcome
             if isinstance(outcome, Completed) and json_size(outcome.result) > MAX_INLINE_RESULT_BYTES:
-                return PermanentFailure(
+                outcome = PermanentFailure(
                     "hermes_result_too_large",
                     "Hermes result exceeds the inline coordination limit",
                 )
+            self._telemetry_finished(
+                assignment,
+                invocation_id,
+                telemetry_started_at,
+                telemetry_started_id,
+                outcome,
+                usage=usage,
+                output=bytes(stdout),
+                model_completed=True,
+            )
             return outcome
+
+    def _telemetry_started(
+        self,
+        assignment: AssignmentContext,
+        invocation_id: str,
+        prompt: str,
+    ) -> Optional[int]:
+        if self.telemetry_sink is None:
+            return None
+        try:
+            event = self.telemetry_sink.model_started(
+                assignment,
+                invocation_id=invocation_id,
+                provider=self.provider or "default",
+                model=self.model or "default",
+                attributes={"adapter": "hermes", "safe_mode": self.safe_mode},
+                input_content=prompt,
+            )
+            event_id = event.get("id")
+            return event_id if isinstance(event_id, int) else None
+        except Exception:
+            # Telemetry is observational. It must never take ownership of or
+            # fail the coordination lifecycle it describes.
+            return None
+
+    def _telemetry_finished(
+        self,
+        assignment: AssignmentContext,
+        invocation_id: str,
+        started_at: float,
+        started_event_id: Optional[int],
+        outcome: Outcome,
+        *,
+        usage: Optional[Mapping[str, object]] = None,
+        output: Optional[bytes] = None,
+        model_completed: bool = False,
+    ) -> None:
+        if self.telemetry_sink is None:
+            return
+        duration_ms = max(0.0, (time.monotonic() - started_at) * 1000)
+        attributes = {"executor_outcome": type(outcome).__name__}
+        caused_by = started_event_id or assignment.assignment_event_id
+        try:
+            if model_completed or isinstance(outcome, (Completed, Blocked)):
+                self.telemetry_sink.model_completed(
+                    assignment,
+                    invocation_id=invocation_id,
+                    provider=self.provider or "default",
+                    model=self.model or "default",
+                    duration_ms=duration_ms,
+                    usage=usage or {},
+                    attributes=attributes,
+                    output_content=output,
+                    caused_by=caused_by,
+                )
+            else:
+                self.telemetry_sink.model_failed(
+                    assignment,
+                    invocation_id=invocation_id,
+                    provider=self.provider or "default",
+                    model=self.model or "default",
+                    duration_ms=duration_ms,
+                    error_code=outcome.code,
+                    retryable=isinstance(outcome, RetryableFailure),
+                    usage=usage or {},
+                    attributes=attributes,
+                    output_content=output,
+                    caused_by=caused_by,
+                )
+        except Exception:
+            pass
 
     def cancel(self, assignment_id: str) -> None:
         with self._lock:

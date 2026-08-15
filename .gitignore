@@ -20,3 +20,4 @@ events.db-wal
 events.db-shm
 .offsets/
 pm_agent.lock
+artifacts/

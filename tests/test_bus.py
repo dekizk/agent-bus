@@ -546,7 +546,7 @@ class BusStorageTests(unittest.TestCase):
         )
         self.assertIsNone(child["correlation_id"])
 
-    def test_init_db_migrates_pre_correlation_database(self):
+    def test_init_db_migrates_pre_correlation_and_producer_database(self):
         bus.DB_PATH.unlink()
         connection = sqlite3.connect(bus.DB_PATH)
         try:
@@ -582,7 +582,10 @@ class BusStorageTests(unittest.TestCase):
                 row["name"] for row in migrated.execute("PRAGMA table_info(events)")
             }
         self.assertIn("correlation_id", columns)
-        self.assertIsNone(bus.fetch_after(0, None)[0]["correlation_id"])
+        self.assertIn("producer", columns)
+        legacy = bus.fetch_after(0, None)[0]
+        self.assertIsNone(legacy["correlation_id"])
+        self.assertIsNone(legacy["producer"])
 
 
 class BusApiTests(unittest.TestCase):
@@ -604,7 +607,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.5.0", bus.app.version)
+        self.assertEqual("0.6.0", bus.app.version)
         created = self.client.post(
             "/events",
             json={

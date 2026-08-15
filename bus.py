@@ -11,6 +11,7 @@ Run: uvicorn bus:app --port 8765
 import asyncio
 import contextlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -26,16 +27,20 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from limits import (
+    MAX_ARTIFACT_BYTES,
+    MAX_TELEMETRY_ARTIFACT_REFS,
+    MAX_TELEMETRY_OBJECT_BYTES,
     MAX_EXTERNAL_ID_LENGTH,
     MAX_INLINE_CONTEXT_BYTES,
     MAX_INLINE_RESULT_BYTES,
     MAX_TASK_DEPENDENCIES,
 )
-from topics import KNOWN_TOPICS
+from topics import KNOWN_TOPICS, TELEMETRY_TOPICS
 
 DB_PATH = Path(__file__).parent / "events.db"
 CURRENT_SCHEMA_VERSION = 2
 MAX_CORRELATION_ID_LENGTH = 128
+MAX_PRODUCER_FIELD_LENGTH = 128
 
 
 def _read_default_max_retries() -> int:
@@ -305,6 +310,180 @@ def _validate_query_correlation_id(correlation_id: Optional[str]) -> None:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _validate_producer(producer: Optional[dict]) -> None:
+    if producer is None:
+        return
+    if not isinstance(producer, dict) or set(producer) != {
+        "implementation",
+        "instance_id",
+        "version",
+    }:
+        raise EventValidationError(
+            "producer must contain only implementation, instance_id, and version"
+        )
+    for field in ("implementation", "instance_id"):
+        value = producer.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or value != value.strip()
+            or len(value) > MAX_PRODUCER_FIELD_LENGTH
+        ):
+            raise EventValidationError(
+                f"producer.{field} must be a trimmed, non-empty string of at most "
+                f"{MAX_PRODUCER_FIELD_LENGTH} characters"
+            )
+    version = producer.get("version")
+    if version is not None and (
+        not isinstance(version, str)
+        or not version.strip()
+        or version != version.strip()
+        or len(version) > MAX_PRODUCER_FIELD_LENGTH
+    ):
+        raise EventValidationError(
+            "producer.version must be null or a trimmed, non-empty string of at "
+            f"most {MAX_PRODUCER_FIELD_LENGTH} characters"
+        )
+
+
+def _validate_artifact_refs(payload: dict) -> None:
+    refs = payload.get("artifacts", [])
+    if not isinstance(refs, list):
+        raise EventValidationError("payload.artifacts must be a JSON array")
+    if len(refs) > MAX_TELEMETRY_ARTIFACT_REFS:
+        raise EventValidationError(
+            "payload.artifacts must contain at most "
+            f"{MAX_TELEMETRY_ARTIFACT_REFS} references"
+        )
+    for index, ref in enumerate(refs):
+        if not isinstance(ref, dict) or set(ref) != {
+            "sha256",
+            "size_bytes",
+            "media_type",
+            "kind",
+        }:
+            raise EventValidationError(
+                f"payload.artifacts[{index}] has an invalid shape"
+            )
+        digest = ref.get("sha256")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise EventValidationError(
+                f"payload.artifacts[{index}].sha256 must be a lowercase SHA-256 digest"
+            )
+        if not _is_nonnegative_int(ref.get("size_bytes")):
+            raise EventValidationError(
+                f"payload.artifacts[{index}].size_bytes must be a non-negative integer"
+            )
+        if ref["size_bytes"] > MAX_ARTIFACT_BYTES:
+            raise EventValidationError(
+                f"payload.artifacts[{index}].size_bytes exceeds the artifact limit"
+            )
+        for field in ("media_type", "kind"):
+            value = ref.get(field)
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+                or len(value) > MAX_PRODUCER_FIELD_LENGTH
+            ):
+                raise EventValidationError(
+                    f"payload.artifacts[{index}].{field} must be a non-empty string"
+                )
+
+
+def _validate_telemetry(payload: dict, topic: str) -> None:
+    common_fields = {
+        "task_id",
+        "assignment_id",
+        "worker_instance_id",
+        "attributes",
+        "artifacts",
+    }
+    is_model = topic.startswith("telemetry.model.")
+    identity_fields = (
+        {"invocation_id", "provider", "model"}
+        if is_model
+        else {"tool_call_id", "tool_name"}
+    )
+    status_fields: set[str] = set()
+    if topic.endswith(".completed"):
+        status_fields.add("duration_ms")
+        if is_model:
+            status_fields.add("usage")
+    elif topic.endswith(".failed"):
+        status_fields.update({"duration_ms", "error_code", "retryable"})
+        if is_model:
+            status_fields.add("usage")
+    allowed_fields = common_fields | identity_fields | status_fields
+    if not is_model:
+        allowed_fields.add("invocation_id")
+    unexpected_fields = set(payload) - allowed_fields
+    if unexpected_fields:
+        names = ", ".join(sorted(unexpected_fields))
+        raise EventValidationError(f"telemetry payload has unexpected fields: {names}")
+
+    _require_task_id(payload)
+    for field in ("assignment_id", "worker_instance_id"):
+        _require_telemetry_string(payload, field)
+    _validate_artifact_refs(payload)
+    _validate_json_object(
+        payload,
+        "attributes",
+        max_bytes=MAX_TELEMETRY_OBJECT_BYTES,
+    )
+
+    if is_model:
+        for field in ("invocation_id", "provider", "model"):
+            _require_telemetry_string(payload, field)
+    else:
+        for field in ("tool_call_id", "tool_name"):
+            _require_telemetry_string(payload, field)
+        if "invocation_id" in payload:
+            _require_telemetry_string(payload, "invocation_id")
+
+    if topic.endswith(".started"):
+        return
+    duration_ms = payload.get("duration_ms")
+    if (
+        not isinstance(duration_ms, (int, float))
+        or isinstance(duration_ms, bool)
+        or not math.isfinite(duration_ms)
+        or duration_ms < 0
+    ):
+        raise EventValidationError("payload.duration_ms must be a non-negative number")
+    if topic.endswith(".completed"):
+        if is_model:
+            _validate_json_object(
+                payload,
+                "usage",
+                max_bytes=MAX_TELEMETRY_OBJECT_BYTES,
+            )
+        return
+    _require_telemetry_string(payload, "error_code")
+    if not isinstance(payload.get("retryable"), bool):
+        raise EventValidationError("payload.retryable must be a boolean")
+    if is_model:
+        _validate_json_object(
+            payload,
+            "usage",
+            max_bytes=MAX_TELEMETRY_OBJECT_BYTES,
+        )
+
+
+def _require_telemetry_string(payload: dict, field: str) -> None:
+    _require_string(payload, field)
+    value = payload[field]
+    if value != value.strip() or len(value) > MAX_PRODUCER_FIELD_LENGTH:
+        raise EventValidationError(
+            f"payload.{field} must be trimmed and at most "
+            f"{MAX_PRODUCER_FIELD_LENGTH} characters"
+        )
+
+
 def validate_event(
     topic: str,
     actor: str,
@@ -313,6 +492,7 @@ def validate_event(
     idempotency_key: Optional[str],
     schema_version: int,
     correlation_id: Optional[str] = None,
+    producer: Optional[dict] = None,
 ) -> None:
     """Validate common fields and v2 contracts for built-in event topics.
 
@@ -333,6 +513,7 @@ def validate_event(
     if caused_by is not None and not _is_positive_int(caused_by):
         raise EventValidationError("caused_by must be null or a positive event id")
     _validate_correlation_id(correlation_id)
+    _validate_producer(producer)
 
     if topic not in KNOWN_TOPICS:
         return
@@ -340,6 +521,12 @@ def validate_event(
         raise EventValidationError(
             f"unsupported schema_version {schema_version} for known topic {topic!r}"
         )
+
+    if topic in TELEMETRY_TOPICS:
+        if producer is None:
+            raise EventValidationError("known telemetry events require producer identity")
+        _validate_telemetry(payload, topic)
+        return
 
     if topic == "task.created":
         if "task_id" in payload:
@@ -520,6 +707,7 @@ def init_db() -> None:
                 idempotency_key TEXT,
                 caused_by INTEGER,
                 correlation_id TEXT,
+                producer  TEXT,
                 payload   TEXT    NOT NULL
             )
             """
@@ -533,6 +721,8 @@ def init_db() -> None:
             )
         if "correlation_id" not in columns:
             conn.execute("ALTER TABLE events ADD COLUMN correlation_id TEXT")
+        if "producer" not in columns:
+            conn.execute("ALTER TABLE events ADD COLUMN producer TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS counters (
@@ -583,8 +773,11 @@ def next_task_id(conn: sqlite3.Connection) -> int:
 def row_to_dict(row: sqlite3.Row) -> dict:
     event = dict(row)
     event["payload"] = json.loads(event["payload"])
+    if event.get("producer") is not None:
+        event["producer"] = json.loads(event["producer"])
     event.setdefault("schema_version", 1)
     event.setdefault("correlation_id", None)
+    event.setdefault("producer", None)
     return event
 
 
@@ -668,6 +861,7 @@ def _assert_idempotent_match(
     caused_by: Optional[int],
     schema_version: int,
     correlation_id: Optional[str],
+    producer: Optional[dict],
 ) -> None:
     existing = row_to_dict(row)
     stored_payload = existing["payload"]
@@ -697,6 +891,7 @@ def _assert_idempotent_match(
         caused_by,
         schema_version,
         effective_correlation_id,
+        producer,
     )
     stored = (
         existing["topic"],
@@ -704,6 +899,7 @@ def _assert_idempotent_match(
         existing["caused_by"],
         existing["schema_version"],
         existing["correlation_id"],
+        existing["producer"],
     )
     if stored != requested:
         raise IdempotencyConflict(
@@ -719,6 +915,7 @@ def append_event(
     idempotency_key: Optional[str] = None,
     schema_version: int = CURRENT_SCHEMA_VERSION,
     correlation_id: Optional[str] = None,
+    producer: Optional[dict] = None,
 ) -> dict:
     validate_event(
         topic,
@@ -728,6 +925,7 @@ def append_event(
         idempotency_key,
         schema_version,
         correlation_id,
+        producer,
     )
     requested_payload = dict(payload)
     with db() as conn:
@@ -744,6 +942,7 @@ def append_event(
                     caused_by=caused_by,
                     schema_version=schema_version,
                     correlation_id=correlation_id,
+                    producer=producer,
                 )
                 return row_to_dict(row)
 
@@ -782,8 +981,8 @@ def append_event(
                 """
                 INSERT INTO events
                     (ts, topic, actor, schema_version, idempotency_key, caused_by,
-                     correlation_id, payload)
-                VALUES (?,?,?,?,?,?,?,?)
+                     correlation_id, producer, payload)
+                VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     time.time(),
@@ -793,6 +992,9 @@ def append_event(
                     idempotency_key,
                     caused_by,
                     resolved_correlation_id,
+                    json.dumps(producer, sort_keys=True, separators=(",", ":"))
+                    if producer is not None
+                    else None,
                     json.dumps(payload, sort_keys=True, separators=(",", ":")),
                 ),
             )
@@ -815,6 +1017,7 @@ def append_event(
                 caused_by=caused_by,
                 schema_version=schema_version,
                 correlation_id=correlation_id,
+                producer=producer,
             )
             return row_to_dict(row)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -883,7 +1086,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.6.0", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):
@@ -894,6 +1097,7 @@ class PublishRequest(BaseModel):
     idempotency_key: Optional[str] = None
     schema_version: int = CURRENT_SCHEMA_VERSION
     correlation_id: Optional[str] = None
+    producer: Optional[dict] = None
 
 
 @app.post("/events", dependencies=[Depends(require_token)])
@@ -909,6 +1113,7 @@ async def publish(req: PublishRequest) -> dict:
             req.idempotency_key,
             req.schema_version,
             req.correlation_id,
+            req.producer,
         )
     except EventValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

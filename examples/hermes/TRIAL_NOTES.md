@@ -183,7 +183,79 @@ Friction and boundaries observed:
    are capped at 32 KiB. A projection index and artifact/blob references are
    the respective scale-up paths when real workloads reach those boundaries.
 
-## Template for the next task
+## 2026-08-15 — v0.6 captured telemetry DAG/retry trial
+
+Tasks: a disposable captured smoke invocation, followed by a two-node Hermes
+DAG in which Task A deliberately returned one retryable executor outcome before
+completing and Task B consumed A's immutable completion
+(`hermes-v06-dag-retry-1786767615`, lifecycle events 25–44).
+
+Result:
+
+- the captured smoke completed with one model start and one terminal event,
+  3,931 tokens, reported cost `$0.017624`, and hash-verified model-input and
+  model-output references;
+- Task A attempt 1 produced a real successful model invocation and then the
+  instructed `controlled_trial_retry` outcome. The runtime emitted
+  `task.attempt_failed` with `retryable: true`, and the PM created monotonic
+  attempt 2;
+- Task A attempt 2 completed. Only then did the PM assign Task B, with
+  `caused_by: 38` and
+  `dependency_refs: [{"task_id": 1, "completion_event_id": 38}]`;
+- Task B completed from its resolved upstream dependency. The live PM ignored
+  the interleaved telemetry stream and continued replaying coordination topics
+  only;
+- all three assignments had one deterministic model start and one causally
+  linked `telemetry.model.completed` event. The invocation ids were
+  `task:1:attempt:1:model:1`, `task:1:attempt:2:model:1`, and
+  `task:2:attempt:1:model:1`;
+- usage was queryable across the workflow: 3,909, 3,957, and 4,157 tokens with
+  reported costs `$0.016776`, `$0.017928`, and `$0.021328` respectively
+  (12,023 tokens and `$0.056032` total);
+- the six current model-input/output references had six distinct SHA-256
+  digests and all passed store integrity verification. Telemetry payloads
+  contained no `prompt`, `input_content`, `output_content`, or `tool_data`
+  fields.
+
+Friction and boundaries observed:
+
+1. A successful model invocation can correctly coexist with a retryable
+   coordination outcome. Attempt 1's model span is `completed` because Hermes
+   returned valid output; the resulting executor outcome is separately recorded
+   as `task.attempt_failed`. The two streams describe different layers rather
+   than conflicting states.
+2. The persistent artifact directories contained files from earlier runs in
+   addition to the six references for this correlation. This is expected from
+   an immutable content-addressed store, but confirms that retention/garbage
+   collection remains a real operational follow-up rather than an abstract
+   concern.
+3. This was a controlled application-level retry, not a process crash. The
+   existing coordination suite and earlier worker-replacement trial cover lease
+   recovery; a crash may legitimately leave a started telemetry span without a
+   terminal event because telemetry is observational and has no durable outbox.
+
+Roadmap evidence:
+
+- v0.6 now closes the usage/cost visibility gap observed during the v0.4/v0.5
+  trials without adding telemetry load to PM replay;
+- artifact references preserve the SQLite content boundary while making
+  captured content independently verifiable;
+- management controls, cancellation/deadline semantics, and eventually safe
+  unreferenced-artifact collection remain candidates for subsequent versions.
+
+## Next trial criteria — telemetry under lease expiry
+
+The completed 2026-08-15 trial above covered normal completion and a controlled
+application-level retry. A future trial should isolate hard worker loss and
+lease-expiry recovery: confirm that the replacement attempt receives a new
+deterministic invocation id, remains queryable under the same workflow
+correlation, and completes without telemetry entering PM replay. If the old
+process dies after its start event, the log should preserve that incomplete
+span rather than inventing a terminal event; usage may be absent when Hermes
+could not finish writing it. With disposable content capture enabled, verify
+that any emitted artifact references still pass integrity checks and no
+prompt/output fields appear inline in telemetry. Record that separate evidence
+using the template below.
 
 - Date and task category:
 - Toolsets and authority granted:

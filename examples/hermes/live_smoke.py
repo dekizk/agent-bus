@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import time
 from pathlib import Path
 
 import bus
+from artifacts import ArtifactStore
 from examples.hermes.hermes_executor import HermesExecutor
 from pm_agent import PMState, PM_TOPICS, apply_event, reconcile
 from runtime import WorkerRuntime
+from telemetry import BusTelemetrySink, ProducerIdentity
 
 
 class DirectClient:
@@ -29,11 +32,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--provider", required=True)
     parser.add_argument("--hermes-command", default="hermes")
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--capture-content",
+        action="store_true",
+        help="capture this disposable prompt/output as verified local artifacts",
+    )
+    parser.add_argument(
+        "--artifact-directory",
+        type=Path,
+        help=(
+            "persist captured artifacts here; requires --capture-content "
+            "(otherwise the smoke test uses its temporary directory)"
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def verify_artifact_capture(
+    events: list[dict],
+    store: ArtifactStore | None,
+    *,
+    required: bool,
+) -> list[dict[str, object]]:
+    references = [
+        reference
+        for event in events
+        for reference in event.get("payload", {}).get("artifacts", [])
+    ]
+    if not required:
+        if references:
+            raise RuntimeError("content was captured without explicit opt-in")
+        return []
+    if store is None:
+        raise RuntimeError("artifact capture was requested without a store")
+    if len(references) != 2:
+        raise RuntimeError(
+            "a successful captured invocation must have input and output references"
+        )
+    for reference in references:
+        content = store.get_bytes(reference)
+        if not content:
+            raise RuntimeError("captured artifact must not be empty")
+    return references
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.artifact_directory is not None and not args.capture_content:
+        raise SystemExit("--artifact-directory requires --capture-content")
     with tempfile.TemporaryDirectory(prefix="agent-bus-hermes-live-") as temp_dir:
         original_db_path = bus.DB_PATH
         bus.DB_PATH = Path(temp_dir) / "events.db"
@@ -73,6 +119,24 @@ def main(argv: list[str] | None = None) -> None:
             assignment = reconcile(state, DirectClient("pm"), now=time.time())[0]
 
             usages: list[dict[str, object]] = []
+            artifact_store = None
+            if args.capture_content:
+                artifact_root = (
+                    args.artifact_directory.expanduser().resolve()
+                    if args.artifact_directory is not None
+                    else Path(temp_dir) / "artifacts"
+                )
+                artifact_store = ArtifactStore(artifact_root)
+            telemetry = BusTelemetrySink(
+                worker_bus,
+                producer=ProducerIdentity(
+                    "examples.hermes.live_smoke",
+                    "hermes-live-smoke",
+                    "0.6.0",
+                ),
+                artifact_store=artifact_store,
+                capture_content=args.capture_content,
+            )
             executor = HermesExecutor(
                 working_directory=temp_dir,
                 model=args.model,
@@ -81,6 +145,7 @@ def main(argv: list[str] | None = None) -> None:
                 command=(args.hermes_command,),
                 timeout=args.timeout,
                 usage_callback=lambda assignment_id, usage: usages.append(dict(usage)),
+                telemetry_sink=telemetry,
             )
             runtime = WorkerRuntime(
                 worker_bus,
@@ -105,6 +170,15 @@ def main(argv: list[str] | None = None) -> None:
             completed = bus.fetch_after(0, ["task.completed"])
             attempt_failures = bus.fetch_after(0, ["task.attempt_failed"])
             terminal_failures = bus.fetch_after(0, ["task.failed"])
+            model_started = bus.fetch_after(0, ["telemetry.model.started"])
+            model_terminal = bus.fetch_after(
+                0,
+                ["telemetry.model.completed", "telemetry.model.failed"],
+            )
+            telemetry_events = sorted(
+                [*model_started, *model_terminal],
+                key=lambda event: event["id"],
+            )
             print(f"Hermes lifecycle status: {task.status}")
             if completed:
                 print(f"Summary: {completed[0]['payload']['summary']}")
@@ -130,7 +204,27 @@ def main(argv: list[str] | None = None) -> None:
                     f"tokens={usages[0].get('total_tokens')} "
                     f"cost_usd={usages[0].get('estimated_cost_usd')}"
                 )
-            if task.status != "completed":
+            print(
+                "Telemetry: "
+                f"started={len(model_started)} terminal={len(model_terminal)}"
+            )
+            references = verify_artifact_capture(
+                telemetry_events,
+                artifact_store,
+                required=args.capture_content,
+            )
+            if references:
+                print(
+                    "Artifacts verified: "
+                    + json.dumps(references, sort_keys=True, separators=(",", ":"))
+                )
+                if args.artifact_directory is not None:
+                    print(f"Artifact directory: {artifact_store.root}")
+            if (
+                task.status != "completed"
+                or len(model_started) != 1
+                or len(model_terminal) != 1
+            ):
                 raise SystemExit(1)
         finally:
             bus.DB_PATH = original_db_path

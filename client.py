@@ -48,6 +48,7 @@ class BusClient:
         idempotency_key: Optional[str] = None,
         schema_version: int = CURRENT_SCHEMA_VERSION,
         correlation_id: Optional[str] = None,
+        producer: Optional[dict] = None,
     ) -> dict:
         body = {
             "topic": topic,
@@ -60,6 +61,8 @@ class BusClient:
             body["idempotency_key"] = idempotency_key
         if correlation_id is not None:
             body["correlation_id"] = correlation_id
+        if producer is not None:
+            body["producer"] = producer
         response = httpx.post(
             f"{self.base_url}/events", json=body, headers=self._headers, timeout=10
         )
