@@ -8,6 +8,7 @@ import fcntl
 import getpass
 import hashlib
 import json
+import math
 import os
 import stat
 import sys
@@ -40,6 +41,13 @@ LOCK_PATH = _lock_path()
 WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
 
 ACTIVE_TASK_STATUSES = {"assigned", "started"}
+DEPENDENCY_TERMINAL_STATUSES = {
+    "failed",
+    "dependency_failed",
+    "cancelled",
+    "deadline_exceeded",
+}
+TASK_TERMINAL_STATUSES = DEPENDENCY_TERMINAL_STATUSES | {"completed"}
 PM_TOPICS = tuple(sorted(COORDINATION_TOPICS))
 
 
@@ -66,6 +74,7 @@ class TaskRecord:
     worker_instance_id: Optional[str] = None
     assignment_id: Optional[str] = None
     assignment_event_id: Optional[int] = None
+    created_event_id: Optional[int] = None
     open_event_id: Optional[int] = None
     block_event_id: Optional[int] = None
     block_reason: Optional[str] = None
@@ -81,6 +90,11 @@ class TaskRecord:
     failed_event_id: Optional[int] = None
     dependency_failed_event_id: Optional[int] = None
     completion_event_id: Optional[int] = None
+    deadline_at: Optional[float] = None
+    cancel_request_event_id: Optional[int] = None
+    cancel_reason: Optional[str] = None
+    cancelled_event_id: Optional[int] = None
+    deadline_exceeded_event_id: Optional[int] = None
     depends_on: tuple[int, ...] = ()
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
     context: dict = field(default_factory=dict)
@@ -175,6 +189,17 @@ def _nonnegative_int(value: object) -> Optional[int]:
     return None
 
 
+def _positive_number(value: object) -> Optional[float]:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    ):
+        return float(value)
+    return None
+
+
 def _payload(ev: dict) -> Optional[dict]:
     value = ev.get("payload")
     return value if isinstance(value, dict) else None
@@ -207,6 +232,19 @@ def _retry_budget_exhausted(task: TaskRecord) -> bool:
         task.max_retries is not None
         and task.retryable_failures > task.max_retries
     )
+
+
+def _deadline_reached(task: TaskRecord, timestamp: float) -> bool:
+    return task.deadline_at is not None and timestamp >= task.deadline_at
+
+
+def _dependency_terminal_event_id(task: TaskRecord) -> Optional[int]:
+    return {
+        "failed": task.failed_event_id,
+        "dependency_failed": task.dependency_failed_event_id,
+        "cancelled": task.cancelled_event_id,
+        "deadline_exceeded": task.deadline_exceeded_event_id,
+    }.get(task.status)
 
 
 def apply_event(state: PMState, ev: dict) -> bool:
@@ -291,6 +329,11 @@ def apply_event(state: PMState, ev: dict) -> bool:
             context = payload.get("context", {})
             if not isinstance(context, dict):
                 return False
+            deadline_at = payload.get("deadline_at")
+            if deadline_at is not None:
+                deadline_at = _positive_number(deadline_at)
+                if deadline_at is None:
+                    return False
             external_origin = payload.get("external_origin")
             if external_origin is not None and not isinstance(external_origin, dict):
                 return False
@@ -338,7 +381,9 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     if isinstance(ev.get("correlation_id"), str)
                     else None
                 ),
+                created_event_id=event_id,
                 open_event_id=event_id,
+                deadline_at=deadline_at,
                 depends_on=tuple(depends_on),
                 max_retries=max_retries,
                 required_capabilities=required,
@@ -357,6 +402,83 @@ def apply_event(state: PMState, ev: dict) -> bool:
         if task is None:
             return False
 
+        if topic == "task.cancel_requested":
+            reason = payload.get("reason")
+            if (
+                task.status in TASK_TERMINAL_STATUSES
+                or task.status == "cancellation_requested"
+                or _deadline_reached(task, float(timestamp))
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                return False
+            if task.assignment_id is not None:
+                task.last_assignment_id = task.assignment_id
+            task.status = "cancellation_requested"
+            task.cancel_request_event_id = event_id
+            task.cancel_reason = reason
+            task.decision_needed = False
+            task.decision_event_id = None
+            return True
+
+        if topic == "task.cancelled":
+            attempts = _nonnegative_int(payload.get("attempts"))
+            expected_last_assignment_id = (
+                task.assignment_id
+                if task.assignment_id is not None
+                else task.last_assignment_id
+            )
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "cancellation_requested"
+                or task.cancel_request_event_id is None
+                or ev.get("caused_by") != task.cancel_request_event_id
+                or payload.get("cancel_request_event_id")
+                != task.cancel_request_event_id
+                or payload.get("reason") != task.cancel_reason
+                or payload.get("last_assignment_id")
+                != expected_last_assignment_id
+                or attempts != task.attempt
+            ):
+                return False
+            task.status = "cancelled"
+            task.cancelled_event_id = event_id
+            task.open_event_id = None
+            task.decision_needed = False
+            task.decision_event_id = None
+            _clear_active_assignment(task)
+            return True
+
+        if topic == "task.deadline_exceeded":
+            deadline_at = _positive_number(payload.get("deadline_at"))
+            attempts = _nonnegative_int(payload.get("attempts"))
+            expected_last_assignment_id = (
+                task.assignment_id
+                if task.assignment_id is not None
+                else task.last_assignment_id
+            )
+            if (
+                ev.get("actor") != "pm"
+                or task.status in TASK_TERMINAL_STATUSES
+                or task.status == "cancellation_requested"
+                or task.deadline_at is None
+                or deadline_at != task.deadline_at
+                or ev.get("caused_by") != task.created_event_id
+                or payload.get("last_assignment_id")
+                != expected_last_assignment_id
+                or attempts != task.attempt
+            ):
+                return False
+            if task.assignment_id is not None:
+                task.last_assignment_id = task.assignment_id
+            task.status = "deadline_exceeded"
+            task.deadline_exceeded_event_id = event_id
+            task.open_event_id = None
+            task.decision_needed = False
+            task.decision_event_id = None
+            _clear_active_assignment(task)
+            return True
+
         if topic == "task.assigned":
             if ev.get("actor") != "pm":
                 return False
@@ -370,6 +492,11 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             attempt = _positive_int(payload.get("attempt")) or task.attempt + 1
             if attempt != task.attempt + 1:
+                return False
+            payload_deadline_at = payload.get("deadline_at")
+            if payload_deadline_at is not None:
+                payload_deadline_at = _positive_number(payload_deadline_at)
+            if payload_deadline_at != task.deadline_at:
                 return False
             expected_refs = [
                 {
@@ -414,8 +541,12 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "task.completed":
-            if not _active_assignment_matches(task, ev, payload):
+            if (
+                _deadline_reached(task, float(timestamp))
+                or not _active_assignment_matches(task, ev, payload)
+            ):
                 return False
+            task.last_assignment_id = task.assignment_id
             task.status = "completed"
             task.completion_event_id = event_id
             task.decision_needed = False
@@ -423,7 +554,10 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "task.blocked":
-            if not _active_assignment_matches(task, ev, payload):
+            if (
+                _deadline_reached(task, float(timestamp))
+                or not _active_assignment_matches(task, ev, payload)
+            ):
                 return False
             task.status = "blocked"
             task.block_event_id = event_id
@@ -434,7 +568,10 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "task.attempt_failed":
-            if not _active_assignment_matches(task, ev, payload):
+            if (
+                _deadline_reached(task, float(timestamp))
+                or not _active_assignment_matches(task, ev, payload)
+            ):
                 return False
             retryable = payload.get("retryable")
             failure_code = payload.get("failure_code")
@@ -532,13 +669,8 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 or task.assignment_id is not None
                 or dependency_task_id not in task.depends_on
                 or dependency is None
-                or dependency.status not in {"failed", "dependency_failed"}
-                or dependency_event_id
-                != (
-                    dependency.failed_event_id
-                    if dependency.status == "failed"
-                    else dependency.dependency_failed_event_id
-                )
+                or dependency.status not in DEPENDENCY_TERMINAL_STATUSES
+                or dependency_event_id != _dependency_terminal_event_id(dependency)
                 or ev.get("caused_by") != dependency_event_id
                 or not isinstance(reason, str)
                 or not reason
@@ -587,7 +719,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "decision.made":
-            if task.status != "blocked":
+            if task.status != "blocked" or _deadline_reached(task, float(timestamp)):
                 return False
             assignment_id = payload.get("assignment_id")
             decision_id = payload.get("decision_id")
@@ -645,6 +777,61 @@ def plan_next_emission(
     """Return the next deterministic effect needed to reconcile derived state."""
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if (
+            task.status != "cancellation_requested"
+            or task.cancel_request_event_id is None
+        ):
+            continue
+        return {
+            "topic": "task.cancelled",
+            "payload": {
+                "task_id": task.task_id,
+                "cancel_request_event_id": task.cancel_request_event_id,
+                "reason": task.cancel_reason or "cancellation requested",
+                "last_assignment_id": (
+                    task.assignment_id
+                    if task.assignment_id is not None
+                    else task.last_assignment_id
+                ),
+                "attempts": task.attempt,
+            },
+            "caused_by": task.cancel_request_event_id,
+            "idempotency_key": (
+                f"cancelled:task:{task.task_id}:"
+                f"request:{task.cancel_request_event_id}"
+            ),
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if (
+            task.status in TASK_TERMINAL_STATUSES
+            or task.status == "cancellation_requested"
+            or task.deadline_at is None
+            or now < task.deadline_at
+        ):
+            continue
+        return {
+            "topic": "task.deadline_exceeded",
+            "payload": {
+                "task_id": task.task_id,
+                "deadline_at": task.deadline_at,
+                "last_assignment_id": (
+                    task.assignment_id
+                    if task.assignment_id is not None
+                    else task.last_assignment_id
+                ),
+                "attempts": task.attempt,
+            },
+            "caused_by": task.created_event_id,
+            "idempotency_key": (
+                f"deadline-exceeded:task:{task.task_id}:"
+                f"created:{task.created_event_id}"
+            ),
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
         if task.status not in ACTIVE_TASK_STATUSES or task.assignment_id is None:
             continue
         worker = state.workers.get(task.assignee or "")
@@ -675,13 +862,9 @@ def plan_next_emission(
             continue
         for dependency_task_id in task.depends_on:
             dependency = state.tasks[dependency_task_id]
-            if dependency.status not in {"failed", "dependency_failed"}:
+            if dependency.status not in DEPENDENCY_TERMINAL_STATUSES:
                 continue
-            dependency_event_id = (
-                dependency.failed_event_id
-                if dependency.status == "failed"
-                else dependency.dependency_failed_event_id
-            )
+            dependency_event_id = _dependency_terminal_event_id(dependency)
             if dependency_event_id is None:
                 continue
             return {
@@ -797,6 +980,11 @@ def plan_next_emission(
                 "required_capabilities": sorted(task.required_capabilities),
                 "retry_policy": {"max_retries": task.max_retries},
                 "retryable_failures": task.retryable_failures,
+                **(
+                    {"deadline_at": task.deadline_at}
+                    if task.deadline_at is not None
+                    else {}
+                ),
                 "ownership": {
                     "mode": task.ownership_mode,
                     "owner": task.ownership_owner,

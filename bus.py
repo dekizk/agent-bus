@@ -87,6 +87,15 @@ def _is_nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_positive_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
 def _require_string(payload: dict, field: str) -> None:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -542,6 +551,11 @@ def validate_event(
         _validate_task_dependencies(payload)
         _validate_external_origin(payload)
         _validate_ownership(payload)
+        deadline_at = payload.get("deadline_at")
+        if deadline_at is not None and not _is_positive_number(deadline_at):
+            raise EventValidationError(
+                "payload.deadline_at must be a positive finite timestamp"
+            )
         return
 
     if topic == "integration.task_observed":
@@ -555,6 +569,11 @@ def validate_event(
         _validate_retry_policy(payload)
         _validate_external_origin(payload, required=True)
         _validate_ownership(payload, observed=True)
+        deadline_at = payload.get("deadline_at")
+        if deadline_at is not None and not _is_positive_number(deadline_at):
+            raise EventValidationError(
+                "payload.deadline_at must be a positive finite timestamp"
+            )
         return
 
     if topic in {"agent.registered", "agent.heartbeat"}:
@@ -595,6 +614,52 @@ def validate_event(
             )
         _validate_external_origin(payload)
         _validate_ownership(payload)
+        deadline_at = payload.get("deadline_at")
+        if deadline_at is not None and not _is_positive_number(deadline_at):
+            raise EventValidationError(
+                "payload.deadline_at must be a positive finite timestamp"
+            )
+    elif topic == "task.cancel_requested":
+        _require_string(payload, "reason")
+    elif topic == "task.cancelled":
+        if actor != "pm":
+            raise EventValidationError("task.cancelled must be emitted by pm")
+        if not _is_positive_int(payload.get("cancel_request_event_id")):
+            raise EventValidationError(
+                "payload.cancel_request_event_id must be a positive integer"
+            )
+        _require_string(payload, "reason")
+        last_assignment_id = payload.get("last_assignment_id")
+        if last_assignment_id is not None and (
+            not isinstance(last_assignment_id, str) or not last_assignment_id.strip()
+        ):
+            raise EventValidationError(
+                "payload.last_assignment_id must be null or a non-empty string"
+            )
+        if not _is_nonnegative_int(payload.get("attempts")):
+            raise EventValidationError(
+                "payload.attempts must be a non-negative integer"
+            )
+    elif topic == "task.deadline_exceeded":
+        if actor != "pm":
+            raise EventValidationError(
+                "task.deadline_exceeded must be emitted by pm"
+            )
+        if not _is_positive_number(payload.get("deadline_at")):
+            raise EventValidationError(
+                "payload.deadline_at must be a positive finite timestamp"
+            )
+        last_assignment_id = payload.get("last_assignment_id")
+        if last_assignment_id is not None and (
+            not isinstance(last_assignment_id, str) or not last_assignment_id.strip()
+        ):
+            raise EventValidationError(
+                "payload.last_assignment_id must be null or a non-empty string"
+            )
+        if not _is_nonnegative_int(payload.get("attempts")):
+            raise EventValidationError(
+                "payload.attempts must be a non-negative integer"
+            )
     elif topic in {"task.started", "task.completed", "task.blocked"}:
         _require_string(payload, "assignment_id")
         _require_string(payload, "worker_instance_id")
@@ -846,6 +911,23 @@ def _resolve_correlation_id(
                 )
             resolved = dependency_correlation_id
 
+    if topic == "task.cancel_requested":
+        task = _find_task_created(conn, payload["task_id"])
+        if task is None:
+            raise EventValidationError(
+                f"task {payload['task_id']} does not exist"
+            )
+        task_correlation_id = task["correlation_id"]
+        if (
+            task_correlation_id is not None
+            and resolved is not None
+            and resolved != task_correlation_id
+        ):
+            raise EventValidationError(
+                "correlation_id conflicts with the target task"
+            )
+        resolved = task_correlation_id or resolved
+
     if resolved is not None:
         return resolved
     if topic == "task.created":
@@ -1086,7 +1168,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version="0.7.0", lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

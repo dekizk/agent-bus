@@ -15,8 +15,9 @@ def assigned_event(
     event_id=10,
     instance="alice-1",
     dependency_refs=(),
+    deadline_at=None,
 ):
-    return {
+    event = {
         "id": event_id,
         "ts": 100.0,
         "topic": "task.assigned",
@@ -37,6 +38,9 @@ def assigned_event(
             "dependency_refs": list(dependency_refs),
         },
     }
+    if deadline_at is not None:
+        event["payload"]["deadline_at"] = deadline_at
+    return event
 
 
 class FakeBus:
@@ -423,6 +427,139 @@ class RuntimeOutcomeTests(unittest.TestCase):
 
 
 class RuntimeOwnershipTests(unittest.TestCase):
+    def test_persisted_deadline_locally_revokes_without_waiting_for_pm(self):
+        began = threading.Event()
+        release = threading.Event()
+
+        class CancellableExecutor:
+            def __init__(self):
+                self.cancelled = []
+
+            def execute(self, assignment):
+                began.set()
+                release.wait(2)
+                return Completed("too late")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+                release.set()
+
+        executor = CancellableExecutor()
+        fake_bus = FakeBus(
+            [assigned_event(deadline_at=time.time() + 0.05)]
+        )
+        runtime = WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        )
+        runtime.run()
+        self.assertTrue(began.is_set())
+        self.assertEqual(["task:1:attempt:1"], executor.cancelled)
+        self.assertNotIn(
+            "task.completed",
+            [event["topic"] for event in fake_bus.published],
+        )
+        self.assertEqual({}, runtime._deadline_timers)
+
+    def test_cancel_request_revokes_running_task_and_suppresses_result(self):
+        began = threading.Event()
+        release = threading.Event()
+
+        class CancellableExecutor:
+            def __init__(self):
+                self.cancelled = []
+
+            def execute(self, assignment):
+                began.set()
+                release.wait(2)
+                return Completed("too late")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+
+        cancel_request = {
+            "id": 11,
+            "topic": "task.cancel_requested",
+            "payload": {"task_id": 1, "reason": "stop now"},
+        }
+
+        def events():
+            yield assigned_event()
+            self.assertTrue(began.wait(1))
+            yield cancel_request
+            release.set()
+
+        executor = CancellableExecutor()
+        fake_bus = FakeBus()
+        runtime = WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        )
+        runtime.run(events())
+        self.assertEqual(["task:1:attempt:1"], executor.cancelled)
+        self.assertNotIn(
+            "task.completed",
+            [event["topic"] for event in fake_bus.published],
+        )
+        self.assertEqual({}, runtime._task_by_assignment)
+
+    def test_deadline_terminal_event_revokes_running_assignment(self):
+        began = threading.Event()
+        release = threading.Event()
+
+        class CancellableExecutor:
+            def __init__(self):
+                self.cancelled = []
+
+            def execute(self, assignment):
+                began.set()
+                release.wait(2)
+                return Completed("too late")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+
+        deadline = {
+            "id": 11,
+            "topic": "task.deadline_exceeded",
+            "payload": {
+                "task_id": 1,
+                "deadline_at": 100.0,
+                "last_assignment_id": "task:1:attempt:1",
+                "attempts": 1,
+            },
+        }
+
+        def events():
+            yield assigned_event()
+            self.assertTrue(began.wait(1))
+            yield deadline
+            release.set()
+
+        executor = CancellableExecutor()
+        fake_bus = FakeBus()
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run(events())
+        self.assertEqual(["task:1:attempt:1"], executor.cancelled)
+        self.assertNotIn(
+            "task.completed",
+            [event["topic"] for event in fake_bus.published],
+        )
+
     def test_capacity_bounds_concurrent_execution(self):
         release = threading.Event()
         two_running = threading.Event()

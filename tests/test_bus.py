@@ -87,6 +87,48 @@ class BusStorageTests(unittest.TestCase):
                         },
                     )
 
+    def test_cancellation_and_deadline_contracts_are_task_scoped(self):
+        created = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "bounded task", "deadline_at": 2_000_000_000.0},
+        )
+        task_id = created["payload"]["task_id"]
+        requested = bus.append_event(
+            "task.cancel_requested",
+            "human",
+            {"task_id": task_id, "reason": "no longer needed"},
+        )
+
+        self.assertEqual(created["correlation_id"], requested["correlation_id"])
+        with self.assertRaisesRegex(bus.EventValidationError, "does not exist"):
+            bus.append_event(
+                "task.cancel_requested",
+                "human",
+                {"task_id": 999, "reason": "invalid target"},
+            )
+        for invalid_deadline in (0, -1, True, float("inf"), float("nan")):
+            with self.subTest(deadline_at=invalid_deadline):
+                with self.assertRaises(bus.EventValidationError):
+                    bus.append_event(
+                        "task.created",
+                        "human",
+                        {"title": "invalid", "deadline_at": invalid_deadline},
+                    )
+        with self.assertRaisesRegex(bus.EventValidationError, "emitted by pm"):
+            bus.append_event(
+                "task.cancelled",
+                "human",
+                {
+                    "task_id": task_id,
+                    "cancel_request_event_id": requested["id"],
+                    "reason": "no longer needed",
+                    "last_assignment_id": None,
+                    "attempts": 0,
+                },
+                caused_by=requested["id"],
+            )
+
     def test_dependencies_are_existing_acyclic_same_workflow_edges(self):
         root = bus.append_event(
             "task.created",
@@ -607,7 +649,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.6.0", bus.app.version)
+        self.assertEqual("0.7.0", bus.app.version)
         created = self.client.post(
             "/events",
             json={

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -168,6 +169,7 @@ class AssignmentContext:
     external_origin: Optional[Mapping[str, Any]] = None
     decisions: tuple[Mapping[str, Any], ...] = ()
     dependencies: tuple[Mapping[str, Any], ...] = ()
+    deadline_at: Optional[float] = None
 
     def __post_init__(self) -> None:
         _positive_int(self.task_id, "task_id")
@@ -182,6 +184,15 @@ class AssignmentContext:
         if self.max_retries is not None:
             _nonnegative_int(self.max_retries, "max_retries")
         _nonnegative_int(self.retryable_failures, "retryable_failures")
+        if self.deadline_at is not None and (
+            not isinstance(self.deadline_at, (int, float))
+            or isinstance(self.deadline_at, bool)
+            or not math.isfinite(self.deadline_at)
+            or self.deadline_at <= 0
+        ):
+            raise ValueError(
+                "deadline_at must be a positive finite timestamp or None"
+            )
         if not isinstance(self.required_capabilities, tuple) or not all(
             isinstance(item, str) and item.strip()
             for item in self.required_capabilities
@@ -252,6 +263,7 @@ class AssignmentContext:
             ownership_owner=ownership.get("owner"),
             external_origin=payload.get("external_origin"),
             dependencies=dependencies,
+            deadline_at=payload.get("deadline_at"),
         )
         if not isinstance(dependency_refs, list):
             raise ValueError("assignment dependency_refs must be a list")
@@ -282,6 +294,7 @@ class AssignmentContext:
             "required_capabilities": list(self.required_capabilities),
             "retry_policy": {"max_retries": self.max_retries},
             "retryable_failures": self.retryable_failures,
+            "deadline_at": self.deadline_at,
             "assignee": self.assignee,
             "worker_instance_id": self.worker_instance_id,
             "ownership": {
@@ -389,9 +402,21 @@ class InProcessExecutor:
             self._call = target
         else:
             raise TypeError("target must be callable or expose a callable run method")
+        cancel = getattr(target, "cancel", None)
+        self._cancel = cancel if callable(cancel) else None
+        close = getattr(target, "close", None)
+        self._close = close if callable(close) else None
 
     def execute(self, assignment: AssignmentContext) -> Outcome:
         return ensure_outcome(self._call(assignment))
+
+    def cancel(self, assignment_id: str) -> None:
+        if self._cancel is not None:
+            self._cancel(assignment_id)
+
+    def close(self) -> None:
+        if self._close is not None:
+            self._close()
 
 
 class SubprocessExecutor:

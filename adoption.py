@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable, Mapping, Optional
@@ -140,6 +141,7 @@ class AdoptionBridge:
         context: Optional[Mapping[str, Any]] = None,
         required_capabilities: Iterable[str] = (),
         max_retries: Optional[int] = None,
+        deadline_at: Optional[float] = None,
         correlation_id: Optional[str] = None,
     ) -> dict:
         if not isinstance(title, str) or not title.strip():
@@ -157,6 +159,13 @@ class AdoptionBridge:
             or max_retries < 0
         ):
             raise ValueError("max_retries must be a non-negative integer")
+        if deadline_at is not None and (
+            not isinstance(deadline_at, (int, float))
+            or isinstance(deadline_at, bool)
+            or not math.isfinite(deadline_at)
+            or deadline_at <= 0
+        ):
+            raise ValueError("deadline_at must be a positive finite timestamp")
 
         decision = decide_ownership(mode, origin, selector)
         payload = {
@@ -168,6 +177,8 @@ class AdoptionBridge:
         }
         if max_retries is not None:
             payload["retry_policy"] = {"max_retries": max_retries}
+        if deadline_at is not None:
+            payload["deadline_at"] = float(deadline_at)
 
         digest = hashlib.sha256(origin.key.encode("utf-8")).hexdigest()
         idempotency_key = f"adopt:{digest}"

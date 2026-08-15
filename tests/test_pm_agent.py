@@ -86,12 +86,15 @@ def created(
     correlation_id=None,
     max_retries=MISSING,
     depends_on=(),
+    deadline_at=MISSING,
 ):
     payload = {"task_id": task_id, "title": "demo"}
     if depends_on:
         payload["depends_on"] = list(depends_on)
     if max_retries is not MISSING:
         payload["retry_policy"] = {"max_retries": max_retries}
+    if deadline_at is not MISSING:
+        payload["deadline_at"] = deadline_at
     return event(
         event_id,
         "task.created",
@@ -213,6 +216,243 @@ class PMLockTests(unittest.TestCase):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_waiting_cancellation_is_terminal_and_crash_safe(self):
+        history = [
+            created(event_id=1, task_id=1, correlation_id="workflow-controls"),
+            event(
+                2,
+                "task.cancel_requested",
+                "human",
+                {"task_id": 1, "reason": "superseded"},
+                correlation_id="workflow-controls",
+            ),
+        ]
+        state = PMState()
+        for item in history:
+            self.assertTrue(apply_event(state, item))
+
+        planned = plan_next_emission(state, now=101.0)
+        self.assertEqual("task.cancelled", planned["topic"])
+        self.assertEqual(0, planned["payload"]["attempts"])
+        self.assertIsNone(planned["payload"]["last_assignment_id"])
+        terminal = event(
+            3,
+            planned["topic"],
+            "pm",
+            planned["payload"],
+            caused_by=planned["caused_by"],
+        )
+        self.assertTrue(apply_event(state, terminal))
+        self.assertEqual("cancelled", state.tasks[1].status)
+        self.assertEqual(0, state.tasks[1].retryable_failures)
+        self.assertIsNone(plan_next_emission(state, now=101.0))
+
+        replayed = PMState()
+        for item in history + [terminal]:
+            self.assertTrue(apply_event(replayed, item))
+        self.assertIsNone(plan_next_emission(replayed, now=101.0))
+
+    def test_event_order_decides_completion_cancellation_race(self):
+        completed_first = PMState()
+        for item in (created(event_id=1), assigned(2, 1), completed(3, 1)):
+            self.assertTrue(apply_event(completed_first, item))
+        self.assertFalse(
+            apply_event(
+                completed_first,
+                event(
+                    4,
+                    "task.cancel_requested",
+                    "human",
+                    {"task_id": 1, "reason": "too late"},
+                ),
+            )
+        )
+        self.assertEqual("completed", completed_first.tasks[1].status)
+
+        cancelled_first = PMState()
+        for item in (created(event_id=1), assigned(2, 1)):
+            self.assertTrue(apply_event(cancelled_first, item))
+        self.assertTrue(
+            apply_event(
+                cancelled_first,
+                event(
+                    3,
+                    "task.cancel_requested",
+                    "human",
+                    {"task_id": 1, "reason": "stop now"},
+                ),
+            )
+        )
+        self.assertFalse(apply_event(cancelled_first, completed(4, 1)))
+        planned = plan_next_emission(cancelled_first, now=101.0)
+        self.assertEqual("task.cancelled", planned["topic"])
+        self.assertEqual("task:1:attempt:1", planned["payload"]["last_assignment_id"])
+
+    def test_deadline_preempts_late_outcome_without_consuming_retry_budget(self):
+        state = PMState()
+        self.assertTrue(apply_event(state, registered(event_id=1)))
+        self.assertTrue(
+            apply_event(
+                state,
+                created(event_id=2, deadline_at=105.0),
+            )
+        )
+        assignment = plan_next_emission(state, now=101.0)
+        self.assertEqual(105.0, assignment["payload"]["deadline_at"])
+        self.assertTrue(
+            apply_event(
+                state,
+                event(3, "task.assigned", "pm", assignment["payload"], ts=101.0),
+            )
+        )
+        late_completion = completed(4, 1)
+        late_completion["ts"] = 105.0
+        self.assertFalse(apply_event(state, late_completion))
+
+        terminal = plan_next_emission(state, now=105.0)
+        self.assertEqual("task.deadline_exceeded", terminal["topic"])
+        self.assertEqual("task:1:attempt:1", terminal["payload"]["last_assignment_id"])
+        self.assertTrue(
+            apply_event(
+                state,
+                event(
+                    5,
+                    terminal["topic"],
+                    "pm",
+                    terminal["payload"],
+                    ts=105.0,
+                    caused_by=terminal["caused_by"],
+                ),
+            )
+        )
+        self.assertEqual("deadline_exceeded", state.tasks[1].status)
+        self.assertEqual(0, state.tasks[1].retryable_failures)
+
+    def test_cancelled_dependency_cascades_without_assignment(self):
+        state = PMState()
+        workflow = "workflow-controls"
+        for item in (
+            created(event_id=1, task_id=1, correlation_id=workflow),
+            created(
+                event_id=2,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+            event(
+                3,
+                "task.cancel_requested",
+                "human",
+                {"task_id": 1, "reason": "stop root"},
+                correlation_id=workflow,
+            ),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        emitted = reconcile(state, FakeBus(starting_id=4), now=101.0)
+        self.assertEqual(
+            ["task.cancelled", "task.dependency_failed"],
+            [item["topic"] for item in emitted],
+        )
+        self.assertEqual("dependency_failed", state.tasks[2].status)
+
+    def test_deadline_exceeded_dependency_cascades_without_assignment(self):
+        state = PMState()
+        workflow = "workflow-deadline-dag"
+        for item in (
+            created(
+                event_id=1,
+                task_id=1,
+                correlation_id=workflow,
+                deadline_at=100.0,
+            ),
+            created(
+                event_id=2,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        emitted = reconcile(
+            state,
+            FakeBus(starting_id=3, ts=101.0),
+            now=101.0,
+        )
+        self.assertEqual(
+            ["task.deadline_exceeded", "task.dependency_failed"],
+            [item["topic"] for item in emitted],
+        )
+        self.assertEqual("deadline_exceeded", state.tasks[1].status)
+        self.assertEqual("dependency_failed", state.tasks[2].status)
+
+        replayed = PMState()
+        for item in (
+            created(
+                event_id=1,
+                task_id=1,
+                correlation_id=workflow,
+                deadline_at=100.0,
+            ),
+            created(
+                event_id=2,
+                task_id=2,
+                correlation_id=workflow,
+                depends_on=(1,),
+            ),
+            *emitted,
+        ):
+            self.assertTrue(apply_event(replayed, item))
+        self.assertIsNone(plan_next_emission(replayed, now=101.0))
+
+    def test_blocked_and_retry_pending_tasks_can_be_cancelled(self):
+        blocked = PMState()
+        for item in (
+            created(event_id=1),
+            assigned(2, 1),
+            event(
+                3,
+                "task.blocked",
+                "alice",
+                {
+                    "task_id": 1,
+                    "assignment_id": "task:1:attempt:1",
+                    "worker_instance_id": "alice-1",
+                    "reason": "approval needed",
+                },
+            ),
+            event(
+                4,
+                "task.cancel_requested",
+                "human",
+                {"task_id": 1, "reason": "do not wait"},
+            ),
+        ):
+            self.assertTrue(apply_event(blocked, item))
+        self.assertEqual(
+            "task.cancelled",
+            plan_next_emission(blocked, now=101.0)["topic"],
+        )
+
+        retry_pending = PMState()
+        for item in (
+            created(event_id=1, max_retries=3),
+            assigned(2, 1),
+            attempt_failed(3, 1, retryable=True),
+            event(
+                4,
+                "task.cancel_requested",
+                "human",
+                {"task_id": 1, "reason": "stop retries"},
+            ),
+        ):
+            self.assertTrue(apply_event(retry_pending, item))
+        planned = plan_next_emission(retry_pending, now=101.0)
+        self.assertEqual("task.cancelled", planned["topic"])
+        self.assertEqual(1, planned["payload"]["attempts"])
+        self.assertEqual(1, retry_pending.tasks[1].retryable_failures)
+
     def test_chain_waits_for_completion_then_assigns_by_reference(self):
         state = PMState()
         workflow = "workflow-dag"

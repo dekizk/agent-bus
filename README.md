@@ -4,6 +4,9 @@
 It is designed to replace board-style agent management with event-driven
 ownership, execution attempts, recovery, and human decisions.
 
+See [ROADMAP.md](ROADMAP.md) for the product direction, adoption principles,
+and remaining path from the current local control plane to v1.0.
+
 The bus does not store a mutable kanban card as truth. Every action is an
 immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes
@@ -54,6 +57,8 @@ task.started  -> task.attempt_failed -> task.assigned (next attempt)
               -> task.assigned (next monotonic attempt)
 task.started  -> task.blocked -> decision.needed -> decision.made
               -> task.assigned (next attempt)
+task.created/assigned/started/blocked -> task.cancel_requested -> task.cancelled
+task.created/assigned/started/blocked -> task.deadline_exceeded
 ```
 
 ## Components
@@ -155,6 +160,66 @@ Resolved dependency input is limited to 32 KiB in aggregate.
 They are coordination data, not storage for prompts, transcripts, or large
 artifacts. v0.6 keeps that content out of SQLite by default and can store
 explicitly opted-in captures in a separate content-addressed artifact store.
+
+## Cancellation and deadlines
+
+v0.7 adds durable management controls without introducing mutable task state.
+Cancellation is a command event followed by a PM-derived terminal event:
+
+```sh
+curl -X POST http://127.0.0.1:8765/events \
+  -H 'content-type: application/json' \
+  -d '{
+    "topic":"task.cancel_requested",
+    "actor":"human",
+    "idempotency_key":"cancel:task:1",
+    "payload":{"task_id":1,"reason":"superseded by a new request"}
+  }'
+```
+
+Python publishers can call `BusClient.cancel_task(task_id, reason=...)`, which
+uses the same stable task-scoped idempotency key. The server verifies that the
+task exists and inherits its `correlation_id`. The PM then emits exactly one
+`task.cancelled`, including the last assignment identity when the task was
+active. A request recorded after a task is already terminal is retained in the
+log but does not rewrite its outcome.
+
+An optional absolute Unix timestamp can bound the whole logical task:
+
+```json
+{
+  "topic": "task.created",
+  "actor": "human",
+  "payload": {
+    "title": "Finish before the release cutoff",
+    "deadline_at": 2000000000.0
+  }
+}
+```
+
+The deadline is persisted on `task.created`, copied into every assignment, and
+exposed as `AssignmentContext.deadline_at`. When it is reached, the PM emits one
+`task.deadline_exceeded` instead of assigning or retrying the task. Cancellation
+and deadline termination do not consume retry budget. They also terminate
+blocked work without creating another human-decision request.
+
+Event order is authoritative: a completion already recorded before a
+cancellation request remains completed; once the cancellation request is
+accepted by the reducer, later attempt output is stale. Worker outcomes whose
+event timestamp is at or after the persisted deadline are likewise ignored by
+the PM projection. Executor timeouts and worker lease expiry remain separate
+retryable attempt failures—they are not task deadlines.
+
+The runtime arms a local timer from the persisted assignment deadline, and also
+follows cancellation requests and terminal control events. It terminates
+subprocess adapters, invokes cooperative `cancel(assignment_id)` on in-process
+adapters that provide it, and suppresses late lifecycle output. This stops
+local execution at the cutoff even if PM reconciliation is temporarily down;
+the PM remains responsible for recording the authoritative terminal event.
+Python threads cannot be force-killed, so side effects must still be
+idempotent. Cancelled or deadline-exceeded prerequisites propagate
+`task.dependency_failed` to downstream DAG tasks. v0.7 does not revive these
+terminal tasks; create a new task to record new intent.
 
 ## Telemetry and artifacts
 
@@ -274,8 +339,9 @@ subprocess is terminated and its result is suppressed. Shell execution is not
 used.
 
 In-process Python threads cannot be force-killed safely. Such agents should
-make external side effects idempotent with `assignment_id` and expose their own
-cooperative cancellation when needed.
+make external side effects idempotent with `assignment_id`. If the wrapped
+object exposes `cancel(assignment_id)` or `close()`, `InProcessExecutor`
+forwards those lifecycle calls.
 
 ## Safe adoption modes
 
@@ -291,6 +357,7 @@ event = AdoptionBridge(bus).adopt(
     mode=AdoptionMode.CANARY,
     selector=CanarySelector(10, namespace="first-rollout"),
     context={"priority": "high"},
+    deadline_at=2000000000.0,
 )
 ```
 
@@ -312,9 +379,9 @@ adoption rollout must therefore use the same bridge actor. Canary percentages
 and `include_refs` affect only external origins that have not yet been adopted;
 v0.4 deliberately has no ownership-transfer operation for an existing origin.
 
-Deadlines are intentionally not part of `AssignmentContext` yet. A timestamp
-without PM-enforced expiry semantics would imply a guarantee the bus does not
-currently provide.
+Controlled and canary tasks may include `deadline_at`; adapters receive the
+persisted value through `AssignmentContext` and should treat the PM's terminal
+deadline event as the ownership boundary.
 
 ## Human decisions
 
@@ -466,7 +533,8 @@ responses stop it immediately; continuing to heartbeat after silently skipping
 an owned assignment would otherwise leave that task assigned forever. Stopping
 allows the lease and normal reassignment path to recover safely.
 
-If an upstream task reaches `task.failed` or `task.dependency_failed`, the PM
+If an upstream task reaches `task.failed`, `task.dependency_failed`,
+`task.cancelled`, or `task.deadline_exceeded`, the PM
 emits a deterministic `task.dependency_failed` for each affected downstream
 task and cascades that state through the graph without assigning doomed work.
 This v0.5 terminal propagation is deliberately conservative: reviving an
@@ -511,9 +579,10 @@ atomically and only move forward. After all pre-v0.2.1 workers have stopped,
 their old per-instance files may be removed once; new demo workers do not
 replenish them.
 
-The reusable runtime also follows assignment-expiry, terminal-failure, and
-replacement-registration events. It cancels adapters that support cancellation
-and suppresses lifecycle output once that instance no longer owns an attempt.
+The reusable runtime also follows cancellation requests, cancellation/deadline
+terminal events, assignment expiry, terminal failure, and replacement
+registration. It cancels adapters that support cancellation and suppresses
+lifecycle output once that instance no longer owns an attempt.
 
 An external tool call, payment, deployment, or file mutation performed by a
 worker must also use an idempotency token. The bus can make orchestration
@@ -563,6 +632,10 @@ v0.5 adds optional `payload.depends_on` to `task.created` and
 `payload.dependency_refs` to PM assignments without changing the schema version;
 their absence retains the historical single-task behavior.
 
+v0.7 adds optional `payload.deadline_at` to task creation and assignments plus
+the cancellation/deadline topics below. These are additive v2 contracts;
+historical tasks without a deadline retain their previous behavior.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
@@ -579,6 +652,9 @@ Core v2 topics:
 | `task.failed` | PM | Terminates a task after policy exhaustion or permanent failure |
 | `task.dependency_failed` | PM | Terminates downstream work whose prerequisite failed |
 | `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
+| `task.cancel_requested` | human/agent | Requests terminal cancellation of an existing task |
+| `task.cancelled` | PM | Records crash-safe terminal cancellation and its last attempt |
+| `task.deadline_exceeded` | PM | Terminates a task after its persisted absolute deadline |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
 | `decision.made` | human | Records a response that is carried into the next attempt |
 
@@ -668,25 +744,19 @@ readiness, dependency-failure cascades, result-reference resolution, SQL-level
 stream filtering, executor conformance, bounded concurrency, subprocess
 timeout/cancellation, stable canaries, single-owner adoption, real-agent
 integration, telemetry isolation/idempotency, artifact integrity, and atomic
-monotonic offsets.
+monotonic offsets. v0.7 also covers cancellation/completion races, deadline
+boundaries, crash-window reconciliation, cooperative adapter revocation, and
+cancelled/deadline dependency propagation.
 
 ## Scope and next boundaries
 
-v0.6 shipped telemetry and content-addressed artifacts ahead of the earlier
-management-controls slot because the v0.4/v0.5 Hermes trials showed immediate
-usage, cost, and retry-observability needs. Management controls, cancellation,
-and deadlines remain candidates for the next control-plane iteration.
-
-v0.6 remains a trusted, single-process, single-host runtime. Actor names are
+v0.7 remains a trusted, single-process, single-host runtime. Actor names are
 asserted by clients, not authenticated identities. The PM lock and SSE wake-up
 condition are process-local mechanisms; do not run the FastAPI app with
 multiple uvicorn workers. Before distributing the bus, add authenticated actor
 identity and replace local exclusivity/notification with shared infrastructure.
 
-The next version should be selected after genuine trials of telemetry under
-normal completion, retry, and worker-replacement paths. Cancellation/deadline
-semantics are the leading control-plane candidate. Projection indexes become
-worthwhile when measured append or replay cost warrants them; snapshots and a
-read-only operational UI remain later candidates. These features should remain
-projections and commands over the log—not a return to a mutable board as the
-source of truth.
+Future product sequencing, adoption goals, and release boundaries live only in
+[ROADMAP.md](ROADMAP.md). New operational views and controls must remain
+projections and commands over the event log—not a return to a mutable board as
+the source of truth.

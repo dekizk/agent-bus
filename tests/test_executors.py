@@ -101,6 +101,28 @@ class InProcessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
                 assignment()
             )
 
+    def test_cooperative_cancel_and_close_are_forwarded(self):
+        class Agent:
+            def __init__(self):
+                self.cancelled = []
+                self.closed = False
+
+            def run(self, received):
+                return Completed("done")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+
+            def close(self):
+                self.closed = True
+
+        agent = Agent()
+        executor = InProcessExecutor(agent)
+        executor.cancel("task:4:attempt:2")
+        executor.close()
+        self.assertEqual(["task:4:attempt:2"], agent.cancelled)
+        self.assertTrue(agent.closed)
+
 
 class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
     def make_executor(self, outcome):
@@ -215,6 +237,12 @@ class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
 
 
 class AssignmentContextTests(unittest.TestCase):
+    def test_deadline_is_validated_and_serialized(self):
+        value = assignment(deadline_at=2_000_000_000.0)
+        self.assertEqual(2_000_000_000.0, value.to_dict()["deadline_at"])
+        with self.assertRaisesRegex(ValueError, "deadline_at"):
+            assignment(deadline_at=float("inf"))
+
     def test_v04_positional_constructor_order_remains_compatible(self):
         value = AssignmentContext(
             "workflow-one",

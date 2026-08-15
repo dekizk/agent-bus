@@ -14,7 +14,7 @@ from examples.hermes.hermes_executor import HermesExecutor
 from runtime import WorkerRuntime
 from telemetry import BusTelemetrySink, ProducerIdentity
 
-HERMES_ADAPTER_VERSION = "0.6.0"
+HERMES_ADAPTER_VERSION = "0.7.0"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

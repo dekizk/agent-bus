@@ -255,7 +255,77 @@ span rather than inventing a terminal event; usage may be absent when Hermes
 could not finish writing it. With disposable content capture enabled, verify
 that any emitted artifact references still pass integrity checks and no
 prompt/output fields appear inline in telemetry. Record that separate evidence
-using the template below.
+using the trial-note template at the end of this file.
+
+## 2026-08-15 — v0.7 cancellation and deadline Hermes trial
+
+Tasks: two disposable, deliberately long Hermes assignments using the
+`clarify` toolset and no content capture. Each root had a dependent DAG node.
+The first root was cancelled after it started (tasks 3–4, coordination events
+950–958, correlation `4295fa733f40496dab9274a0b3c47484`). The second root had
+a three-second persisted deadline (tasks 5–6, coordination events 1004–1013,
+correlation `5fc8c1086e1840f2848c2754c2d7e8ae`).
+
+Result:
+
+- task 3 was assigned once and emitted `task.started` before the human
+  `task.cancel_requested` event 955. The PM emitted exactly one
+  `task.cancelled` event 956, caused by that request and retaining
+  `task:3:attempt:1` as its last assignment;
+- Hermes cancellation produced a causally linked `telemetry.model.failed`
+  event with `error_code: hermes_cancelled` after about 80 ms. The runtime
+  suppressed the executor's retryable outcome, so no coordination-level
+  `task.attempt_failed`, completion, retry, or reassignment was recorded;
+- task 4 was never assigned. The PM emitted `task.dependency_failed` event 958,
+  caused by task 3's cancellation event;
+- task 5's absolute deadline was preserved unchanged from `task.created` into
+  `task.assigned`. It started one Hermes invocation, and the runtime's local
+  timer cancelled that process after about 2.96 seconds, before the PM recorded
+  `task.deadline_exceeded` event 1012;
+- the deadline event was caused by task 5's creation event, retained
+  `task:5:attempt:1`, and did not create another attempt despite a configured
+  two-retry allowance;
+- task 6 was never assigned. The PM emitted `task.dependency_failed` event 1013,
+  caused by the upstream deadline event;
+- a delayed read of the immutable SQLite log found no later completion,
+  assignment, attempt failure, duplicate terminal event, or other lifecycle
+  change for either workflow.
+
+Replay evidence:
+
+- task 3: `cancelled`, one attempt, zero retryable failures;
+- task 4: `dependency_failed`, zero attempts, zero retryable failures;
+- task 5: `deadline_exceeded`, one attempt, zero retryable failures;
+- task 6: `dependency_failed`, zero attempts, zero retryable failures.
+
+Friction and boundaries observed:
+
+1. Cancellation and deadlines correctly terminate coordination without
+   consuming retry budget, even though the interrupted Hermes invocation is
+   represented as a retryable failure in the separate telemetry stream. This
+   confirms that telemetry describes executor activity without controlling PM
+   lifecycle decisions.
+2. Local deadline enforcement occurred before the PM's terminal event, showing
+   that an active subprocess stops at its persisted cutoff even if PM
+   reconciliation is slightly later. The PM event remains the replayable,
+   authoritative task outcome.
+3. Both terminal states propagated through declared dependency edges without
+   assigning doomed downstream work. No operator scheduling or copied result
+   payload was required.
+4. The live telemetry producer still identified `examples.hermes` as version
+   `0.6.0`. The adapter version constant should be advanced to `0.7.0` before
+   the release is committed; this is release metadata, not a lifecycle defect.
+
+Roadmap evidence:
+
+- the v0.7 cancellation/deadline model now has live evidence across the bus,
+  PM projection, worker runtime, Hermes subprocess cancellation, telemetry,
+  replay, and DAG propagation;
+- priority, pause/resume, or richer operator inspection should remain
+  trial-driven follow-ups rather than being inferred from this successful
+  control-plane trial.
+
+## Trial-note template
 
 - Date and task category:
 - Toolsets and authority granted:

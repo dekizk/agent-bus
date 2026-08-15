@@ -69,6 +69,23 @@ class BusClient:
         response.raise_for_status()
         return response.json()
 
+    def cancel_task(
+        self,
+        task_id: int,
+        *,
+        reason: str = "cancelled by requester",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise ValueError("task_id must be a positive integer")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        return self.publish(
+            "task.cancel_requested",
+            {"task_id": task_id, "reason": reason.strip()},
+            idempotency_key=idempotency_key or f"cancel:task:{task_id}",
+        )
+
     def subscribe(
         self,
         topics: Optional[list[str]] = None,

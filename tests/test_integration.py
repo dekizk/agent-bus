@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -25,6 +26,75 @@ class DirectClient:
 
 
 class ExistingAgentIntegrationTests(unittest.TestCase):
+    def test_active_task_cancellation_reaches_adapter_and_terminal_log(self):
+        root = bus.append_event(
+            "task.created",
+            "human",
+            {"title": "Long-running imported work"},
+        )
+        worker_bus = DirectClient("alice")
+        worker_bus.publish(
+            "agent.registered",
+            {
+                "name": "alice",
+                "instance_id": "alice-cancel-test",
+                "capacity": 1,
+                "capabilities": [],
+            },
+        )
+        state = PMState()
+        for item in bus.fetch_after(0, list(PM_TOPICS)):
+            self.assertTrue(apply_event(state, item))
+        assignment = reconcile(state, DirectClient("pm"), now=time.time())[0]
+
+        began = threading.Event()
+        released = threading.Event()
+
+        class CooperativeAgent:
+            def __init__(self):
+                self.cancelled = []
+
+            def run(self, received):
+                began.set()
+                released.wait(2)
+                return Completed("too late")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+                released.set()
+
+        agent = CooperativeAgent()
+
+        def events():
+            yield assignment
+            self.assertTrue(began.wait(1))
+            yield bus.append_event(
+                "task.cancel_requested",
+                "human",
+                {
+                    "task_id": root["payload"]["task_id"],
+                    "reason": "operator stopped it",
+                },
+                idempotency_key=f"cancel:task:{root['payload']['task_id']}",
+            )
+
+        WorkerRuntime(
+            worker_bus,
+            name="alice",
+            instance_id="alice-cancel-test",
+            executor=InProcessExecutor(agent),
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run(events())
+
+        replayed = PMState()
+        for item in bus.fetch_after(0, list(PM_TOPICS)):
+            apply_event(replayed, item)
+        terminal = reconcile(replayed, DirectClient("pm"), now=time.time())
+        self.assertEqual(["task.cancelled"], [item["topic"] for item in terminal])
+        self.assertEqual([assignment["payload"]["assignment_id"]], agent.cancelled)
+        self.assertEqual([], bus.fetch_after(0, ["task.completed"]))
+
     def test_two_step_dag_schedules_and_resolves_upstream_result(self):
         first = bus.append_event(
             "task.created",

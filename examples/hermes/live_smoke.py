@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> None:
                 producer=ProducerIdentity(
                     "examples.hermes.live_smoke",
                     "hermes-live-smoke",
-                    "0.6.0",
+                    "0.7.0",
                 ),
                 artifact_store=artifact_store,
                 capture_content=args.capture_content,

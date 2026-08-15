@@ -43,6 +43,7 @@ class AdoptionTests(unittest.TestCase):
             context={"repository": "agent-bus"},
             required_capabilities=["python"],
             max_retries=1,
+            deadline_at=2_000_000_000.0,
         )
         self.assertEqual("task.created", event["topic"])
         self.assertEqual(
@@ -50,7 +51,19 @@ class AdoptionTests(unittest.TestCase):
             event["payload"]["ownership"],
         )
         self.assertEqual(self.origin.to_dict(), event["payload"]["external_origin"])
+        self.assertEqual(2_000_000_000.0, event["payload"]["deadline_at"])
         self.assertIn("task_id", event["payload"])
+
+    def test_deadline_must_be_a_positive_finite_timestamp(self):
+        for value in (0, -1, True, float("inf"), float("nan")):
+            with self.subTest(deadline_at=value):
+                with self.assertRaisesRegex(ValueError, "deadline_at"):
+                    self.bridge.adopt(
+                        origin=self.origin,
+                        title="Invalid deadline",
+                        mode=AdoptionMode.CONTROLLED,
+                        deadline_at=value,
+                    )
 
     def test_shadow_mode_only_records_an_observation(self):
         event = self.bridge.adopt(

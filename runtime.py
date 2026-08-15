@@ -32,6 +32,9 @@ RUNTIME_TOPICS = (
     "task.assigned",
     "task.assignment_expired",
     "task.failed",
+    "task.cancel_requested",
+    "task.cancelled",
+    "task.deadline_exceeded",
 )
 
 
@@ -93,6 +96,8 @@ class WorkerRuntime:
         self._lock = threading.Lock()
         self._owned: set[str] = set()
         self._futures: dict[str, Future] = {}
+        self._task_by_assignment: dict[str, int] = {}
+        self._deadline_timers: dict[str, threading.Timer] = {}
         self._accepting = False
         self._closed = False
         self._pool: Optional[ThreadPoolExecutor] = None
@@ -179,6 +184,22 @@ class WorkerRuntime:
             self._revoke(payload.get("last_assignment_id"))
             return
 
+        if topic == "task.cancel_requested":
+            task_id = payload.get("task_id")
+            with self._lock:
+                assignment_ids = tuple(
+                    assignment_id
+                    for assignment_id, owned_task_id in self._task_by_assignment.items()
+                    if owned_task_id == task_id
+                )
+            for assignment_id in assignment_ids:
+                self._revoke(assignment_id)
+            return
+
+        if topic in {"task.cancelled", "task.deadline_exceeded"}:
+            self._revoke(payload.get("last_assignment_id"))
+            return
+
         if topic != "task.assigned":
             return
         if (
@@ -198,6 +219,7 @@ class WorkerRuntime:
             self.stop()
             return
 
+        deadline_timer: Optional[threading.Timer] = None
         with self._lock:
             if (
                 not self._accepting
@@ -206,8 +228,19 @@ class WorkerRuntime:
             ):
                 return
             self._owned.add(assignment.assignment_id)
+            self._task_by_assignment[assignment.assignment_id] = assignment.task_id
             future = self._pool.submit(self._execute_assignment, assignment)
             self._futures[assignment.assignment_id] = future
+            if assignment.deadline_at is not None:
+                deadline_timer = threading.Timer(
+                    max(0.0, assignment.deadline_at - time.time()),
+                    self._deadline_elapsed,
+                    args=(assignment.assignment_id,),
+                )
+                deadline_timer.daemon = True
+                self._deadline_timers[assignment.assignment_id] = deadline_timer
+        if deadline_timer is not None:
+            deadline_timer.start()
 
     def _resolve_dependency_refs_with_retry(self, event: dict) -> Optional[dict]:
         for attempt in range(1, self.dependency_fetch_attempts + 1):
@@ -414,9 +447,14 @@ class WorkerRuntime:
                 idempotency_key=f"attempt-failed:{assignment_id}",
             )
         finally:
+            deadline_timer = None
             with self._lock:
                 self._owned.discard(assignment_id)
                 self._futures.pop(assignment_id, None)
+                self._task_by_assignment.pop(assignment_id, None)
+                deadline_timer = self._deadline_timers.pop(assignment_id, None)
+            if deadline_timer is not None:
+                deadline_timer.cancel()
 
     def _publish_while_owned(
         self,
@@ -462,6 +500,10 @@ class WorkerRuntime:
         with self._lock:
             return assignment_id in self._owned
 
+    def _deadline_elapsed(self, assignment_id: str) -> None:
+        self.log(f"[{self.name}] assignment deadline reached: {assignment_id}")
+        self._revoke(assignment_id)
+
     def _revoke(self, assignment_id: object) -> None:
         if not isinstance(assignment_id, str):
             return
@@ -469,7 +511,11 @@ class WorkerRuntime:
             if assignment_id not in self._owned:
                 return
             self._owned.discard(assignment_id)
+            self._task_by_assignment.pop(assignment_id, None)
             future = self._futures.get(assignment_id)
+            deadline_timer = self._deadline_timers.pop(assignment_id, None)
+        if deadline_timer is not None:
+            deadline_timer.cancel()
         cancelled_before_start = False
         if future is not None:
             cancelled_before_start = future.cancel()
@@ -479,4 +525,10 @@ class WorkerRuntime:
         if not cancelled_before_start:
             cancel = getattr(self.executor, "cancel", None)
             if callable(cancel):
-                cancel(assignment_id)
+                try:
+                    cancel(assignment_id)
+                except Exception as exc:
+                    self.log(
+                        f"[{self.name}] executor cancellation failed for "
+                        f"{assignment_id}: {exc.__class__.__name__}: {exc}"
+                    )

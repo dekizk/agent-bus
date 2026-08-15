@@ -8,6 +8,29 @@ from client import BusClient
 
 
 class OffsetTests(unittest.TestCase):
+    def test_cancel_task_publishes_a_stable_task_scoped_request(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"id": 7}
+        with tempfile.TemporaryDirectory() as directory:
+            client = BusClient(
+                "http://127.0.0.1:8765",
+                actor="human",
+                offset_dir=Path(directory),
+            )
+            with patch("client.httpx.post", return_value=response) as post:
+                self.assertEqual(
+                    {"id": 7},
+                    client.cancel_task(4, reason=" superseded "),
+                )
+
+        body = post.call_args.kwargs["json"]
+        self.assertEqual("task.cancel_requested", body["topic"])
+        self.assertEqual({"task_id": 4, "reason": "superseded"}, body["payload"])
+        self.assertEqual("cancel:task:4", body["idempotency_key"])
+        with self.assertRaises(ValueError):
+            client.cancel_task(0)
+
     def test_stopped_subscription_does_not_connect(self):
         stop = threading.Event()
         stop.set()
