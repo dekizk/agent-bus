@@ -5,7 +5,7 @@ Events are immutable SQLite rows. Consumers rebuild state by replaying the log,
 then follow the same ordered stream over SSE. Versioned contracts protect known
 orchestration events while unknown topics remain available to extensions.
 
-Run: uvicorn bus:app --port 8765
+Run: python -m uvicorn bus:app --port 8765
 """
 
 import asyncio
@@ -36,8 +36,9 @@ from limits import (
     MAX_TASK_DEPENDENCIES,
 )
 from topics import KNOWN_TOPICS, TELEMETRY_TOPICS
+from version import VERSION
 
-DB_PATH = Path(__file__).parent / "events.db"
+DB_PATH = Path(os.environ.get("AGENT_BUS_DB_PATH", Path.cwd() / "events.db"))
 CURRENT_SCHEMA_VERSION = 2
 MAX_CORRELATION_ID_LENGTH = 128
 MAX_PRODUCER_FIELD_LENGTH = 128
@@ -1168,7 +1169,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="agent-bus", version=VERSION, lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

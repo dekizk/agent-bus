@@ -114,7 +114,7 @@ curl -X POST http://127.0.0.1:8765/events \
 
 The adapter asks Hermes to return exactly one of the standard executor JSON
 outcomes. `WorkerRuntime` translates it into `task.completed`, `task.blocked`,
-or `task.attempt_failed`. The v0.6 adapter also writes bounded model identity,
+or `task.attempt_failed`. The adapter also writes bounded model identity,
 duration, outcome type, and Hermes cost/token metadata to the separate
 `telemetry.model.*` stream. The PM never subscribes to these topics.
 
@@ -124,6 +124,19 @@ Inspect telemetry for one workflow using the `correlation_id` returned by
 ```sh
 curl 'http://127.0.0.1:8765/events?topics=telemetry.model.started,telemetry.model.completed,telemetry.model.failed&correlation_id=YOUR_CORRELATION_ID'
 ```
+
+With the v0.8 editable install, the normal inspection path no longer requires
+raw event JSON:
+
+```sh
+agent-bus workflow YOUR_CORRELATION_ID
+agent-bus task YOUR_TASK_ID
+agent-bus explain YOUR_TASK_ID
+agent-bus --json workflow YOUR_CORRELATION_ID
+```
+
+The workflow view combines the derived DAG state with token, cost, duration,
+and model-span totals while keeping telemetry outside PM replay.
 
 Prompts and model output are not captured by default. For a disposable,
 non-sensitive trial only, explicitly enable content-addressed capture:

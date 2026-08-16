@@ -649,7 +649,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.7.0", bus.app.version)
+        self.assertEqual("0.8.0", bus.app.version)
         created = self.client.post(
             "/events",
             json={

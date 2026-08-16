@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current foundation — shipped through v0.7
+## Current implementation — v0.8 release candidate
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -76,22 +76,31 @@ agent control plane:
   propagation for cancelled or expired work;
 - a real Hermes adapter and live evidence covering execution, human decisions,
   recovery, DAGs, telemetry, cancellation, and deadlines.
+- a shared replay-only coordination projection and GET-only observer client;
+- human and JSON task, workflow, worker, explanation, health, and tail views;
+- event-traced waiting reasons plus workflow token, cost, duration, and span
+  summaries from the separate telemetry stream.
 
-## Immediate release step — v0.7
+The v0.8 code, automated checks, clean-environment packaging preflight, demo
+DAG, and live Hermes visibility trial are complete. The tree remains a release
+candidate only because it has not yet received final human review, commit, and
+push; the supporting evidence is recorded in
+`examples/hermes/TRIAL_NOTES.md`.
 
-Before starting another feature version:
+## Immediate release step — v0.8
 
-- commit and push the verified v0.7 implementation;
-- retain the live Hermes evidence in `examples/hermes/TRIAL_NOTES.md`;
-- use v0.7 on several genuine tasks and record every point where an operator
-  has to inspect raw JSON, manually correlate events, or guess why work is
-  waiting.
-
-That friction should shape v0.8.
+- [x] install the repository into a clean disposable environment and verify
+  the console entry point;
+- [x] use the CLI against a live two-task Hermes DAG containing telemetry;
+- [x] inspect `doctor`, `workers`, `task`, `explain`, `workflow`, `tail`, and at
+  least one `--json` response;
+- [x] confirm the human views answer the trial questions without raw event JSON;
+- [x] record exact output, event ids, friction, and any explanation mismatch in
+  `examples/hermes/TRIAL_NOTES.md` before committing and pushing v0.8.
 
 ## v0.8 — approachable operations and read-only visibility
 
-The next version should make the existing control plane understandable without
+This release candidate makes the existing control plane understandable without
 requiring users to read raw event rows.
 
 ### Operator projection
@@ -112,7 +121,7 @@ scratch.
 
 ### Human-friendly CLI
 
-Target commands should include:
+Implemented commands include:
 
 ```text
 agent-bus doctor
@@ -129,7 +138,8 @@ not merely repeat its status.
 
 ### Installation and first-run experience
 
-The v0.8 design should also establish the intended easy path:
+v0.8 establishes an editable-install console command for operator visibility.
+The fuller published-package path remains the target:
 
 ```text
 pip install agent-bus
@@ -138,10 +148,12 @@ agent-bus doctor
 agent-bus serve
 ```
 
-Exact packaging may be completed in v0.8 or v0.9, but commands, configuration,
-error messages, and documentation should be designed together. A user should
-not need to understand SQLite, SSE, reducer internals, or four identity fields
-before completing the first example.
+Publishing to PyPI plus the `init` and `serve` convenience commands remain v0.9
+onboarding work. Until then, a checkout uses `python -m pip install -e .`,
+`python -m uvicorn bus:app`, `python -m pm_agent`, and `python -m worker`.
+Configuration, errors, and the read-only command surface are designed together
+so a user need not understand SQLite, SSE, reducer internals, or four identity
+fields before completing the first example.
 
 ### v0.8 acceptance criteria
 

@@ -325,6 +325,81 @@ Roadmap evidence:
   trial-driven follow-ups rather than being inferred from this successful
   control-plane trial.
 
+## 2026-08-16 — v0.8 packaging and demo-DAG preflight
+
+The v0.8 project was installed from the checkout into a disposable virtual
+environment with no dependency downloads. The generated console command
+reported `agent-bus 0.8.0` and exposed all six read-only operations commands.
+
+An installed-package local smoke then ran a disposable server, PM, and demo
+worker against a two-task DAG (`76f93d6d032243288aa2fed9a186b583`, coordination
+events 3–11). `agent-bus doctor` reported a healthy schema-v2 bus and worker;
+`agent-bus workflow` showed both tasks completed, Task 2's dependency on Task
+1, and state events `#6` and `#11`; `agent-bus task 2 --json` included the
+assignment, dependency, retry, ownership, completion summary, and trace fields.
+With no telemetry in this demo run, the human output correctly said `tokens not
+reported` and `cost not reported` instead of inventing zero-cost evidence.
+
+This preflight confirms packaging, public HTTP replay, PM compatibility, DAG
+rendering, JSON output, and missing-telemetry wording. It is not a substitute
+for the live Hermes trial below, which must exercise real telemetry and the
+remaining commands before v0.8 is called complete.
+
+## 2026-08-16 — v0.8 read-only Hermes visibility trial
+
+The v0.8 CLI replayed the genuine two-task Hermes DAG and telemetry history
+from `hermes-v06-dag-retry-1786767615` without invoking another paid model
+request or inspecting raw event payloads.
+
+Result:
+
+- `agent-bus doctor` reached the live schema-v2 bus and replayed 1,083
+  coordination events into six tasks. It reported zero healthy and two stale
+  workers, which accurately describes this archived workflow rather than
+  implying that its historical Hermes process is still live;
+- `agent-bus workers` traced the stale `hermes` and `hermes-v07` registrations
+  to their latest heartbeat events (`#943` and `#1093`) and displayed capacity,
+  lease age, and capabilities;
+- `agent-bus workflow` rendered two completed tasks and the enforced edge
+  `1 -> 2`. Task 1 completed at `#38` after one retryable failure and Task 2
+  completed at `#44` only after dependency event `#38`;
+- the workflow view totaled three completed model spans, zero failed or open
+  spans, 12,023 tokens, 15,074.686916545 ms, and reported cost `$0.056032` for
+  `nous/openai/gpt-5.5`. Telemetry evidence was `#28`, `#31`, `#35`, `#37`,
+  `#41`, and `#43`;
+- `task 1` exposed attempt 2, one retryable failure, zero remaining retries,
+  completion summary, last assignment `#33`, and completion trace `#38`.
+  `task 2` exposed dependency `1=completed@#38`, assignment `#39`, one
+  remaining retry, and completion trace `#44`;
+- `explain 1` and `explain 2` returned concrete completed reasons with traces
+  `#38` and `#44` rather than merely repeating a status label;
+- `tail --from-id 24` replayed the readable causal sequence from task creation
+  through Task 1's controlled retry, Task 1 completion, Task 2 readiness, and
+  Task 2 completion, interleaving telemetry without exposing full payloads;
+- the saved JSON view represented the same DAG, retry, ownership, usage, cost,
+  and trace data. Automated and clean-environment checks confirm that finite
+  observer commands create no offsets, cache, database, or mutable projection.
+
+Friction found and corrected during the trial:
+
+1. The first candidate labeled the retained assignment provenance on completed
+   tasks as `Owner`, which could imply that Hermes still owned terminal work.
+   The final candidate now says `Current owner` only for assigned/started work,
+   says `Last attempt` for terminal provenance, and includes
+   `assignment_active: false` in terminal JSON.
+2. Stale worker registrations remain visible indefinitely because they are
+   immutable history. Showing them as stale with lease age and event id is
+   useful; `doctor` correctly avoids warning that work cannot be assigned when
+   there is no open work.
+
+Roadmap evidence:
+
+- every v0.8 read-only command now has live or automated evidence;
+- the two-task workflow is understandable without a board or raw event JSON;
+- coordination truth remained solely in immutable history while the CLI view
+  was rebuilt for each invocation;
+- v0.8 is ready for commit and push after final human review.
+
 ## Trial-note template
 
 - Date and task category:

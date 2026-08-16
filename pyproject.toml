@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-bus"
+dynamic = ["version"]
+description = "Local, event-driven orchestration and operations for interchangeable agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.27,<1",
+    "pydantic>=2.8,<3",
+    "uvicorn>=0.30,<1",
+]
+
+[project.scripts]
+agent-bus = "agent_bus_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "adoption",
+    "agent_bus_cli",
+    "artifacts",
+    "bus",
+    "client",
+    "executors",
+    "limits",
+    "observer",
+    "operations",
+    "pm_agent",
+    "projection",
+    "runtime",
+    "telemetry",
+    "topics",
+    "version",
+    "worker",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "version.VERSION"}

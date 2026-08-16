@@ -12,6 +12,11 @@ immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes
 can therefore restart without relying on hidden in-memory ownership state.
 
+v0.8 adds an installable, read-only operations CLI over that same replay. It
+shows task and workflow state, worker leases, DAG readiness, retry allowance,
+human-decision waits, and workflow usage without creating a second database or
+letting the display become an orchestration authority.
+
 ## Identity model
 
 Four identities keep workflows, retries, and replays unambiguous:
@@ -67,7 +72,11 @@ task.created/assigned/started/blocked -> task.deadline_exceeded
 |---|---|
 | `bus.py` | FastAPI, SQLite event storage, validation, queries, and SSE streaming |
 | `client.py` | Publish, bounded history reads, reconnecting subscriptions, durable offsets |
-| `pm_agent.py` | Pure projection plus deterministic post-replay reconciliation |
+| `projection.py` | Pure coordination reducer shared by the PM and operator tools |
+| `pm_agent.py` | Deterministic post-replay reconciliation and single-PM runtime |
+| `operations.py` | Task explanations, worker health, DAG views, and telemetry totals |
+| `observer.py` | GET-only history and SSE client with no offsets or local state |
+| `agent_bus_cli.py` | Human-friendly `agent-bus` operations command with JSON output |
 | `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
 | `runtime.py` | Leased, concurrent worker runtime with ownership-loss cancellation |
 | `adoption.py` | Controlled, shadow, and deterministic canary integration helpers |
@@ -83,22 +92,25 @@ task.created/assigned/started/blocked -> task.deadline_exceeded
 ```sh
 python3 -m venv .venv          # Python 3.10+
 . .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 Create the environment in `.venv`; do not use the repository root itself as a
-virtual-environment directory.
+virtual-environment directory. The editable install provides the `agent-bus`
+command while keeping this checkout as the source. The project is not yet
+claiming a published PyPI release; `pip install agent-bus` becomes the intended
+path once release packaging is published and hardened.
 
 ## Quick start
 
 Run each process in its own terminal, bus first:
 
 ```sh
-uvicorn bus:app --port 8765
-python pm_agent.py
-python worker.py alice
-python worker.py bob --block 2
-python worker.py carol --fail 3
+python -m uvicorn bus:app --port 8765
+python -m pm_agent
+python -m worker alice
+python -m worker bob --block 2
+python -m worker carol --fail 3
 ```
 
 Create a task:
@@ -121,10 +133,48 @@ an `assignment_id`; the worker includes that assignment and its process
 event chain. New tasks store their retry policy in the event itself; the
 default is two retries after the initial attempt.
 
+The server stores `events.db` in the directory where it is started. Set
+`AGENT_BUS_DB_PATH` to an explicit file path when another location is desired.
+
+## Read-only operations CLI
+
+The v0.8 commands read the public HTTP/SSE API only. They never publish events,
+create consumer offsets, cache a mutable projection, or participate in
+scheduling:
+
+```sh
+agent-bus doctor
+agent-bus workers
+agent-bus task 1
+agent-bus explain 1
+agent-bus workflow YOUR_CORRELATION_ID
+agent-bus tail YOUR_CORRELATION_ID
+```
+
+`task` shows current state, attempt ownership, dependencies, retry allowance,
+deadline, and the event ids supporting its explanation. `workflow` renders all
+tasks and dependency edges for one correlation and totals model tokens, cost,
+duration, failures, and still-open spans from the separate telemetry stream.
+When usage or cost was not reported, the CLI says so instead of displaying a
+misleading zero.
+
+All finite commands accept `--json` before or after the command for scripts:
+
+```sh
+agent-bus task 1 --json
+agent-bus --json workflow YOUR_CORRELATION_ID
+```
+
+The CLI uses `AGENT_BUS_URL`, `AGENT_BUS_TOKEN`, and
+`AGENT_BUS_WORKER_LEASE_SECONDS` by default. The equivalent `--url`, `--token`,
+and `--lease-seconds` flags are available for one invocation. `doctor` reports
+bus/schema health, replay counts, worker lease health, safely ignored stale
+events, and tasks that appear to be waiting for PM reconciliation.
+
 Workers can advertise scheduling metadata:
 
 ```sh
-python worker.py coder --capacity 2 --capability python --capability testing
+python -m worker coder --capacity 2 --capability python --capability testing
 ```
 
 A task may require those capabilities:
@@ -746,11 +796,14 @@ timeout/cancellation, stable canaries, single-owner adoption, real-agent
 integration, telemetry isolation/idempotency, artifact integrity, and atomic
 monotonic offsets. v0.7 also covers cancellation/completion races, deadline
 boundaries, crash-window reconciliation, cooperative adapter revocation, and
-cancelled/deadline dependency propagation.
+cancelled/deadline dependency propagation. v0.8 adds shared-projection
+equivalence, explanations for every lifecycle state, DAG/usage summaries,
+GET-only observer behavior, human and JSON CLI output, actionable exit codes,
+and proof that read-only commands create no projection or offset files.
 
 ## Scope and next boundaries
 
-v0.7 remains a trusted, single-process, single-host runtime. Actor names are
+v0.8 remains a trusted, single-process, single-host runtime. Actor names are
 asserted by clients, not authenticated identities. The PM lock and SSE wake-up
 condition are process-local mechanisms; do not run the FastAPI app with
 multiple uvicorn workers. Before distributing the bus, add authenticated actor
