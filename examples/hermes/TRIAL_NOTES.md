@@ -400,6 +400,142 @@ Roadmap evidence:
   was rebuilt for each invocation;
 - v0.8 is ready for commit and push after final human review.
 
+## 2026-08-18 — v0.8 documentation DAG and live fan-in trial
+
+A genuine five-task Hermes workflow turned the earlier README-improvement
+plan into an immutable DAG under correlation
+`37e6bec0682a47959561123f90d759be` (events `#15`–`#77`). Hermes received the
+`file` toolset with explicit read-only instructions and ran at capacity three.
+Content capture was enabled in a disposable artifact directory.
+
+The graph was declared before its prerequisites completed:
+
+- task 1 re-audited the current README against the v0.8 implementation;
+- tasks 2–4 each depended on task 1 and independently drafted the quick-start,
+  architecture/invariants, and event-contract sections;
+- task 5 depended on tasks 2–4 and merged their results into one proposed
+  README revision with conflicts and recommended edits.
+
+Result:
+
+- all five tasks completed on their first assignment;
+- task 1 completed at `#38`, after which the PM immediately assigned tasks
+  2–4 at `#39`, `#40`, and `#41`. Their model invocations began within about
+  57 ms of one another, exercising real concurrent fan-out;
+- the branch tasks completed at `#54`, `#60`, and `#65`. Task 5 was assigned
+  at `#66`, caused by the last prerequisite completion, and completed at
+  `#77` only after all three declared edges were satisfied;
+- the workflow projection rendered five completed tasks and all six expected
+  edges: `1 -> 2`, `1 -> 3`, `1 -> 4`, `2 -> 5`, `3 -> 5`, and `4 -> 5`;
+- branch results totaled 16,871 encoded bytes when resolved for task 5,
+  remaining below the 32 KiB aggregate dependency limit. The merged result
+  was 12,678 bytes, below the 16 KiB result limit;
+- ten model-input/output artifact references passed size and SHA-256
+  verification, while telemetry retained only compact references;
+- five model invocations completed with zero failed or open spans. Hermes
+  reported 550,933 total tokens, 234,602.322916035 ms, and `$1.253112` for
+  `nous/openai/gpt-5.5`;
+- the generated audit identified six concrete documentation issues and
+  returned usable draft Markdown. Hermes did not modify the checkout, and the
+  working tree remained clean.
+
+Friction and boundaries observed:
+
+1. The attempted hard-loss injection happened after the workflow had already
+   completed: task 1 finished at about 07:45, while the operator ran the kill
+   step at about 07:50. The command therefore killed an idle worker. Task 1
+   correctly remained at attempt 1, and telemetry correctly showed zero open
+   spans. This run must not be cited as lease-expiry evidence.
+2. The first verification pipeline sent Python output through `tee` without
+   enabling shell `pipefail`. Its text exposed the failed expectation
+   (`Open spans preserved after hard loss: 0`), but the pipeline status could
+   appear successful. Subsequent runbooks must enable `pipefail` and capture
+   stderr when an assertion is part of acceptance.
+3. The task-1 result was 7,352 bytes despite a prompt request to stay below
+   7,000. The runtime correctly accepted it because the enforced contract is
+   16 KiB; prompt-specific advisory limits are not protocol enforcement.
+4. The moderate 16,871-byte fan-in passed comfortably. This provides real
+   multi-result evidence but does not claim that artifact-backed dependency
+   dereferencing or near-32-KiB fan-in has been implemented.
+
+Roadmap evidence:
+
+- the read-only workflow view remained useful while work was actively moving
+  through fan-out and fan-in, without introducing a mutable board;
+- dependency readiness and result propagation required no operator extraction
+  or copied task context;
+- the run produced useful project output while exercising sustained Hermes
+  operation, concurrency, result-size boundaries, telemetry aggregation, and
+  artifact integrity;
+- hard worker loss remained an explicit unclosed criterion until the focused
+  trial below.
+
+## 2026-08-18 — focused hard-loss and lease-expiry recovery trial
+
+A separate one-task trial isolated the missed failure condition under
+correlation `v08-lease-1787004087` (task 6, events `#262`–`#281`). An automatic
+watcher was armed before publication and killed the worker immediately after
+the first `telemetry.model.started` event. The task allowed one retry and used
+the `file` toolset under read-only instructions with disposable content
+capture.
+
+Result:
+
+- attempt 1 was assigned at `#263`, started at `#264`, and emitted
+  `telemetry.model.started` at `#265` from worker instance
+  `8cdb9f7b273e427ca778c5984e8c9507` with invocation id
+  `task:6:attempt:1:model:1`;
+- the hard-killed process emitted no model terminal event and no task outcome.
+  The PM recorded exactly one `task.assignment_expired` event at `#266`,
+  caused by the first assignment and carrying reason `worker lease expired`;
+- attempt 2 was assigned at `#268` to the distinct replacement instance
+  `2e98165c44d8416dbf2f853613becad7`, preserving the same task and workflow
+  correlation while using the new deterministic invocation id
+  `task:6:attempt:2:model:1`;
+- the replacement invocation started at `#270`, completed at `#280`, and the
+  task completed exactly once at `#281`. The derived task state was
+  `completed`, attempt 2, one retryable failure, and zero retries remaining;
+- telemetry reported two started model spans, one completed span, zero failed
+  spans, and exactly one open span belonging to the killed attempt. It did not
+  invent a terminal event or usage for the lost process;
+- the successful replacement reported 193,554 total tokens,
+  49,375.073791947 ms, and `$0.4101896` for `nous/openai/gpt-5.5`;
+- all three captured artifact references passed size and SHA-256 verification,
+  and no prompt, input, output, or content field appeared inline in telemetry;
+- the corrected verifier used shell `pipefail` and asserted the two starts,
+  one terminal span, one open span, one assignment expiry, one task
+  completion, attempt-2 completion identity, and artifact integrity before
+  printing `PASS`.
+
+Friction and boundaries observed:
+
+1. Starting the replacement initially failed because `start_crash_worker` was
+   a shell function defined only in the original terminal. Supplying the full
+   standalone worker command resolved it. Future onboarding and trial
+   runbooks should not depend on terminal-local helper functions for recovery
+   steps.
+2. The gap between expiry `#266` and replacement assignment `#268` reflected
+   the human delay in starting a new worker. The task remained durably open in
+   immutable history during that interval and advanced when compatible
+   capacity returned.
+3. The open telemetry span is intentional evidence of uncertainty, not a leak
+   to be repaired with an invented failure. Retention and operational views
+   should continue distinguishing incomplete spans caused by hard loss from
+   completed or explicitly failed invocations.
+
+Roadmap evidence:
+
+- this closes the outstanding v0.6 live criterion for telemetry under hard
+  worker loss and lease-expiry recovery;
+- crash recovery preserved correlation, attempt identity, ownership fencing,
+  retry accounting, and exactly-once terminal task state across two worker
+  processes;
+- coordination remained authoritative while telemetry truthfully preserved
+  the incomplete observation, and artifact content remained outside SQLite;
+- together with the five-task DAG trial above, v0.8 now has live evidence for
+  read-only in-flight visibility, concurrent DAG execution, fan-in, usage
+  aggregation, artifact integrity, and hard-loss recovery.
+
 ## Trial-note template
 
 - Date and task category:
