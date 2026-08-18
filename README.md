@@ -87,21 +87,73 @@ task.created/assigned/started/blocked -> task.deadline_exceeded
 | `events.db` | Append-only event log and task-id counter |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
 
+## Architecture and invariants
+
+The bus, PM, workers, and operator views have deliberately separate roles:
+
+1. publishers append intent and outcomes to the event log;
+2. `projection.py` derives current coordination state through a pure replay;
+3. the PM reconciles any missing assignment, recovery, decision, or terminal
+   event using stable idempotency keys;
+4. workers execute only assignments addressed to their current process
+   instance; and
+5. read-only tools rebuild views from HTTP history without becoming another
+   scheduler or source of truth.
+
+The design depends on these invariants:
+
+- **Immutable history.** Accepted events are appended, never edited. A
+  correction or new request is another event.
+- **Replayable effects.** PM and worker lifecycle publications use logical
+  idempotency keys so replay after a crash does not duplicate an effect.
+- **Current ownership only.** A task may have several attempts, but only its
+  current assignment may advance it. Late output is suppressed or ignored.
+- **Immutable DAG intent.** Dependency edges exist only on `task.created`.
+  New intent means new tasks, not edited edges or mutable board state.
+- **Bounded coordination data.** Context, results, decisions, and resolved
+  dependencies remain compact. Large content belongs in external artifacts.
+- **Telemetry is observational.** Model and tool events can explain execution
+  but never decide task ownership, readiness, retries, or terminal state.
+- **Local trust boundary.** The current bus assumes one trusted PM on one host;
+  actor strings are self-reported even when perimeter authentication is on.
+- **External effects remain the adapter's responsibility.** File writes,
+  deployments, payments, and API calls must be idempotent by `assignment_id`.
+
 ## Setup
 
 ```sh
-python3 -m venv .venv          # Python 3.10+
+python3 --version              # must be Python 3.10+
+python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
+python -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
 ```
 
 Create the environment in `.venv`; do not use the repository root itself as a
 virtual-environment directory. The editable install provides the `agent-bus`
 command while keeping this checkout as the source. The project is not yet
 claiming a published PyPI release; `pip install agent-bus` becomes the intended
-path once release packaging is published and hardened.
+path once release packaging is published and hardened. If the final assertion
+fails, recreate `.venv` with a supported interpreter such as `python3.11`.
 
-## Quick start
+## Quick start: one verifiable task
+
+Start with one bus, one PM, one ordinary worker, and one task. Deliberately
+blocking or failing workers are useful later, but keeping them out of the first
+run makes the expected result unambiguous.
+
+In every terminal, activate the environment and use the same local settings:
+
+```sh
+cd /path/to/agent-bus
+. .venv/bin/activate
+export AGENT_BUS_URL=http://127.0.0.1:8765
+export AGENT_BUS_DB_PATH=/tmp/agent-bus-quickstart-events.db
+```
+
+Choose a different database filename for a separate clean run. The explicit
+path prevents the smoke test from adding `events.db` to whichever directory
+happened to launch the server.
 
 Run each process in its own terminal, bus first:
 
@@ -109,21 +161,27 @@ Run each process in its own terminal, bus first:
 python -m uvicorn bus:app --port 8765
 python -m pm_agent
 python -m worker alice
-python -m worker bob --block 2
-python -m worker carol --fail 3
 ```
 
-Create a task:
+Create one task in a fourth terminal and capture both server-assigned
+identities without requiring `jq`:
 
 ```sh
-curl -X POST http://127.0.0.1:8765/events \
+RESPONSE=$(curl -fsS -X POST "$AGENT_BUS_URL/events" \
   -H 'content-type: application/json' \
   -d '{
     "topic":"task.created",
     "actor":"human",
-    "idempotency_key":"task:demo",
-    "payload":{"title":"Demonstrate crash-safe orchestration"}
-  }'
+    "idempotency_key":"quickstart:task-created",
+    "payload":{"title":"Verify the agent-bus quick start"}
+  }')
+
+TASK_ID=$(printf '%s' "$RESPONSE" | python -c \
+  'import json,sys; print(json.load(sys.stdin)["payload"]["task_id"])')
+CORRELATION_ID=$(printf '%s' "$RESPONSE" | python -c \
+  'import json,sys; print(json.load(sys.stdin)["correlation_id"])')
+
+printf 'TASK_ID=%s\nCORRELATION_ID=%s\n' "$TASK_ID" "$CORRELATION_ID"
 ```
 
 The server assigns `task_id` atomically. The PM assigns a live worker and emits
@@ -133,8 +191,48 @@ an `assignment_id`; the worker includes that assignment and its process
 event chain. New tasks store their retry policy in the event itself; the
 default is two retries after the initial attempt.
 
-The server stores `events.db` in the directory where it is started. Set
-`AGENT_BUS_DB_PATH` to an explicit file path when another location is desired.
+After about one second, verify the bus, task, and derived workflow:
+
+```sh
+agent-bus doctor
+agent-bus task "$TASK_ID"
+agent-bus workflow "$CORRELATION_ID"
+```
+
+The expected state is a healthy schema-v2 bus with one healthy worker, a
+`completed` task whose last attempt belongs to `alice`, and a one-task
+`completed` workflow. The demo worker emits no model telemetry, so
+`tokens not reported` and `cost not reported` are expected rather than errors.
+
+For an explicit machine-readable pass/fail check:
+
+```sh
+agent-bus task "$TASK_ID" --json | python -c '
+import json, sys
+task = json.load(sys.stdin)
+assert task["status"] == "completed", task
+assert task["assignment_active"] is False, task
+print("PASS: task completed exactly once")
+'
+
+agent-bus workflow "$CORRELATION_ID" --json | python -c '
+import json, sys
+workflow = json.load(sys.stdin)
+assert workflow["status"] == "completed", workflow
+assert workflow["task_count"] == 1, workflow
+print("PASS: workflow is replayable and complete")
+'
+```
+
+If the task is still `assigned` or `started`, wait briefly and repeat the
+verification. Persistent warnings from `agent-bus doctor` usually mean the PM,
+worker, or bus is not running with the same `AGENT_BUS_URL`.
+
+To explore other lifecycle paths after this happy-path check, stop `alice`,
+create a new task while no worker is available, note its returned id, and then
+start a demo worker with `--block TASK_ID`, `--fail TASK_ID`, or
+`--fail-permanently TASK_ID`. Those flags affect only the exact numeric task id
+supplied, so each demonstration needs its own task.
 
 ## Read-only operations CLI
 
@@ -663,10 +761,42 @@ retryable worker failure share the same bounded recovery policy.
 
 ## Versioned event contracts
 
-New built-in events use top-level `schema_version: 2` by default. Known v2
-topics are validated before they enter the log; malformed events cannot poison
-every future PM replay. Unknown topics remain permitted so applications can
-extend the bus without changing its core.
+Every stored event uses the same envelope:
+
+| Field | Contract |
+|---|---|
+| `id` | Positive, server-assigned SQLite id used for audit references and resume cursors |
+| `ts` | Server-assigned Unix timestamp |
+| `topic` | Non-empty routing name; built-in names are grouped in `topics.py` |
+| `actor` | Non-empty, self-reported publisher name |
+| `schema_version` | Positive contract version; new built-in events require v2 |
+| `idempotency_key` | Optional logical publication identity, unique per `(actor, key)` |
+| `caused_by` | Optional existing parent event id for direct causality and correlation inheritance |
+| `correlation_id` | Optional workflow identity; generated for a root task and shared across its DAG |
+| `producer` | Required on built-in telemetry; identifies implementation, process, and optional version |
+| `payload` | Topic-specific JSON object |
+
+New built-in events use top-level `schema_version: 2` by default. Unknown
+topics remain permitted so applications can extend the bus without changing
+its core, but they are not automatically coordination topics and receive no
+built-in payload validation.
+
+Validation and recovery deliberately operate at three different layers:
+
+1. `bus.py` structurally validates known v2 envelopes and payloads before
+   append and rejects contract violations with HTTP 422.
+2. `projection.py` remains total during replay: irrelevant, duplicate, stale,
+   malformed, or invalid-transition rows are ignored instead of preventing
+   later valid history from being derived.
+3. `runtime.py` resolves referenced dependency completions and constructs an
+   executable `AssignmentContext`. If an assignment cannot be interpreted
+   safely, the worker stops so lease expiry can recover it rather than
+   continuing to heartbeat around work it skipped.
+
+Append-time structural validation is therefore not a proof that arbitrary
+events published by a client claiming to be `pm` are executable. For example,
+the runtime still requires a usable assignment goal or title. Correct local
+operation assumes the real single PM is the publisher of PM lifecycle events.
 
 Existing databases are migrated automatically. Historical rows are marked as
 schema v1 and remain replayable with legacy assignment identities derived from
@@ -728,7 +858,27 @@ Telemetry topics are also validated and deliberately excluded from PM replay:
 
 `topics.py` is the canonical source for all three groups. Tests assert that the
 PM uses exactly the coordination group and never consumes integration or
-telemetry topics.
+telemetry topics. `validate_event()` in `bus.py` is the canonical built-in
+payload validator; `tests/test_bus.py` records its compatibility and rejection
+behavior. Keep those sources authoritative instead of treating this compact
+README table as a separately maintained exhaustive schema.
+
+### Shared contract limits
+
+| Data | Limit |
+|---|---|
+| Task context | 16 KiB encoded JSON |
+| Final structured result | 16 KiB encoded JSON |
+| Resolved dependency input | 32 KiB aggregate encoded JSON |
+| Direct task dependencies or assignment references | 128 |
+| Telemetry `attributes` or model `usage` object | 8 KiB encoded JSON each |
+| Artifact references on one telemetry event | 16 |
+| One content-addressed artifact | 16 MiB |
+| Correlation, producer, telemetry identity, and external-origin fields | 128 characters where applicable |
+
+These are coordination safety boundaries, not a transport for large model
+content. Artifact references in telemetry do not yet make oversized DAG
+results transparently resolvable by downstream executors.
 
 ## Reading and following the log
 
@@ -764,9 +914,10 @@ The bus is designed for local, single-user orchestration. Two boundaries to
 understand before exposing it any wider:
 
 - **Perimeter auth is opt-in.** Set `AGENT_BUS_TOKEN` in the bus's environment
-  and every data route requires `Authorization: Bearer <token>`; `BusClient`
-  picks the same variable up automatically (or accepts `token=`). `/health`
-  stays open. Without the variable, anyone who can reach the port can publish.
+  and every data route requires an `Authorization: Bearer <token>` header;
+  `BusClient` picks the same variable up automatically (or accepts `token=`).
+  `/health` stays open. Without the variable, anyone who can reach the port can
+  publish.
 - **Actors are self-reported.** The token authenticates *clients*, not
   identities: any authorized client may publish under any actor string,
   including `pm`. Per-actor authentication would require signed events or
