@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "worker": {
+    "name": "minimal-cli-agent",
+    "capabilities": ["cli-example"],
+    "capacity": 1
+  },
+  "adapter": {
+    "type": "cli",
+    "command": ["python", "-m", "examples.cli_agent.agent"],
+    "protocol_version": 1,
+    "timeout_seconds": 60,
+    "working_directory": "../.."
+  }
+}

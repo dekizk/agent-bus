@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
 
+from executor_protocol import (
+    LEGACY_PROTOCOL_VERSION,
+    assignment_message,
+    parse_outcome_message,
+    validate_protocol_version,
+)
 from limits import MAX_TASK_DEPENDENCIES
 
 DEFAULT_MAX_PROTOCOL_BYTES = 64 * 1024
@@ -280,12 +288,33 @@ class AssignmentContext:
             )
         return assignment
 
+    @property
+    def effect_scope(self) -> str:
+        """Stable identity for external effects across delivery attempts."""
+        material = json.dumps(
+            ["agent-bus.effect-scope.v1", self.correlation_id, self.task_id],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"effect-scope:{hashlib.sha256(material).hexdigest()}"
+
+    def effect_id(self, operation_name: str) -> str:
+        """Return a deterministic idempotency key for one logical operation."""
+        operation = _nonempty_string(operation_name, "operation_name").strip()
+        material = json.dumps(
+            ["agent-bus.effect.v1", self.effect_scope, operation],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"effect:{hashlib.sha256(material).hexdigest()}"
+
     def to_dict(self) -> dict:
         result = {
             "correlation_id": self.correlation_id,
             "task_id": self.task_id,
             "assignment_id": self.assignment_id,
             "assignment_event_id": self.assignment_event_id,
+            "effect_scope": self.effect_scope,
             "attempt": self.attempt,
             "goal": self.goal,
             "context": _thaw(self.context),
@@ -433,6 +462,8 @@ class SubprocessExecutor:
         *,
         timeout: Optional[float] = None,
         max_protocol_bytes: int = DEFAULT_MAX_PROTOCOL_BYTES,
+        protocol_version: int = LEGACY_PROTOCOL_VERSION,
+        working_directory: Optional[str | Path] = None,
     ):
         if (
             not isinstance(command, Sequence)
@@ -444,17 +475,47 @@ class SubprocessExecutor:
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be positive")
         _positive_int(max_protocol_bytes, "max_protocol_bytes")
+        validate_protocol_version(protocol_version)
+        normalized_directory = None
+        if working_directory is not None:
+            normalized_directory = Path(working_directory).expanduser().resolve()
+            if not normalized_directory.is_dir():
+                raise ValueError("working_directory must be an existing directory")
         self.command = tuple(command)
         self.timeout = timeout
         self.max_protocol_bytes = max_protocol_bytes
+        self.protocol_version = protocol_version
+        self.working_directory = normalized_directory
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen] = {}
+        self._active_calls: set[str] = set()
         self._cancelled: set[str] = set()
         self._closed = False
 
     def execute(self, assignment: AssignmentContext) -> Outcome:
+        assignment_id = assignment.assignment_id
+        with self._lock:
+            if self._closed:
+                return PermanentFailure(
+                    "executor_closed",
+                    "subprocess executor is closed",
+                )
+            if assignment_id in self._active_calls:
+                return PermanentFailure(
+                    "duplicate_assignment",
+                    "subprocess assignment is already executing",
+                )
+            self._active_calls.add(assignment_id)
+        try:
+            return self._execute_active(assignment)
+        finally:
+            with self._lock:
+                self._active_calls.discard(assignment_id)
+                self._cancelled.discard(assignment_id)
+
+    def _execute_active(self, assignment: AssignmentContext) -> Outcome:
         input_bytes = json.dumps(
-            assignment.to_dict(),
+            assignment_message(assignment.to_dict(), self.protocol_version),
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -477,6 +538,7 @@ class SubprocessExecutor:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=self.working_directory,
                 shell=False,
             )
         except OSError as exc:
@@ -567,7 +629,9 @@ class SubprocessExecutor:
             return PermanentFailure("subprocess_exit", reason)
         try:
             decoded = json.loads(bytes(stdout).decode("utf-8"))
-            return outcome_from_dict(decoded)
+            return outcome_from_dict(
+                parse_outcome_message(decoded, self.protocol_version)
+            )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             return PermanentFailure(
                 "invalid_executor_output",
@@ -576,6 +640,8 @@ class SubprocessExecutor:
 
     def cancel(self, assignment_id: str) -> None:
         with self._lock:
+            if assignment_id not in self._active_calls:
+                return
             process = self._processes.get(assignment_id)
             self._cancelled.add(assignment_id)
         if process is not None:
@@ -585,7 +651,7 @@ class SubprocessExecutor:
         with self._lock:
             self._closed = True
             processes = list(self._processes.items())
-            self._cancelled.update(self._processes)
+            self._cancelled.update(self._active_calls)
         for _, process in processes:
             self._terminate(process)
 

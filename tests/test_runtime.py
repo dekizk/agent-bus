@@ -427,6 +427,216 @@ class RuntimeOutcomeTests(unittest.TestCase):
 
 
 class RuntimeOwnershipTests(unittest.TestCase):
+    def test_already_expired_assignment_never_starts_or_executes(self):
+        class CountingExecutor:
+            calls = 0
+
+            def execute(self, assignment):
+                self.calls += 1
+                return Completed("unexpected")
+
+        executor = CountingExecutor()
+        bus = FakeBus([assigned_event(deadline_at=time.time() - 1)])
+        WorkerRuntime(
+            bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run()
+
+        self.assertEqual(0, executor.calls)
+        self.assertEqual(["agent.registered"], [event["topic"] for event in bus.published])
+
+    def test_deadline_during_started_publish_is_rechecked_before_execution(self):
+        publishing_started = threading.Event()
+        release_publish = threading.Event()
+
+        class BlockingStartBus(FakeBus):
+            def publish(self, topic, payload, **kwargs):
+                if topic == "task.started":
+                    publishing_started.set()
+                    release_publish.wait(2)
+                return super().publish(topic, payload, **kwargs)
+
+        class CountingExecutor:
+            calls = 0
+
+            def execute(self, assignment):
+                self.calls += 1
+                return Completed("unexpected")
+
+        executor = CountingExecutor()
+        bus = BlockingStartBus(
+            [assigned_event(deadline_at=time.time() + 0.05)]
+        )
+        run_thread = threading.Thread(
+            target=WorkerRuntime(
+                bus,
+                name="alice",
+                instance_id="alice-1",
+                executor=executor,
+                heartbeat_seconds=100,
+                log=lambda message: None,
+            ).run
+        )
+        run_thread.start()
+        self.assertTrue(publishing_started.wait(1))
+        time.sleep(0.08)
+        release_publish.set()
+        run_thread.join(2)
+        self.assertFalse(run_thread.is_alive())
+        self.assertEqual(0, executor.calls)
+
+    def test_replayed_assignment_is_not_executed_after_cleanup(self):
+        completed = threading.Event()
+
+        class CompletionBus(FakeBus):
+            def publish(self, topic, payload, **kwargs):
+                event = super().publish(topic, payload, **kwargs)
+                if topic == "task.completed":
+                    completed.set()
+                return event
+
+        class CountingExecutor:
+            calls = 0
+
+            def execute(self, assignment):
+                self.calls += 1
+                return Completed("done")
+
+        delivery = assigned_event()
+
+        def events():
+            yield delivery
+            self.assertTrue(completed.wait(1))
+            yield delivery
+
+        executor = CountingExecutor()
+        bus = CompletionBus()
+        WorkerRuntime(
+            bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run(events())
+
+        self.assertEqual(1, executor.calls)
+        self.assertEqual(
+            1,
+            len([event for event in bus.published if event["topic"] == "task.started"]),
+        )
+
+    def test_ownership_loss_during_outcome_publish_does_not_cancel_executor(self):
+        publishing = threading.Event()
+        release_publish = threading.Event()
+
+        class BlockingBus(FakeBus):
+            def publish(self, topic, payload, **kwargs):
+                if topic == "task.completed":
+                    publishing.set()
+                    release_publish.wait(2)
+                return super().publish(topic, payload, **kwargs)
+
+        class CancellableExecutor:
+            def __init__(self):
+                self.cancelled = []
+
+            def execute(self, assignment):
+                return Completed("done")
+
+            def cancel(self, assignment_id):
+                self.cancelled.append(assignment_id)
+
+        expiry = {
+            "id": 11,
+            "topic": "task.assignment_expired",
+            "payload": {
+                "task_id": 1,
+                "assignment_id": "task:1:attempt:1",
+                "worker_instance_id": "alice-1",
+            },
+        }
+
+        def events():
+            yield assigned_event()
+            self.assertTrue(publishing.wait(1))
+            yield expiry
+            release_publish.set()
+
+        executor = CancellableExecutor()
+        WorkerRuntime(
+            BlockingBus(),
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run(events())
+        self.assertEqual([], executor.cancelled)
+
+    def test_cancel_and_close_hooks_never_overlap(self):
+        began = threading.Event()
+        cancel_entered = threading.Event()
+        allow_cancel_finish = threading.Event()
+        execute_release = threading.Event()
+        close_entered = threading.Event()
+
+        class CoordinatedExecutor:
+            def __init__(self):
+                self.in_cancel = False
+                self.overlapped = False
+
+            def execute(self, assignment):
+                began.set()
+                execute_release.wait(2)
+                return Completed("late")
+
+            def cancel(self, assignment_id):
+                self.in_cancel = True
+                cancel_entered.set()
+                allow_cancel_finish.wait(2)
+                self.in_cancel = False
+                execute_release.set()
+
+            def close(self):
+                self.overlapped = self.in_cancel
+                close_entered.set()
+
+        executor = CoordinatedExecutor()
+        runtime = WorkerRuntime(
+            FakeBus(),
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        )
+
+        def events():
+            yield assigned_event()
+            while not runtime.stop_event.wait(0.01):
+                pass
+
+        run_thread = threading.Thread(target=runtime.run, args=(events(),))
+        run_thread.start()
+        self.assertTrue(began.wait(1))
+        stop_thread = threading.Thread(target=runtime.stop)
+        stop_thread.start()
+        self.assertTrue(cancel_entered.wait(1))
+        shutdown_thread = threading.Thread(target=runtime.shutdown)
+        shutdown_thread.start()
+        self.assertFalse(close_entered.wait(0.05))
+        allow_cancel_finish.set()
+        stop_thread.join(2)
+        shutdown_thread.join(2)
+        run_thread.join(2)
+        self.assertTrue(close_entered.is_set())
+        self.assertFalse(executor.overlapped)
+
     def test_persisted_deadline_locally_revokes_without_waiting_for_pm(self):
         began = threading.Event()
         release = threading.Event()

@@ -130,6 +130,20 @@ class AdoptionTests(unittest.TestCase):
                 mode=AdoptionMode.CONTROLLED,
             )
 
+    def test_origin_claim_prevents_dual_ownership_across_bridge_actors(self):
+        self.bridge.adopt(
+            origin=self.origin,
+            title="Original decision",
+            mode=AdoptionMode.SHADOW,
+        )
+        other_bridge = AdoptionBridge(DirectClient(actor="misconfigured-bridge"))
+        with self.assertRaisesRegex(bus.IdempotencyConflict, "dual ownership"):
+            other_bridge.adopt(
+                origin=self.origin,
+                title="Original decision",
+                mode=AdoptionMode.CONTROLLED,
+            )
+
     def test_canary_requires_selector(self):
         with self.assertRaisesRegex(ValueError, "requires a CanarySelector"):
             decide_ownership(AdoptionMode.CANARY, self.origin)

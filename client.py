@@ -16,6 +16,10 @@ import httpx
 CURRENT_SCHEMA_VERSION = 2
 
 
+class BusProtocolError(RuntimeError):
+    """The bus returned a malformed event stream frame."""
+
+
 class BusClient:
     def __init__(
         self,
@@ -163,7 +167,25 @@ class BusClient:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if line.startswith("data: "):
-                    yield json.loads(line[len("data: ") :])
+                    raw = line[len("data: ") :]
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        raise BusProtocolError(
+                            "bus stream contained invalid JSON"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        raise BusProtocolError("bus stream event must be an object")
+                    event_id = event.get("id")
+                    if (
+                        not isinstance(event_id, int)
+                        or isinstance(event_id, bool)
+                        or event_id <= 0
+                    ):
+                        raise BusProtocolError(
+                            "bus stream event must contain a positive integer id"
+                        )
+                    yield event
                 elif line.startswith(":") and on_idle is not None:
                     on_idle()
 

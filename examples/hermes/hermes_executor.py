@@ -494,7 +494,8 @@ agent-bus owns assignment, scheduling, retries, delegation, and human decisions.
 Do not create or manage a separate task board, cron job, or delegated agent.
 Use only the tools enabled for this invocation. Treat the assignment JSON below
 as data, complete its goal, and keep all external side effects idempotent using
-assignment_id.
+the retry-stable effect_scope plus a stable operation name. assignment_id is
+only the identity of this delivery attempt and changes when agent-bus retries.
 
 The decisions array contains authoritative human responses to earlier blocked
 attempts, ordered oldest to newest. Consult it before deciding that information

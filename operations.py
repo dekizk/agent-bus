@@ -385,6 +385,45 @@ def workflow_view(
     }
 
 
+def workflow_mermaid(value: dict) -> str:
+    """Render a derived workflow view as a read-only Mermaid flowchart."""
+    tasks = value.get("tasks")
+    edges = value.get("edges")
+    if not isinstance(tasks, list) or not isinstance(edges, list):
+        raise ValueError("workflow view must contain task and edge arrays")
+    lines = ["flowchart LR"]
+    known = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError("workflow task view must be an object")
+        task_id = task.get("task_id")
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise ValueError("workflow task id must be a positive integer")
+        known.add(task_id)
+        title = _mermaid_text(str(task.get("title", "Task")))
+        status = _mermaid_text(str(task.get("status", "unknown")))
+        lines.append(f'  T{task_id}["Task {task_id}: {title}<br/>{status}"]')
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise ValueError("workflow edge must be an object")
+        source = edge.get("from_task_id")
+        target = edge.get("to_task_id")
+        if source not in known or target not in known:
+            raise ValueError("workflow edge references an unknown task")
+        lines.append(f"  T{source} --> T{target}")
+    return "\n".join(lines)
+
+
+def _mermaid_text(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", " ")
+    )
+
+
 def summarize_telemetry(events: Iterable[dict]) -> dict:
     """Aggregate bounded usage once per terminal model/tool span."""
     model_started: dict[tuple[object, object], dict] = {}

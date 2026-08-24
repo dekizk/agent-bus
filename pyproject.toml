@@ -25,8 +25,12 @@ py-modules = [
     "artifacts",
     "bus",
     "client",
+    "conformance",
+    "executor_protocol",
     "executors",
+    "integration",
     "limits",
+    "local_config",
     "observer",
     "operations",
     "pm_agent",
@@ -37,6 +41,9 @@ py-modules = [
     "version",
     "worker",
 ]
+
+[tool.setuptools.packages.find]
+include = ["agent_bus*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "version.VERSION"}

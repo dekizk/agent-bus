@@ -12,10 +12,10 @@ immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes
 can therefore restart without relying on hidden in-memory ownership state.
 
-v0.8 adds an installable, read-only operations CLI over that same replay. It
-shows task and workflow state, worker leases, DAG readiness, retry allowance,
-human-decision waits, and workflow usage without creating a second database or
-letting the display become an orchestration authority.
+v0.9 adds a stable integration package, versioned CLI/HTTP adapter protocol,
+standalone conformance check, configuration-driven workers, and local-first
+onboarding commands. Existing agents remain bounded executors while agent-bus
+retains ownership, recovery, and immutable history.
 
 ## Identity model
 
@@ -26,14 +26,26 @@ Four identities keep workflows, retries, and replays unambiguous:
 - `assignment_id` identifies one execution attempt for that task.
 - `instance_id` identifies one running worker process.
 
+Executors also receive a derived `effect_scope`, which remains stable across
+attempts for the same logical task. Python adapters can call
+`assignment.effect_id("operation-name")` to obtain a deterministic key for one
+irreversible external operation. This is deliberately distinct from
+`assignment_id`: the latter identifies a delivery attempt and changes on retry.
+
 A correlation may contain several tasks, and each task may have several
 attempts. `caused_by` remains the direct parent event; it is not overloaded as
 the workflow identifier.
 
 A task may have several attempts but only its current attempt may change task
-state. The worker runtime suppresses results after known ownership loss. If a
-result races with expiry and still reaches the log, the PM projection rejects
-it as stale.
+state. The worker runtime consumes each addressed delivery once, rejects an
+already-expired assignment before execution, and suppresses results after known
+ownership loss. A lifecycle claim can still race with an expiry while an HTTP
+publication is already in flight; if it reaches the immutable log, the PM
+projection rejects that claim as stale.
+
+Lifecycle events are claims. Only the replay projection determines whether a
+claim was accepted for the active assignment; rejected claims remain visible
+for audit rather than being deleted from history.
 
 The normal lifecycle is:
 
@@ -78,6 +90,11 @@ task.created/assigned/started/blocked -> task.deadline_exceeded
 | `observer.py` | GET-only history and SSE client with no offsets or local state |
 | `agent_bus_cli.py` | Human-friendly `agent-bus` operations command with JSON output |
 | `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
+| `agent_bus/` | Stable public integration imports for application and adapter authors |
+| `executor_protocol.py` | Strict, versioned CLI and HTTP assignment/outcome envelopes |
+| `integration.py` | Python, configured CLI, and guarded HTTP adapter wrappers |
+| `conformance.py` | Standalone side-effect-free adapter contract probe |
+| `local_config.py` | Validated loopback-only local onboarding configuration |
 | `runtime.py` | Leased, concurrent worker runtime with ownership-loss cancellation |
 | `adoption.py` | Controlled, shadow, and deterministic canary integration helpers |
 | `telemetry.py` | Optional model/tool telemetry sink, lifecycle helpers, and producer identity |
@@ -117,7 +134,8 @@ The design depends on these invariants:
 - **Local trust boundary.** The current bus assumes one trusted PM on one host;
   actor strings are self-reported even when perimeter authentication is on.
 - **External effects remain the adapter's responsibility.** File writes,
-  deployments, payments, and API calls must be idempotent by `assignment_id`.
+  deployments, payments, and API calls must use a stable logical effect key,
+  such as `assignment.effect_id("deploy")`, across retry attempts.
 
 ## Setup
 
@@ -127,6 +145,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
 python -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
+agent-bus init
 ```
 
 Create the environment in `.venv`; do not use the repository root itself as a
@@ -138,58 +157,35 @@ fails, recreate `.venv` with a supported interpreter such as `python3.11`.
 
 ## Quick start: one verifiable task
 
-Start with one bus, one PM, one ordinary worker, and one task. Deliberately
-blocking or failing workers are useful later, but keeping them out of the first
-run makes the expected result unambiguous.
-
-In every terminal, activate the environment and use the same local settings:
+Run these in four terminals from the same directory. Activate `.venv` in each
+terminal. The generated configuration binds only to loopback and stores
+runtime data under the ignored `.agent-bus/` directory.
 
 ```sh
-cd /path/to/agent-bus
-. .venv/bin/activate
-export AGENT_BUS_URL=http://127.0.0.1:8765
-export AGENT_BUS_DB_PATH=/tmp/agent-bus-quickstart-events.db
-```
+# terminal 1
+agent-bus serve
 
-Choose a different database filename for a separate clean run. The explicit
-path prevents the smoke test from adding `events.db` to whichever directory
-happened to launch the server.
+# terminal 2
+agent-bus pm
 
-Run each process in its own terminal, bus first:
+# terminal 3
+agent-bus demo-worker alice
 
-```sh
-python -m uvicorn bus:app --port 8765
-python -m pm_agent
-python -m worker alice
-```
-
-Create one task in a fourth terminal and capture both server-assigned
-identities without requiring `jq`:
-
-```sh
-RESPONSE=$(curl -fsS -X POST "$AGENT_BUS_URL/events" \
-  -H 'content-type: application/json' \
-  -d '{
-    "topic":"task.created",
-    "actor":"human",
-    "idempotency_key":"quickstart:task-created",
-    "payload":{"title":"Verify the agent-bus quick start"}
-  }')
-
+# terminal 4
+RESPONSE=$(agent-bus submit "Verify the agent-bus quick start" --json)
 TASK_ID=$(printf '%s' "$RESPONSE" | python -c \
   'import json,sys; print(json.load(sys.stdin)["payload"]["task_id"])')
 CORRELATION_ID=$(printf '%s' "$RESPONSE" | python -c \
   'import json,sys; print(json.load(sys.stdin)["correlation_id"])')
-
-printf 'TASK_ID=%s\nCORRELATION_ID=%s\n' "$TASK_ID" "$CORRELATION_ID"
 ```
 
 The server assigns `task_id` atomically. The PM assigns a live worker and emits
 an `assignment_id`; the worker includes that assignment and its process
 `instance_id` in every subsequent lifecycle event. The server also generates a
 `correlation_id` for the root task and propagates it through the resulting
-event chain. New tasks store their retry policy in the event itself; the
-default is two retries after the initial attempt.
+event chain. New tasks store their retry policy in the event itself.
+`agent-bus submit` defaults to no automatic retries unless `--max-retries` is
+supplied; direct event publishers retain the server default.
 
 After about one second, verify the bus, task, and derived workflow:
 
@@ -226,13 +222,14 @@ print("PASS: workflow is replayable and complete")
 
 If the task is still `assigned` or `started`, wait briefly and repeat the
 verification. Persistent warnings from `agent-bus doctor` usually mean the PM,
-worker, or bus is not running with the same `AGENT_BUS_URL`.
+worker, or bus is not using the same URL. Read-only commands use an explicit
+`--url` first, then `agent-bus.local.json` in the current directory, then
+`AGENT_BUS_URL`, and finally the loopback default. If the local file and
+environment disagree, the CLI stops with both values instead of silently
+connecting to the wrong bus; unset `AGENT_BUS_URL` or pass `--url` deliberately.
 
-To explore other lifecycle paths after this happy-path check, stop `alice`,
-create a new task while no worker is available, note its returned id, and then
-start a demo worker with `--block TASK_ID`, `--fail TASK_ID`, or
-`--fail-permanently TASK_ID`. Those flags affect only the exact numeric task id
-supplied, so each demonstration needs its own task.
+`agent-bus workflow "$CORRELATION_ID" --mermaid` prints a read-only Mermaid
+flowchart. It is another projection over the log, never an editable board.
 
 ## Read-only operations CLI
 
@@ -263,9 +260,10 @@ agent-bus task 1 --json
 agent-bus --json workflow YOUR_CORRELATION_ID
 ```
 
-The CLI uses `AGENT_BUS_URL`, `AGENT_BUS_TOKEN`, and
-`AGENT_BUS_WORKER_LEASE_SECONDS` by default. The equivalent `--url`, `--token`,
-and `--lease-seconds` flags are available for one invocation. `doctor` reports
+The CLI uses the current local config before `AGENT_BUS_URL`, while
+`AGENT_BUS_TOKEN` and `AGENT_BUS_WORKER_LEASE_SECONDS` remain environment
+defaults. The equivalent `--url`, `--token`, and `--lease-seconds` flags are
+available for one invocation. `doctor` reports
 bus/schema health, replay counts, worker lease health, safely ignored stale
 events, and tasks that appear to be waiting for PM reconciliation.
 
@@ -415,6 +413,12 @@ backup and retention policy. `artifacts/` is ignored by Git.
 
 ## Integrating an existing agent
 
+Application code should import the supported integration surface from
+`agent_bus`. Flat modules remain available for compatibility, but are internal
+building blocks rather than the preferred long-term import path. The public
+package includes assignment/outcome types, `WorkerRuntime`, Python/CLI/HTTP
+adapters, adoption helpers, telemetry hooks, and artifact-reference validation.
+
 Executors receive one immutable `AssignmentContext` and return exactly one of
 `Completed`, `Blocked`, `RetryableFailure`, or `PermanentFailure`. The runtime
 owns registration, heartbeats, subscriptions, bounded concurrency, lifecycle
@@ -440,16 +444,14 @@ An existing Python agent with a `run()` method can be wrapped without teaching
 it about the bus:
 
 ```python
-from client import BusClient
-from executors import Completed, InProcessExecutor
-from runtime import WorkerRuntime
+from agent_bus import BusClient, Completed, PythonAgentAdapter, WorkerRuntime
 
 class ExistingAgent:
     def run(self, assignment):
         result = do_existing_work(
             goal=assignment.goal,
             context=assignment.context,
-            idempotency_key=assignment.assignment_id,
+            idempotency_key=assignment.effect_id("do-existing-work"),
         )
         return Completed("agent finished", {"result_ref": result.ref})
 
@@ -457,11 +459,25 @@ bus = BusClient("http://127.0.0.1:8765", actor="existing-agent")
 WorkerRuntime(
     bus,
     name="existing-agent",
-    executor=InProcessExecutor(ExistingAgent()),
+    executor=PythonAgentAdapter(ExistingAgent()),
     capacity=2,
     capabilities=["python"],
 ).run()
 ```
+
+Before connecting it to a live bus, run the contract probe:
+
+```sh
+agent-bus adapter check --python-target my_package.agent:ExistingAgent
+```
+
+The target may be a zero-argument class, an object with `run(assignment)`, or a
+callable in an installed package or a module beneath the command's current
+working directory. It must recognize
+`assignment.context["agent_bus_conformance_probe"]`
+and return a typed outcome without performing external side effects. The check
+does not require a running bus or PM. A complete copyable implementation lives
+in `examples/python_agent/`.
 
 `capacity` is enforced by a bounded execution pool, so the worker never runs
 more assignments concurrently than it advertises. Unexpected Python
@@ -470,14 +486,38 @@ them as retryable.
 
 ### Subprocess agents
 
-`SubprocessExecutor(["agent-command", "--json"])` sends one assignment JSON
-object on stdin. Exit code `0` must return one of these JSON objects on stdout:
+The configured CLI adapter uses protocol v1. It sends one strict envelope on
+stdin and expects one envelope on stdout:
 
 ```json
-{"status":"completed","summary":"done","result":{"ref":"artifact-1"}}
-{"status":"blocked","reason":"approval required"}
-{"status":"retryable_failure","code":"rate_limited","reason":"try later"}
-{"status":"permanent_failure","code":"invalid_goal","reason":"cannot run"}
+{"protocol":{"name":"agent-bus.executor","version":1,"supported_versions":[1]},"assignment":{}}
+{"protocol":{"name":"agent-bus.executor","version":1},"outcome":{"status":"completed","summary":"done","result":{}}}
+```
+
+`version` is the selected wire format. `supported_versions` advertises the
+sender's capabilities and must include that selected version; receivers ignore
+additional future version numbers they do not yet implement rather than
+rejecting an otherwise valid v1 message. Automatic version selection or
+downgrade is not part of v0.9.
+
+Use a checked-in, credential-free configuration to describe the process:
+
+```json
+{
+  "schema_version": 1,
+  "worker": {"name": "my-cli", "capabilities": ["review"], "capacity": 1},
+  "adapter": {
+    "type": "cli",
+    "command": ["my-agent", "--json"],
+    "protocol_version": 1,
+    "timeout_seconds": 300
+  }
+}
+```
+
+```sh
+agent-bus adapter check --config adapter.json
+agent-bus adapter run adapter.json
 ```
 
 Exit code `75` maps to a retryable process failure; other non-zero exits map to
@@ -487,9 +527,62 @@ subprocess is terminated and its result is suppressed. Shell execution is not
 used.
 
 In-process Python threads cannot be force-killed safely. Such agents should
-make external side effects idempotent with `assignment_id`. If the wrapped
-object exposes `cancel(assignment_id)` or `close()`, `InProcessExecutor`
-forwards those lifecycle calls.
+make logical external effects idempotent with `assignment.effect_id(...)`. If
+the wrapped object exposes `cancel(assignment_id)` or `close()`,
+`PythonAgentAdapter` forwards those lifecycle calls.
+
+The legacy unversioned `SubprocessExecutor` input remains readable for existing
+v0.4 integrations. New configuration files accept only protocol v1, so later
+wire changes can be negotiated rather than silently misparsed. See
+`examples/cli_agent/` for the smallest working implementation and
+`examples/hermes/` for a real agent integration.
+
+### HTTP agents
+
+Use an HTTP adapter when the agent cannot run in the same process or as a child
+process. It uses the same protocol-v1 envelope and sends `assignment_id` as the
+attempt-scoped `Idempotency-Key` and `X-Agent-Bus-Assignment-Id` headers. It
+also sends the retry-stable `X-Agent-Bus-Effect-Scope` header; the HTTP agent
+must combine that scope with a stable operation name for irreversible
+downstream effects. Loopback HTTP works by default. A remote endpoint must
+explicitly set `allow_remote: true`, use HTTPS, and name a populated secret
+environment variable with `token_env`; a credential is never stored in the
+config file.
+
+```json
+{
+  "schema_version": 1,
+  "worker": {"name": "local-http-agent", "capabilities": ["http"]},
+  "adapter": {
+    "type": "http",
+    "endpoint": "http://127.0.0.1:9000/execute",
+    "cancellation_endpoint": "http://127.0.0.1:9000/cancel",
+    "protocol_version": 1,
+    "timeout_seconds": 300
+  }
+}
+```
+
+HTTP `408`, `425`, `429`, transport errors, and `5xx` responses are retryable;
+other `4xx` responses and malformed outcomes are permanent attempt failures.
+Cancellation delivery is best-effort. The runtime's ownership fence remains
+authoritative and suppresses late output even if a remote agent cannot stop.
+
+### Adapter safety contract
+
+- Treat `assignment_id` as one delivery-attempt identity. Use
+  `assignment.effect_id("stable-operation-name")` in Python, or combine the
+  protocol's `effect_scope` with a stable operation name, for each file write,
+  API call, deployment, payment, or other irreversible logical effect that
+  must not repeat when the task is retried.
+- Check `deadline_at` before starting and cooperate with
+  `cancel(assignment_id)` where possible. Never publish a late result yourself.
+- Return only `Completed`, `Blocked`, `RetryableFailure`, or
+  `PermanentFailure`; do not invent mutable status outside the event log.
+- Keep inline result data small and return immutable artifact references for
+  larger content. Prompts and tool output stay out of SQLite by default.
+- Do not schedule follow-up tasks inside the adapter. DAG creation and task
+  ownership belong to the publisher and PM.
 
 ## Safe adoption modes
 
@@ -497,7 +590,7 @@ forwards those lifecycle calls.
 system:
 
 ```python
-from adoption import AdoptionBridge, AdoptionMode, CanarySelector, ExternalOrigin
+from agent_bus import AdoptionBridge, AdoptionMode, CanarySelector, ExternalOrigin
 
 event = AdoptionBridge(bus).adopt(
     origin=ExternalOrigin("legacy-system", "ticket-42"),
@@ -515,21 +608,58 @@ event = AdoptionBridge(bus).adopt(
 - **Canary:** a stable hash selects a configured percentage. Selected work is
   bus-owned; unselected work is recorded as externally owned.
 
-The bridge uses the same idempotency identity for either ownership result. A
-later attempt to reinterpret the same external origin as a different owner is
-therefore rejected instead of producing two tasks. The external system must
-honour the recorded decision: bus-owned work must be removed from its own
-execution queue. Shadow mode must never invoke a second side-effecting agent.
+The bridge uses the same idempotency identity for either ownership result, and
+the bus transactionally claims each `(external system, task reference)` across
+all bridge actor names. A later attempt to reinterpret the origin—or a second
+misconfigured bridge actor trying to claim it—is rejected with a dual-ownership
+conflict instead of producing two tasks. The claim table is a rebuildable
+uniqueness projection; the immutable adoption event remains truth.
 
-That protection is scoped to the publishing actor because bus idempotency keys
-are unique by `(actor, idempotency_key)`. Every replica participating in one
-adoption rollout must therefore use the same bridge actor. Canary percentages
-and `include_refs` affect only external origins that have not yet been adopted;
-v0.4 deliberately has no ownership-transfer operation for an existing origin.
+The external system must honour the recorded decision: bus-owned work must be
+removed from its own execution queue before an agent may execute it. Shadow
+mode must never invoke a second side-effecting agent. Canary percentages and
+`include_refs` affect only external origins that have not yet been adopted;
+there is deliberately no ownership-transfer operation for an existing origin.
 
 Controlled and canary tasks may include `deadline_at`; adapters receive the
 persisted value through `AssignmentContext` and should treat the PM's terminal
 deadline event as the ownership boundary.
+
+### Safe rollout recipe
+
+1. **Shadow:** publish observations from the external source and compare the
+   derived view with its current workflow. agent-bus performs no work.
+2. **Canary:** select only new origins, durably record the ownership decision,
+   and remove selected work from the external executor before allowing the bus
+   worker to run it.
+3. **Controlled:** stop the old source from enqueueing new work, drain or leave
+   existing externally owned origins alone, then create new bus-owned tasks.
+
+For a database or queue you do not control transactionally with agent-bus, use
+an outbox. In one external transaction, update the source task and insert an
+outbox row containing a stable `system`, `task_ref`, title, and payload. A
+bridge process publishes that row through `AdoptionBridge` with a stable actor,
+then marks the outbox row delivered only after the event is accepted. Retrying
+the row is safe; changing its recorded owner is rejected. Never dequeue work
+for execution merely because the bridge attempted a network call—wait for the
+durable ownership decision.
+
+### Integration troubleshooting
+
+- **409 / dual ownership:** the external origin was already observed or
+  controlled. Inspect that event; do not change actor names or keys to bypass
+  the decision.
+- **Adapter check performs real work:** teach the adapter to recognize the
+  conformance marker before any side effect.
+- **Malformed CLI output:** emit exactly one protocol-v1 JSON envelope on
+  stdout; send diagnostics to stderr and stay within the configured byte cap.
+- **Timeout or repeated retry:** ensure the agent's own timeout is shorter than
+  the adapter deadline and that irreversible work uses a retry-stable effect
+  identity rather than the changing assignment attempt.
+- **Remote HTTP rejected:** use HTTPS, set `allow_remote`, and put the bearer
+  token in the environment variable named by `token_env`.
+- **Task remains open:** run `agent-bus explain TASK_ID`; capability mismatch,
+  absent workers, dependencies, PM state, and lease health are distinguished.
 
 ## Human decisions
 
@@ -719,7 +849,10 @@ attempt-failed:{assignment_id}
 A new worker instance subscribes from its own registration event — assignments
 addressed to it cannot exist earlier — so startup cost does not grow with log
 history. `BusClient` retains the latest event id in memory across SSE
-reconnections. A replacement process registers a new `instance_id`, so demo
+reconnections. A malformed SSE frame raises the stable `BusProtocolError` and
+terminates that subscription at the last confirmed event instead of silently
+skipping data or advancing its resume position. A replacement process
+registers a new `instance_id`, so demo
 workers neither resume the previous process's assignments nor create durable
 offset files. Stable consumers that do need cross-process resume can use
 `BusClient.load_offset()` and `save_offset()`; those files are replaced
@@ -729,12 +862,15 @@ replenish them.
 
 The reusable runtime also follows cancellation requests, cancellation/deadline
 terminal events, assignment expiry, terminal failure, and replacement
-registration. It cancels adapters that support cancellation and suppresses
-lifecycle output once that instance no longer owns an attempt.
+registration. It rejects already-expired and already-consumed assignment
+deliveries, cancels adapters only during their execution phase, serializes
+adapter cancellation with cleanup, and suppresses lifecycle output once that
+instance no longer owns an attempt.
 
 An external tool call, payment, deployment, or file mutation performed by a
-worker must also use an idempotency token. The bus can make orchestration
-effects idempotent; it cannot make an arbitrary external side effect atomic.
+worker must also use a retry-stable logical effect token. The bus can make
+orchestration effects idempotent; it cannot make an arbitrary external side
+effect atomic.
 
 ### Worker leases
 
@@ -935,6 +1071,7 @@ under different OS users are not excluded and must not coordinate the same bus.
 ```sh
 pip install -r requirements-dev.txt
 python -m unittest discover -v   # or: pytest tests/
+python -m build                  # source archive and wheel preflight
 ```
 
 The suite focuses on orchestration failures: restart reconciliation, stale
@@ -950,11 +1087,16 @@ boundaries, crash-window reconciliation, cooperative adapter revocation, and
 cancelled/deadline dependency propagation. v0.8 adds shared-projection
 equivalence, explanations for every lifecycle state, DAG/usage summaries,
 GET-only observer behavior, human and JSON CLI output, actionable exit codes,
-and proof that read-only commands create no projection or offset files.
+and proof that read-only commands create no projection or offset files. v0.9
+adds strict protocol round-trips, standalone Python/CLI conformance, validated
+integration and local configs, guarded HTTP behavior, cross-actor origin
+claims, public-package imports, safe Mermaid export, runtime phase fencing,
+retry-stable external-effect identities, malformed-stream errors, and explicit
+local-config/environment URL conflict handling.
 
 ## Scope and next boundaries
 
-v0.8 remains a trusted, single-process, single-host runtime. Actor names are
+v0.9 remains a trusted, single-process, single-host runtime. Actor names are
 asserted by clients, not authenticated identities. The PM lock and SSE wake-up
 condition are process-local mechanisms; do not run the FastAPI app with
 multiple uvicorn workers. Before distributing the bus, add authenticated actor

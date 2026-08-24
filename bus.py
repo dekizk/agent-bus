@@ -824,6 +824,44 @@ def init_db() -> None:
             WHERE idempotency_key IS NOT NULL
             """
         )
+        # This is a rebuildable uniqueness projection over immutable adoption
+        # events. Unlike ordinary idempotency keys, an external origin is
+        # process/actor independent: two misconfigured bridge actor names must
+        # not be able to create two orchestration owners for the same work.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS external_origin_claims (
+                system   TEXT NOT NULL,
+                task_ref TEXT NOT NULL,
+                event_id INTEGER,
+                PRIMARY KEY (system, task_ref)
+            )
+            """
+        )
+        for row in conn.execute(
+            """
+            SELECT id, payload FROM events
+            WHERE topic IN ('task.created', 'integration.task_observed')
+            ORDER BY id
+            """
+        ):
+            try:
+                origin = json.loads(row["payload"]).get("external_origin")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(origin, dict):
+                continue
+            system = origin.get("system")
+            task_ref = origin.get("task_ref")
+            if isinstance(system, str) and isinstance(task_ref, str):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO external_origin_claims
+                        (system, task_ref, event_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (system, task_ref, row["id"]),
+                )
 
 
 def next_task_id(conn: sqlite3.Connection) -> int:
@@ -1037,6 +1075,38 @@ def append_event(
             payload=requested_payload,
         )
         payload = dict(requested_payload)
+        origin_claim = None
+        if topic in {"task.created", "integration.task_observed"}:
+            origin = payload.get("external_origin")
+            if isinstance(origin, dict):
+                origin_claim = (origin["system"], origin["task_ref"])
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO external_origin_claims
+                            (system, task_ref, event_id)
+                        VALUES (?, ?, NULL)
+                        """,
+                        origin_claim,
+                    )
+                except sqlite3.IntegrityError as exc:
+                    existing = conn.execute(
+                        """
+                        SELECT event_id FROM external_origin_claims
+                        WHERE system = ? AND task_ref = ?
+                        """,
+                        origin_claim,
+                    ).fetchone()
+                    event_label = (
+                        f" at event #{existing['event_id']}"
+                        if existing is not None and existing["event_id"] is not None
+                        else ""
+                    )
+                    raise IdempotencyConflict(
+                        "external origin "
+                        f"{origin_claim[0]!r}/{origin_claim[1]!r} is already claimed"
+                        f"{event_label}; refusing possible dual ownership"
+                    ) from exc
         if topic == "task.created":
             payload.setdefault(
                 "retry_policy",
@@ -1104,6 +1174,14 @@ def append_event(
             )
             return row_to_dict(row)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
+        if origin_claim is not None:
+            conn.execute(
+                """
+                UPDATE external_origin_claims SET event_id = ?
+                WHERE system = ? AND task_ref = ?
+                """,
+                (cur.lastrowid, *origin_claim),
+            )
     return row_to_dict(row)
 
 

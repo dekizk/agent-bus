@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current implementation — v0.8 release candidate
+## Current implementation — v0.9 release candidate
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -80,14 +80,20 @@ agent control plane:
 - human and JSON task, workflow, worker, explanation, health, and tail views;
 - event-traced waiting reasons plus workflow token, cost, duration, and span
   summaries from the separate telemetry stream.
+- a stable `agent_bus` integration package, protocol-v1 CLI/HTTP envelopes,
+  configuration-driven adapters, and a standalone conformance command;
+- loopback-only local onboarding commands, minimal Python/CLI examples, a
+  guarded HTTP bridge, safe rollout/outbox guidance, and Mermaid DAG export;
+- cross-actor external-origin claims that make accidental dual ownership a
+  transactionally rejected conflict rather than a documentation convention.
 
-The v0.8 code, automated checks, clean-environment packaging preflight, demo
-DAG, and live Hermes visibility trial are complete. The tree remains a release
-candidate only because it has not yet received final human review, commit, and
-push; the supporting evidence is recorded in
+The v0.9 implementation, automated checks, clean-environment package preflight,
+and live configured-CLI trial are complete. The tree remains a release
+candidate until final human review, commit, and push. Evidence is recorded in
+`examples/cli_agent/TRIAL_NOTES.md`; earlier live evidence remains in
 `examples/hermes/TRIAL_NOTES.md`.
 
-## Immediate release step — v0.8
+## Completed release step — v0.8
 
 - [x] install the repository into a clean disposable environment and verify
   the console entry point;
@@ -148,8 +154,10 @@ agent-bus doctor
 agent-bus serve
 ```
 
-Publishing to PyPI plus the `init` and `serve` convenience commands remain v0.9
-onboarding work. Until then, a checkout uses `python -m pip install -e .`,
+At v0.8, publishing to PyPI plus the `init` and `serve` convenience commands
+remained v0.9 onboarding work. v0.9 now implements and package-tests those
+commands; publishing the reviewed release to PyPI remains a release action.
+Before v0.9, a checkout used `python -m pip install -e .`,
 `python -m uvicorn bus:app`, `python -m pm_agent`, and `python -m worker`.
 Configuration, errors, and the read-only command surface are designed together
 so a user need not understand SQLite, SSE, reducer internals, or four identity
@@ -200,6 +208,37 @@ integration is central to the product, not an optional final layer.
 - Adapters can prove conformance without running the full repository test suite.
 - Shadow-to-canary-to-controlled adoption has one documented safe path.
 - Dual ownership is mechanically difficult and prominently diagnosed.
+
+### v0.9 implementation checklist
+
+- [x] package the stable Python assignment, outcome, runtime, adoption,
+  telemetry, and artifact-reference surface;
+- [x] add a strict versioned subprocess/HTTP protocol while retaining legacy
+  subprocess compatibility;
+- [x] provide generic Python, configured CLI, and guarded HTTP wrappers;
+- [x] add `agent-bus adapter check` without requiring a running bus or PM;
+- [x] add `init`, `serve`, `pm`, `demo-worker`, `submit`, and configured adapter
+  run commands for an approachable local first success;
+- [x] provide minimal Python and CLI examples while retaining Hermes as the
+  realistic reference integration;
+- [x] document cancellation, deadlines, idempotency, external effects,
+  shadow/canary/controlled rollout, an outbox, and troubleshooting;
+- [x] enforce cross-actor external-origin uniqueness to reject accidental
+  dual ownership;
+- [x] provide a read-only Mermaid workflow export;
+- [x] add protocol, adapter, HTTP guard, onboarding, packaging, and ownership
+  regression tests;
+- [x] record a clean-environment install and one live non-Hermes adapter trial
+  before declaring the release complete.
+- [x] reject expired or replayed deliveries before executor effects and make
+  cancellation/cleanup phase-safe;
+- [x] distinguish attempt identity from retry-stable external-effect identity;
+- [x] accept forward capability advertisements while selecting only supported
+  protocol v1;
+- [x] validate directly constructed public adapter configs and expose stable
+  malformed-stream/cleanup failures;
+- [x] diagnose conflicting local-config and environment bus URLs instead of
+  silently choosing one.
 
 ## v0.10 — scheduling and management policy
 

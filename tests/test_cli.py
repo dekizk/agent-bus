@@ -96,6 +96,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("depends on [1]", stdout)
         self.assertIn("10 tokens", stdout)
 
+    def test_workflow_can_export_a_read_only_mermaid_dag(self):
+        code, stdout, stderr = self.run_cli(["workflow", "flow-1", "--mermaid"])
+        self.assertEqual(0, code, stderr)
+        self.assertIn("flowchart LR", stdout)
+        self.assertIn("T1 --> T2", stdout)
+        self.assertNotIn("Usage:", stdout)
+
     def test_explain_and_workers_are_concise(self):
         code, explanation, _ = self.run_cli(["explain", "2"])
         self.assertEqual(0, code)

@@ -37,6 +37,10 @@ RUNTIME_TOPICS = (
     "task.deadline_exceeded",
 )
 
+_PHASE_ACCEPTED = "accepted"
+_PHASE_EXECUTING = "executing"
+_PHASE_PUBLISHING_OUTCOME = "publishing_outcome"
+
 
 class WorkerRuntime:
     """Own bus plumbing while delegating actual work to an Executor.
@@ -94,7 +98,10 @@ class WorkerRuntime:
         self.stop_event = threading.Event()
         self._heartbeat_stop = threading.Event()
         self._lock = threading.Lock()
+        self._executor_control_lock = threading.Lock()
         self._owned: set[str] = set()
+        self._seen_assignment_ids: set[str] = set()
+        self._assignment_phases: dict[str, str] = {}
         self._futures: dict[str, Future] = {}
         self._task_by_assignment: dict[str, int] = {}
         self._deadline_timers: dict[str, threading.Timer] = {}
@@ -207,6 +214,11 @@ class WorkerRuntime:
             or payload.get("worker_instance_id") != self.instance_id
         ):
             return
+        raw_assignment_id = payload.get("assignment_id")
+        if isinstance(raw_assignment_id, str):
+            with self._lock:
+                if raw_assignment_id in self._seen_assignment_ids:
+                    return
         try:
             resolved_event = self._resolve_dependency_refs_with_retry(event)
             if resolved_event is None:
@@ -219,26 +231,41 @@ class WorkerRuntime:
             self.stop()
             return
 
+        assignment_id = assignment.assignment_id
         deadline_timer: Optional[threading.Timer] = None
         with self._lock:
             if (
                 not self._accepting
-                or assignment.assignment_id in self._owned
+                or assignment_id in self._seen_assignment_ids
                 or self._pool is None
             ):
                 return
-            self._owned.add(assignment.assignment_id)
-            self._task_by_assignment[assignment.assignment_id] = assignment.task_id
-            future = self._pool.submit(self._execute_assignment, assignment)
-            self._futures[assignment.assignment_id] = future
+            # A delivery is consumed once by this runtime instance, even after
+            # its execution state has been cleaned up. Replayed SSE events must
+            # not execute external effects a second time.
+            self._seen_assignment_ids.add(assignment_id)
+            if (
+                assignment.deadline_at is not None
+                and assignment.deadline_at <= time.time()
+            ):
+                self.log(
+                    f"[{self.name}] ignoring already-expired assignment: "
+                    f"{assignment_id}"
+                )
+                return
+            self._owned.add(assignment_id)
+            self._assignment_phases[assignment_id] = _PHASE_ACCEPTED
+            self._task_by_assignment[assignment_id] = assignment.task_id
             if assignment.deadline_at is not None:
                 deadline_timer = threading.Timer(
-                    max(0.0, assignment.deadline_at - time.time()),
+                    assignment.deadline_at - time.time(),
                     self._deadline_elapsed,
-                    args=(assignment.assignment_id,),
+                    args=(assignment_id,),
                 )
                 deadline_timer.daemon = True
-                self._deadline_timers[assignment.assignment_id] = deadline_timer
+                self._deadline_timers[assignment_id] = deadline_timer
+            future = self._pool.submit(self._execute_assignment, assignment)
+            self._futures[assignment_id] = future
         if deadline_timer is not None:
             deadline_timer.start()
 
@@ -342,15 +369,11 @@ class WorkerRuntime:
             self.stop_event.set()
             for assignment_id in assignment_ids:
                 self._revoke(assignment_id)
-            close = getattr(self.executor, "close", None)
-            if callable(close):
-                close()
+            self._close_executor()
         if self._pool is not None:
             self._pool.shutdown(wait=True, cancel_futures=not drain)
         if drain:
-            close = getattr(self.executor, "close", None)
-            if callable(close):
-                close()
+            self._close_executor()
         self.stop_event.set()
         self._heartbeat_stop.set()
         if self._heartbeat is not None:
@@ -385,16 +408,28 @@ class WorkerRuntime:
             )
             if started is None:
                 return
-            self.log(
-                f"[{self.name}] executing task {assignment.task_id} "
-                f"attempt {assignment.attempt}: {assignment.goal}"
-            )
             if json_size(assignment.dependencies) > MAX_INLINE_DEPENDENCY_BYTES:
+                if not self._transition_phase(
+                    assignment,
+                    _PHASE_ACCEPTED,
+                    _PHASE_PUBLISHING_OUTCOME,
+                ):
+                    return
                 outcome = PermanentFailure(
                     "dependency_input_too_large",
                     "resolved dependency input exceeds the inline execution limit",
                 )
             else:
+                if not self._transition_phase(
+                    assignment,
+                    _PHASE_ACCEPTED,
+                    _PHASE_EXECUTING,
+                ):
+                    return
+                self.log(
+                    f"[{self.name}] executing task {assignment.task_id} "
+                    f"attempt {assignment.attempt}: {assignment.goal}"
+                )
                 try:
                     outcome = ensure_outcome(self.executor.execute(assignment))
                 except Exception as exc:
@@ -403,6 +438,13 @@ class WorkerRuntime:
                         outcome = RetryableFailure("executor_exception", reason)
                     else:
                         outcome = PermanentFailure("executor_exception", reason)
+                if not self._transition_phase(
+                    assignment,
+                    _PHASE_EXECUTING,
+                    _PHASE_PUBLISHING_OUTCOME,
+                    check_deadline=False,
+                ):
+                    return
 
             if isinstance(outcome, Completed):
                 if json_size(outcome.result) > MAX_INLINE_RESULT_BYTES:
@@ -450,6 +492,7 @@ class WorkerRuntime:
             deadline_timer = None
             with self._lock:
                 self._owned.discard(assignment_id)
+                self._assignment_phases.pop(assignment_id, None)
                 self._futures.pop(assignment_id, None)
                 self._task_by_assignment.pop(assignment_id, None)
                 deadline_timer = self._deadline_timers.pop(assignment_id, None)
@@ -500,6 +543,35 @@ class WorkerRuntime:
         with self._lock:
             return assignment_id in self._owned
 
+    def _transition_phase(
+        self,
+        assignment: AssignmentContext,
+        expected: str,
+        target: str,
+        *,
+        check_deadline: bool = True,
+    ) -> bool:
+        assignment_id = assignment.assignment_id
+        expired = False
+        with self._lock:
+            if (
+                assignment_id not in self._owned
+                or self._assignment_phases.get(assignment_id) != expected
+            ):
+                return False
+            if (
+                check_deadline
+                and assignment.deadline_at is not None
+                and assignment.deadline_at <= time.time()
+            ):
+                expired = True
+            else:
+                self._assignment_phases[assignment_id] = target
+        if expired:
+            self._deadline_elapsed(assignment_id)
+            return False
+        return True
+
     def _deadline_elapsed(self, assignment_id: str) -> None:
         self.log(f"[{self.name}] assignment deadline reached: {assignment_id}")
         self._revoke(assignment_id)
@@ -512,6 +584,7 @@ class WorkerRuntime:
                 return
             self._owned.discard(assignment_id)
             self._task_by_assignment.pop(assignment_id, None)
+            phase = self._assignment_phases.pop(assignment_id, None)
             future = self._futures.get(assignment_id)
             deadline_timer = self._deadline_timers.pop(assignment_id, None)
         if deadline_timer is not None:
@@ -522,13 +595,20 @@ class WorkerRuntime:
             if cancelled_before_start:
                 with self._lock:
                     self._futures.pop(assignment_id, None)
-        if not cancelled_before_start:
+        if not cancelled_before_start and phase == _PHASE_EXECUTING:
             cancel = getattr(self.executor, "cancel", None)
             if callable(cancel):
                 try:
-                    cancel(assignment_id)
+                    with self._executor_control_lock:
+                        cancel(assignment_id)
                 except Exception as exc:
                     self.log(
                         f"[{self.name}] executor cancellation failed for "
                         f"{assignment_id}: {exc.__class__.__name__}: {exc}"
                     )
+
+    def _close_executor(self) -> None:
+        close = getattr(self.executor, "close", None)
+        if callable(close):
+            with self._executor_control_lock:
+                close()

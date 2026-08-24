@@ -4,10 +4,40 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from client import BusClient
+from client import BusClient, BusProtocolError
 
 
 class OffsetTests(unittest.TestCase):
+    def test_malformed_stream_frames_raise_a_stable_protocol_error(self):
+        class FakeResponse:
+            def __init__(self, line):
+                self.line = line
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self):
+                return iter([self.line])
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = BusClient(
+                "http://127.0.0.1:8765",
+                actor="worker",
+                offset_dir=Path(directory),
+            )
+            for line in ('data: {broken', 'data: {"topic":"task.created"}'):
+                with self.subTest(line=line), patch(
+                    "client.httpx.stream", return_value=FakeResponse(line)
+                ):
+                    with self.assertRaises(BusProtocolError):
+                        list(client._stream_once(None, 0))
+
     def test_cancel_task_publishes_a_stable_task_scoped_request(self):
         response = Mock()
         response.raise_for_status.return_value = None

@@ -24,3 +24,5 @@ events.db-shm
 .offsets/
 pm_agent.lock
 artifacts/
+.agent-bus/
+agent-bus.local.json

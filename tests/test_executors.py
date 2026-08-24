@@ -125,6 +125,12 @@ class InProcessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
 
 
 class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
+    def test_cancelling_an_inactive_assignment_leaves_no_tombstone(self):
+        executor = SubprocessExecutor([sys.executable, "-c", "pass"])
+        executor.cancel("task:99:attempt:1")
+        self.assertEqual(set(), executor._cancelled)
+        self.assertEqual(set(), executor._active_calls)
+
     def make_executor(self, outcome):
         encoded = json.dumps(outcome_payload(outcome))
         code = (
