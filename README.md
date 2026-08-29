@@ -567,6 +567,10 @@ HTTP `408`, `425`, `429`, transport errors, and `5xx` responses are retryable;
 other `4xx` responses and malformed outcomes are permanent attempt failures.
 Cancellation delivery is best-effort. The runtime's ownership fence remains
 authoritative and suppresses late output even if a remote agent cannot stop.
+The copyable loopback implementation in `examples/http_agent/` includes a
+credential-free adapter configuration, standalone conformance check, visible
+retry/effect observations, cooperative cancellation, automated regression
+coverage, and its recorded live v0.9 trial evidence.
 
 ### Adapter safety contract
 

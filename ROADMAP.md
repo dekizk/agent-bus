@@ -240,6 +240,11 @@ integration is central to the product, not an optional final layer.
 - [x] diagnose conflicting local-config and environment bus URLs instead of
   silently choosing one.
 
+Live v0.9 evidence now covers both the configured CLI path and the guarded HTTP
+path. The HTTP trial exercised normal completion, HTTP-503 retry with a stable
+logical-effect identity, and cooperative cancellation without a late lifecycle
+event; see `examples/http_agent/TRIAL_NOTES.md`.
+
 ## v0.10 — scheduling and management policy
 
 Add richer controls only after visibility and integration trials show they are

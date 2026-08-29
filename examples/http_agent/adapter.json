@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "worker": {
+    "name": "minimal-http-agent",
+    "capabilities": ["http-example"],
+    "capacity": 1
+  },
+  "adapter": {
+    "type": "http",
+    "endpoint": "http://127.0.0.1:9000/execute",
+    "cancellation_endpoint": "http://127.0.0.1:9000/cancel",
+    "protocol_version": 1,
+    "timeout_seconds": 90
+  }
+}

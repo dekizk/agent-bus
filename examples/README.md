@@ -14,4 +14,10 @@ Each example should:
 - document the authority granted to the external agent;
 - avoid adding agent-specific topics to the coordination log.
 
-See [`hermes/`](hermes/) for the first reference integration.
+Copyable examples:
+
+- [`python_agent/`](python_agent/) wraps a Python object with `run()`;
+- [`cli_agent/`](cli_agent/) uses the versioned stdin/stdout protocol;
+- [`http_agent/`](http_agent/) demonstrates the guarded HTTP bridge, retry-safe
+  effect identity, and cooperative cancellation;
+- [`hermes/`](hermes/) is the realistic model-agent integration.
