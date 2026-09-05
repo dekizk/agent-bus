@@ -86,6 +86,8 @@ def created(
     correlation_id=None,
     max_retries=MISSING,
     depends_on=(),
+    priority=MISSING,
+    not_before=MISSING,
     deadline_at=MISSING,
 ):
     payload = {"task_id": task_id, "title": "demo"}
@@ -93,6 +95,10 @@ def created(
         payload["depends_on"] = list(depends_on)
     if max_retries is not MISSING:
         payload["retry_policy"] = {"max_retries": max_retries}
+    if priority is not MISSING:
+        payload["priority"] = priority
+    if not_before is not MISSING:
+        payload["not_before"] = not_before
     if deadline_at is not MISSING:
         payload["deadline_at"] = deadline_at
     return event(
@@ -216,6 +222,75 @@ class PMLockTests(unittest.TestCase):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_ready_tasks_are_ordered_by_priority_then_creation_event(self):
+        state = PMState()
+        worker = registered(event_id=1)
+        worker["payload"]["capacity"] = 3
+        for item in (
+            worker,
+            created(event_id=2, task_id=50, priority="low"),
+            created(event_id=3, task_id=20, priority="urgent"),
+            created(event_id=4, task_id=10, priority="urgent"),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        emitted = reconcile(state, FakeBus(starting_id=5), now=101.0)
+
+        assignments = [
+            item["payload"]["task_id"]
+            for item in emitted
+            if item["topic"] == "task.assigned"
+        ]
+        self.assertEqual([20, 10, 50], assignments)
+
+    def test_future_urgent_task_does_not_block_eligible_normal_work(self):
+        state = PMState()
+        for item in (
+            registered(event_id=1),
+            created(
+                event_id=2,
+                task_id=1,
+                priority="urgent",
+                not_before=200.0,
+            ),
+            created(event_id=3, task_id=2, priority="normal"),
+        ):
+            self.assertTrue(apply_event(state, item))
+
+        planned = plan_next_emission(state, now=101.0)
+        self.assertEqual(2, planned["payload"]["task_id"])
+
+        delayed_only = PMState()
+        for item in (
+            registered(event_id=1),
+            created(
+                event_id=2,
+                task_id=1,
+                priority="urgent",
+                not_before=200.0,
+            ),
+        ):
+            self.assertTrue(apply_event(delayed_only, item))
+        self.assertIsNone(
+            plan_next_emission(delayed_only, now=199.999, lease_seconds=200)
+        )
+        self.assertEqual(
+            1,
+            plan_next_emission(
+                delayed_only,
+                now=200.0,
+                lease_seconds=200,
+            )["payload"]["task_id"],
+        )
+
+    def test_historical_tasks_replay_as_immediate_normal_priority(self):
+        state = PMState()
+        self.assertTrue(apply_event(state, created(event_id=1)))
+
+        task = state.tasks[1]
+        self.assertEqual("normal", task.priority)
+        self.assertIsNone(task.not_before)
+
     def test_waiting_cancellation_is_terminal_and_crash_safe(self):
         history = [
             created(event_id=1, task_id=1, correlation_id="workflow-controls"),

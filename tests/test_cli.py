@@ -78,7 +78,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("State: completed · event #6", stdout)
         self.assertIn("Last attempt: alice", stdout)
         self.assertIn("Trace: #6", stdout)
+        self.assertIn("Scheduling: priority normal", stdout)
         self.assertEqual("", stderr)
+
+    def test_submit_accepts_immutable_scheduling_policy(self):
+        args = agent_bus_cli.build_parser().parse_args(
+            [
+                "submit",
+                "scheduled work",
+                "--priority",
+                "urgent",
+                "--not-before",
+                "2000000000",
+            ]
+        )
+        self.assertEqual("urgent", args.priority)
+        self.assertEqual(2_000_000_000.0, args.not_before)
 
     def test_json_flag_works_before_or_after_the_command(self):
         for argv in (["--json", "task", "1"], ["task", "1", "--json"]):

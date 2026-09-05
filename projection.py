@@ -10,6 +10,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from scheduling import (
+    DEFAULT_TASK_PRIORITY,
+    task_schedule_key,
+    validate_task_priority,
+)
 from topics import COORDINATION_TOPICS
 
 ACTIVE_TASK_STATUSES = {"assigned", "started"}
@@ -69,6 +74,8 @@ class TaskRecord:
     dependency_failure_reason: Optional[str] = None
     completion_event_id: Optional[int] = None
     completion_summary: Optional[str] = None
+    priority: str = DEFAULT_TASK_PRIORITY
+    not_before: Optional[float] = None
     deadline_at: Optional[float] = None
     cancel_request_event_id: Optional[int] = None
     cancel_reason: Optional[str] = None
@@ -118,6 +125,14 @@ class PMState:
                 continue
             candidates.append((load / worker.capacity, load, worker.name, worker))
         return min(candidates, default=(None, None, None, None))[-1]
+
+    @staticmethod
+    def task_schedule_key(task: TaskRecord) -> tuple[int, int, int]:
+        return task_schedule_key(
+            task.priority,
+            task.created_event_id,
+            task.task_id,
+        )
 
 
 # Compatibility keeps the historical PMState name public while new read-only
@@ -277,11 +292,28 @@ def apply_event(state: PMState, ev: dict) -> bool:
             context = payload.get("context", {})
             if not isinstance(context, dict):
                 return False
+            try:
+                priority = validate_task_priority(
+                    payload.get("priority", DEFAULT_TASK_PRIORITY)
+                )
+            except ValueError:
+                return False
+            not_before = payload.get("not_before")
+            if not_before is not None:
+                not_before = _positive_number(not_before)
+                if not_before is None:
+                    return False
             deadline_at = payload.get("deadline_at")
             if deadline_at is not None:
                 deadline_at = _positive_number(deadline_at)
                 if deadline_at is None:
                     return False
+            if (
+                not_before is not None
+                and deadline_at is not None
+                and not_before >= deadline_at
+            ):
+                return False
             external_origin = payload.get("external_origin")
             if external_origin is not None and not isinstance(external_origin, dict):
                 return False
@@ -332,6 +364,8 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 created_event_id=event_id,
                 status_event_id=event_id,
                 open_event_id=event_id,
+                priority=priority,
+                not_before=not_before,
                 deadline_at=deadline_at,
                 depends_on=tuple(depends_on),
                 max_retries=max_retries,

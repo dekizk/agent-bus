@@ -43,6 +43,8 @@ class AdoptionTests(unittest.TestCase):
             context={"repository": "agent-bus"},
             required_capabilities=["python"],
             max_retries=1,
+            priority="high",
+            not_before=1_900_000_000.0,
             deadline_at=2_000_000_000.0,
         )
         self.assertEqual("task.created", event["topic"])
@@ -52,6 +54,8 @@ class AdoptionTests(unittest.TestCase):
         )
         self.assertEqual(self.origin.to_dict(), event["payload"]["external_origin"])
         self.assertEqual(2_000_000_000.0, event["payload"]["deadline_at"])
+        self.assertEqual("high", event["payload"]["priority"])
+        self.assertEqual(1_900_000_000.0, event["payload"]["not_before"])
         self.assertIn("task_id", event["payload"])
 
     def test_deadline_must_be_a_positive_finite_timestamp(self):
@@ -64,6 +68,23 @@ class AdoptionTests(unittest.TestCase):
                         mode=AdoptionMode.CONTROLLED,
                         deadline_at=value,
                     )
+
+    def test_scheduling_policy_is_validated_before_adoption(self):
+        with self.assertRaisesRegex(ValueError, "priority"):
+            self.bridge.adopt(
+                origin=self.origin,
+                title="Invalid priority",
+                mode=AdoptionMode.CONTROLLED,
+                priority="highest",
+            )
+        with self.assertRaisesRegex(ValueError, "earlier"):
+            self.bridge.adopt(
+                origin=self.origin,
+                title="Impossible window",
+                mode=AdoptionMode.CONTROLLED,
+                not_before=200.0,
+                deadline_at=200.0,
+            )
 
     def test_shadow_mode_only_records_an_observation(self):
         event = self.bridge.adopt(

@@ -46,3 +46,59 @@ retains final lifecycle authority.
 Boundary: the live harness and checked-in example use an in-memory effect ledger
 for visibility. Production agents need durable idempotency storage before
 performing irreversible work.
+
+## 2026-09-05 — v0.10 phase 1 scheduling
+
+Purpose: prove immutable priority ordering, delayed eligibility, and
+non-preemption with the checked-in HTTP integration at capacity one.
+
+Setup:
+
+- used a disposable bus database and one `minimal-http-agent` worker;
+- created an older low-priority task, two urgent tasks, and one delayed
+  high-priority task under correlation `v010-scheduling-20260830` before
+  starting the PM;
+- later held one low-priority assignment active and created an urgent task
+  while the sole worker remained occupied;
+- saved the workflow projection, selected lifecycle events, and HTTP-agent
+  observations independently.
+
+Observed evidence:
+
+- initial assignment order was task 2 (urgent A), task 3 (urgent B), task 1
+  (older low), then task 4 (delayed high), at events #16, #19, #22, and #29;
+- the two equal urgent tasks followed immutable creation order (#8 before #9),
+  while both correctly preceded the older low task created at #6;
+- task 4 recorded `not_before: 1788566209.88241` and was not assigned until
+  `1788566211.242413`, approximately 1.36 seconds after eligibility;
+- tasks 1–4 each completed once on attempt 1 with one recorded logical-effect
+  execution;
+- task 5 started its low-priority attempt at event #108; urgent task 6 was
+  created at #117 but received no assignment while task 5 retained the only
+  worker;
+- task 5's requested cancellation became authoritative at #123, and only then
+  was task 6 assigned at #124 and completed at #126;
+- the HTTP agent observed cancellation of `task:5:attempt:1`; no logical effect
+  was recorded for that deliberately held task, while all five completed tasks
+  recorded exactly one effect each;
+- the final replay projection contained five completed tasks and one cancelled
+  task, with no retries or duplicate executions.
+
+Result: PASS. Priority controls only the next eligible assignment, equal
+priorities retain deterministic creation order, `not_before` is a hard lower
+eligibility bound, and new urgent work does not revoke an active lower-priority
+owner.
+
+Friction and follow-up:
+
+1. Starting Uvicorn outside the checkout made `examples` unimportable. The
+   example now passes an explicit `--app-dir` and documents the absolute-path
+   fallback.
+2. The existing editable installation predated the new top-level
+   `scheduling.py`; reinstalling with `python -m pip install -e .` refreshed
+   console-entry-point imports. A built wheel includes the module through the
+   updated package configuration.
+3. The final workflow label was `ended_with_failures` because one task was
+   deliberately cancelled. This is not a scheduling error, but phase 2 should
+   decide whether an intentional control outcome deserves more neutral workflow
+   wording.

@@ -35,6 +35,7 @@ from limits import (
     MAX_INLINE_RESULT_BYTES,
     MAX_TASK_DEPENDENCIES,
 )
+from scheduling import DEFAULT_TASK_PRIORITY, validate_task_priority
 from topics import KNOWN_TOPICS, TELEMETRY_TOPICS
 from version import VERSION
 
@@ -181,6 +182,28 @@ def _validate_task_dependencies(payload: dict) -> None:
         )
     if len(depends_on) != len(set(depends_on)):
         raise EventValidationError("payload.depends_on must not contain duplicates")
+
+
+def _validate_task_scheduling(payload: dict) -> None:
+    try:
+        validate_task_priority(payload.get("priority", DEFAULT_TASK_PRIORITY))
+    except ValueError as exc:
+        raise EventValidationError(f"payload.{exc}") from exc
+    not_before = payload.get("not_before")
+    if not_before is not None and not _is_positive_number(not_before):
+        raise EventValidationError(
+            "payload.not_before must be a positive finite timestamp"
+        )
+    deadline_at = payload.get("deadline_at")
+    if (
+        not_before is not None
+        and deadline_at is not None
+        and _is_positive_number(deadline_at)
+        and not_before >= deadline_at
+    ):
+        raise EventValidationError(
+            "payload.not_before must be earlier than payload.deadline_at"
+        )
 
 
 def _validate_dependency_refs(payload: dict) -> None:
@@ -550,6 +573,7 @@ def validate_event(
         )
         _validate_retry_policy(payload)
         _validate_task_dependencies(payload)
+        _validate_task_scheduling(payload)
         _validate_external_origin(payload)
         _validate_ownership(payload)
         deadline_at = payload.get("deadline_at")
@@ -568,6 +592,7 @@ def validate_event(
             max_bytes=MAX_INLINE_CONTEXT_BYTES,
         )
         _validate_retry_policy(payload)
+        _validate_task_scheduling(payload)
         _validate_external_origin(payload, required=True)
         _validate_ownership(payload, observed=True)
         deadline_at = payload.get("deadline_at")
@@ -1001,6 +1026,9 @@ def _assert_idempotent_match(
             stored_payload.pop("ownership", None)
         if "depends_on" not in payload:
             stored_payload.pop("depends_on", None)
+        if "priority" not in payload:
+            # Normal priority is a server-materialized scheduling default.
+            stored_payload.pop("priority", None)
     # Omitting correlation_id delegates generation/inheritance to the server.
     # On a retry, the stored value is therefore the effective requested value.
     effective_correlation_id = (
@@ -1117,6 +1145,7 @@ def append_event(
                 {"mode": "controlled", "owner": "agent-bus"},
             )
             payload.setdefault("depends_on", [])
+            payload.setdefault("priority", DEFAULT_TASK_PRIORITY)
             if "task_id" not in payload:
                 payload["task_id"] = next_task_id(conn)
             elif _is_positive_int(payload["task_id"]):

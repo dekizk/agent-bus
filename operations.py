@@ -222,6 +222,17 @@ def explain_task(
             dependency_task_ids=incomplete_dependencies,
         )
 
+    if task.not_before is not None and now < task.not_before:
+        evidence.append(task.created_event_id)
+        return _explanation(
+            "not_before_pending",
+            f"Task is deliberately delayed until Unix timestamp {task.not_before}.",
+            evidence,
+            priority=task.priority,
+            not_before=task.not_before,
+            seconds_remaining=round(task.not_before - now, 3),
+        )
+
     active = state.active_workers(now, lease_seconds)
     if not active:
         evidence.extend(worker.last_event_id for worker in state.workers.values())
@@ -248,15 +259,67 @@ def explain_task(
         worker for worker in capable if state.worker_load(worker) < worker.capacity
     ]
     if not available:
+        capable_worker_names = {worker.name for worker in capable}
+        occupying = sorted(
+            (
+                active_task
+                for active_task in state.tasks.values()
+                if active_task.status in ACTIVE_TASK_STATUSES
+                and active_task.assignee in capable_worker_names
+            ),
+            key=state.task_schedule_key,
+        )
+        evidence.extend(active_task.assignment_event_id for active_task in occupying)
         return _explanation(
             "workers_at_capacity",
-            "All healthy workers with the required capabilities are at capacity.",
+            "All healthy workers with the required capabilities are at capacity"
+            + (
+                "; active task(s): "
+                + ", ".join(
+                    f"{item.task_id} ({item.priority})" for item in occupying
+                )
+                if occupying
+                else ""
+            )
+            + ".",
             evidence,
+            active_tasks=[
+                {"task_id": item.task_id, "priority": item.priority}
+                for item in occupying
+            ],
+        )
+
+    task_key = state.task_schedule_key(task)
+    competitors = [
+        other
+        for other in state.tasks.values()
+        if other.task_id != task.task_id
+        and state.task_schedule_key(other) < task_key
+        and _ready_assignment_candidate(state, other, now, lease_seconds)
+    ]
+    if competitors:
+        preceding = min(competitors, key=state.task_schedule_key)
+        evidence.append(preceding.created_event_id)
+        if preceding.priority != task.priority:
+            code = "ready_after_higher_priority"
+            ordering = f"higher priority {preceding.priority}"
+        else:
+            code = "ready_after_earlier_task"
+            ordering = "earlier immutable creation order"
+        return _explanation(
+            code,
+            f"Task is eligible; PM considers task {preceding.task_id} first by "
+            f"{ordering}.",
+            evidence,
+            priority=task.priority,
+            preceding_task_id=preceding.task_id,
+            preceding_priority=preceding.priority,
         )
     return _explanation(
         "ready_for_assignment",
         "All dependencies and policies are satisfied; the task is waiting for PM assignment reconciliation.",
         evidence,
+        priority=task.priority,
     )
 
 
@@ -301,6 +364,8 @@ def task_view(
         "assignee": task.assignee,
         "worker_instance_id": task.worker_instance_id,
         "required_capabilities": sorted(task.required_capabilities),
+        "priority": task.priority,
+        "not_before": task.not_before,
         "dependencies": dependencies,
         "retry_policy": {
             "max_retries": task.max_retries,
@@ -552,6 +617,33 @@ def _get_task(state: CoordinationProjection, task_id: int) -> TaskRecord:
     if task is None:
         raise ProjectionLookupError(f"task {task_id} was not found")
     return task
+
+
+def _ready_assignment_candidate(
+    state: CoordinationProjection,
+    task: TaskRecord,
+    now: float,
+    lease_seconds: float,
+) -> bool:
+    if (
+        task.status != "open"
+        or task.assignment_id is not None
+        or task.ownership_owner != "agent-bus"
+        or (task.deadline_at is not None and now >= task.deadline_at)
+        or (task.not_before is not None and now < task.not_before)
+        or task.permanent_failure_pending
+        or (
+            task.last_failure_event_id is not None
+            and task.max_retries is not None
+            and task.retryable_failures > task.max_retries
+        )
+        or any(
+            state.tasks[dependency_id].status != "completed"
+            for dependency_id in task.depends_on
+        )
+    ):
+        return False
+    return state.choose_worker(task, now, lease_seconds) is not None
 
 
 def _explanation(

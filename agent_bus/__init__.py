@@ -55,6 +55,11 @@ from integration import (
     load_python_target,
 )
 from runtime import WorkerRuntime
+from scheduling import (
+    DEFAULT_TASK_PRIORITY,
+    TASK_PRIORITY_CLASSES,
+    validate_task_priority,
+)
 from telemetry import BusTelemetrySink, ProducerIdentity, TelemetrySink
 
 
@@ -90,6 +95,8 @@ __all__ = [
     "PythonAgentAdapter",
     "RetryableFailure",
     "SUPPORTED_PROTOCOL_VERSIONS",
+    "DEFAULT_TASK_PRIORITY",
+    "TASK_PRIORITY_CLASSES",
     "TelemetrySink",
     "WorkerRuntime",
     "assignment_message",
@@ -101,5 +108,6 @@ __all__ = [
     "parse_assignment_message",
     "parse_outcome_message",
     "probe_assignment",
+    "validate_task_priority",
     "validate_artifact_ref",
 ]

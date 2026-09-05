@@ -153,6 +153,8 @@ class SharedProjectionTests(unittest.TestCase):
         self.assertFalse(
             task_view(state, 1, now=101, lease_seconds=20)["assignment_active"]
         )
+        self.assertEqual("normal", state.tasks[1].priority)
+        self.assertIsNone(state.tasks[1].not_before)
 
 
 class ExplanationTests(unittest.TestCase):
@@ -297,6 +299,49 @@ class ExplanationTests(unittest.TestCase):
             "workers_at_capacity",
             explain_task(state, 2, now=101, lease_seconds=20)["code"],
         )
+
+    def test_open_reasons_explain_delay_and_deterministic_order(self):
+        delayed = self.state_with(
+            "open",
+            priority="urgent",
+            not_before=150.0,
+            created_event_id=1,
+        )
+        value = explain_task(delayed, 1, now=101, lease_seconds=20)
+        self.assertEqual("not_before_pending", value["code"])
+        self.assertEqual(49.0, value["details"]["seconds_remaining"])
+
+        state = CoordinationProjection()
+        state.workers["alice"] = WorkerRecord(
+            "alice",
+            "alice-1",
+            100,
+            capacity=2,
+            last_event_id=5,
+        )
+        state.tasks[1] = TaskRecord(
+            1,
+            "normal",
+            status="open",
+            created_event_id=1,
+            status_event_id=1,
+            priority="normal",
+        )
+        state.tasks[2] = TaskRecord(
+            2,
+            "urgent",
+            status="open",
+            created_event_id=2,
+            status_event_id=2,
+            priority="urgent",
+        )
+        value = explain_task(state, 1, now=101, lease_seconds=20)
+        self.assertEqual("ready_after_higher_priority", value["code"])
+        self.assertEqual(2, value["details"]["preceding_task_id"])
+
+        task = task_view(state, 2, now=101, lease_seconds=20)
+        self.assertEqual("urgent", task["priority"])
+        self.assertIsNone(task["not_before"])
 
     def test_lookup_errors_are_actionable(self):
         with self.assertRaisesRegex(ProjectionLookupError, "task 9 was not found"):

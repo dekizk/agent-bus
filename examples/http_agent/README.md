@@ -10,9 +10,15 @@ From the repository root, start the example agent:
 
 ```sh
 python -m uvicorn examples.http_agent.agent:app \
+  --app-dir . \
   --host 127.0.0.1 \
   --port 9000
 ```
+
+Run this from the repository root. When launching from another directory, set
+`--app-dir` to the absolute path of the agent-bus checkout. During editable
+development, rerun `python -m pip install -e .` after adding a new top-level
+module so console entry points can import it.
 
 In another terminal, verify its contract without a bus or PM:
 

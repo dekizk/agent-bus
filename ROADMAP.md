@@ -267,6 +267,38 @@ If trials show that pause/resume and scheduling fairness are independently
 complex, split this work into separate versions rather than forcing both into a
 large release.
 
+### v0.10 implementation checklist
+
+Phase 1 — deterministic scheduling foundation:
+
+- [x] add immutable `low`, `normal`, `high`, and `urgent` priority classes;
+- [x] add optional absolute `not_before` eligibility;
+- [x] default historical and newly omitted priority to immediately eligible
+  `normal` work;
+- [x] select eligible work by priority, creation event, then task id without
+  bypassing dependencies, deadlines, capabilities, or capacity;
+- [x] expose scheduling policy and deterministic selection explanations in
+  task/workflow views and the CLI;
+- [x] support scheduling policy through controlled/canary adoption;
+- [x] cover validation, replay, delayed eligibility, priority ordering, and
+  explanation behavior with regressions.
+
+Phase 2 — operator controls:
+
+- [ ] add crash-safe task/workflow pause and resume;
+- [ ] add explicit immutable task supersession;
+- [ ] fence late output from paused or superseded attempts;
+- [ ] explain every control transition from event evidence.
+
+Phase 3 — fairness and budgets:
+
+- [ ] add per-workflow and per-agent concurrency limits;
+- [ ] add deterministic fairness between workflows or tenants;
+- [ ] add token, cost, attempt, and wall-clock budgets;
+- [ ] explain limit and budget decisions without hidden scheduler state.
+
+v0.10 is not complete until phases 2 and 3 and their live trials pass.
+
 ## v0.11 — local scale, retention, and recovery hardening
 
 Address known local-scale boundaries while preserving the event log as truth:

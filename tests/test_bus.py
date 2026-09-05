@@ -44,6 +44,7 @@ class BusStorageTests(unittest.TestCase):
             {"mode": "controlled", "owner": "agent-bus"},
             first["payload"]["ownership"],
         )
+        self.assertEqual("normal", first["payload"]["priority"])
         self.assertEqual(1, len(bus.fetch_after(0, None)))
 
         with self.assertRaises(bus.IdempotencyConflict):
@@ -127,6 +128,47 @@ class BusStorageTests(unittest.TestCase):
                     "attempts": 0,
                 },
                 caused_by=requested["id"],
+            )
+
+    def test_priority_and_not_before_are_immutable_creation_policy(self):
+        scheduled = bus.append_event(
+            "task.created",
+            "human",
+            {
+                "title": "scheduled task",
+                "priority": "high",
+                "not_before": 1_900_000_000.0,
+                "deadline_at": 2_000_000_000.0,
+            },
+        )
+        self.assertEqual("high", scheduled["payload"]["priority"])
+        self.assertEqual(1_900_000_000.0, scheduled["payload"]["not_before"])
+
+        for priority in ("highest", "HIGH", 1, None):
+            with self.subTest(priority=priority):
+                with self.assertRaisesRegex(bus.EventValidationError, "priority"):
+                    bus.append_event(
+                        "task.created",
+                        "human",
+                        {"title": "invalid priority", "priority": priority},
+                    )
+        for value in (0, -1, True, float("inf"), float("nan")):
+            with self.subTest(not_before=value):
+                with self.assertRaisesRegex(bus.EventValidationError, "not_before"):
+                    bus.append_event(
+                        "task.created",
+                        "human",
+                        {"title": "invalid delay", "not_before": value},
+                    )
+        with self.assertRaisesRegex(bus.EventValidationError, "earlier"):
+            bus.append_event(
+                "task.created",
+                "human",
+                {
+                    "title": "impossible window",
+                    "not_before": 200.0,
+                    "deadline_at": 200.0,
+                },
             )
 
     def test_dependencies_are_existing_acyclic_same_workflow_edges(self):

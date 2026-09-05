@@ -69,6 +69,11 @@ class ProtocolTests(unittest.TestCase):
         self.assertIs(agent_bus.PythonAgentAdapter, PythonAgentAdapter)
         self.assertIs(agent_bus.BusProtocolError, __import__("client").BusProtocolError)
         self.assertEqual(1, agent_bus.CURRENT_PROTOCOL_VERSION)
+        self.assertEqual(
+            ("low", "normal", "high", "urgent"),
+            agent_bus.TASK_PRIORITY_CLASSES,
+        )
+        self.assertEqual("normal", agent_bus.DEFAULT_TASK_PRIORITY)
 
     def test_supported_versions_allows_future_capabilities_with_v1_selected(self):
         request = assignment_message(assignment().to_dict(), 1)

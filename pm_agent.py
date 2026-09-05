@@ -258,11 +258,13 @@ def plan_next_emission(
                 "idempotency_key": f"decision-needed:{task.assignment_id}",
             }
 
-    for task_id in sorted(state.tasks):
-        task = state.tasks[task_id]
+    assignment_candidates = []
+    for task in state.tasks.values():
         if task.status != "open" or task.assignment_id is not None:
             continue
         if task.ownership_owner != "agent-bus":
+            continue
+        if task.not_before is not None and now < task.not_before:
             continue
         if any(
             state.tasks[dependency_task_id].status != "completed"
@@ -272,6 +274,12 @@ def plan_next_emission(
         worker = state.choose_worker(task, now, lease_seconds)
         if worker is None:
             continue
+        assignment_candidates.append(
+            (state.task_schedule_key(task), task, worker)
+        )
+
+    if assignment_candidates:
+        _, task, worker = min(assignment_candidates, key=lambda item: item[0])
         attempt = task.attempt + 1
         assignment_id = f"task:{task.task_id}:attempt:{attempt}"
         return {

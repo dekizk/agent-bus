@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Iterable, Mapping, Optional
 
 from client import BusClient
+from scheduling import validate_task_priority
 
 
 class AdoptionMode(str, Enum):
@@ -141,6 +142,8 @@ class AdoptionBridge:
         context: Optional[Mapping[str, Any]] = None,
         required_capabilities: Iterable[str] = (),
         max_retries: Optional[int] = None,
+        priority: Optional[str] = None,
+        not_before: Optional[float] = None,
         deadline_at: Optional[float] = None,
         correlation_id: Optional[str] = None,
     ) -> dict:
@@ -159,6 +162,15 @@ class AdoptionBridge:
             or max_retries < 0
         ):
             raise ValueError("max_retries must be a non-negative integer")
+        if priority is not None:
+            priority = validate_task_priority(priority)
+        if not_before is not None and (
+            not isinstance(not_before, (int, float))
+            or isinstance(not_before, bool)
+            or not math.isfinite(not_before)
+            or not_before <= 0
+        ):
+            raise ValueError("not_before must be a positive finite timestamp")
         if deadline_at is not None and (
             not isinstance(deadline_at, (int, float))
             or isinstance(deadline_at, bool)
@@ -166,6 +178,12 @@ class AdoptionBridge:
             or deadline_at <= 0
         ):
             raise ValueError("deadline_at must be a positive finite timestamp")
+        if (
+            not_before is not None
+            and deadline_at is not None
+            and not_before >= deadline_at
+        ):
+            raise ValueError("not_before must be earlier than deadline_at")
 
         decision = decide_ownership(mode, origin, selector)
         payload = {
@@ -177,6 +195,10 @@ class AdoptionBridge:
         }
         if max_retries is not None:
             payload["retry_policy"] = {"max_retries": max_retries}
+        if priority is not None:
+            payload["priority"] = priority
+        if not_before is not None:
+            payload["not_before"] = float(not_before)
         if deadline_at is not None:
             payload["deadline_at"] = float(deadline_at)
 

@@ -26,6 +26,7 @@ from operations import (
     workflow_view,
 )
 from projection import CoordinationProjection, PROJECTION_TOPICS, apply_event
+from scheduling import DEFAULT_TASK_PRIORITY, TASK_PRIORITY_CLASSES
 from topics import TELEMETRY_TOPICS
 from version import VERSION
 
@@ -105,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--context", default="{}", help="JSON object passed to the agent")
     submit.add_argument("--capability", action="append", default=[])
     submit.add_argument("--max-retries", type=_nonnegative_int, default=0)
+    submit.add_argument(
+        "--priority",
+        choices=TASK_PRIORITY_CLASSES,
+        default=DEFAULT_TASK_PRIORITY,
+    )
+    submit.add_argument(
+        "--not-before",
+        type=_positive_number,
+        help="absolute Unix timestamp before which the task is ineligible",
+    )
     submit.add_argument("--correlation-id")
     submit.add_argument(
         "--idempotency-key",
@@ -392,7 +403,10 @@ def _run_local_command(
             "context": context,
             "required_capabilities": args.capability,
             "retry_policy": {"max_retries": args.max_retries},
+            "priority": args.priority,
         }
+        if args.not_before is not None:
+            payload["not_before"] = args.not_before
         bus = BusClient(local.bus_url, actor="human")
         event = bus.publish(
             "task.created",
@@ -570,6 +584,12 @@ def _format_task(value: dict) -> str:
         f"State: {value['status']} · event #{value['status_event_id']}",
         f"Why: {value['explanation']['summary']}",
         f"Workflow: {value['correlation_id']}",
+        f"Scheduling: priority {value['priority']}"
+        + (
+            f" · not before {value['not_before']}"
+            if value["not_before"] is not None
+            else ""
+        ),
         f"Attempts: {value['attempt']} · retryable failures {retry['retryable_failures']} · retries remaining {remaining}",
     ]
     if value["assignment_id"]:
@@ -605,8 +625,14 @@ def _format_workflow(value: dict) -> str:
     for task in value["tasks"]:
         dependencies = [item["task_id"] for item in task["dependencies"]]
         dependency_text = f" · depends on {dependencies}" if dependencies else ""
+        scheduling_text = f" · priority {task['priority']}" + (
+            f" · not before {task['not_before']}"
+            if task["not_before"] is not None
+            else ""
+        )
         lines.append(
-            f"  Task {task['task_id']} · {task['status']}@#{task['status_event_id']} · {task['title']}{dependency_text}"
+            f"  Task {task['task_id']} · {task['status']}@#{task['status_event_id']} · "
+            f"{task['title']}{dependency_text}{scheduling_text}"
         )
         lines.append(f"    {task['explanation']['summary']}")
     lines.append(

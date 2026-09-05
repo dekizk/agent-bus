@@ -88,6 +88,7 @@ task.created/assigned/started/blocked -> task.deadline_exceeded
 | `pm_agent.py` | Deterministic post-replay reconciliation and single-PM runtime |
 | `operations.py` | Task explanations, worker health, DAG views, and telemetry totals |
 | `observer.py` | GET-only history and SSE client with no offsets or local state |
+| `scheduling.py` | Shared priority classes and deterministic immutable ordering key |
 | `agent_bus_cli.py` | Human-friendly `agent-bus` operations command with JSON output |
 | `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
 | `agent_bus/` | Stable public integration imports for application and adapter authors |
@@ -185,7 +186,9 @@ an `assignment_id`; the worker includes that assignment and its process
 `correlation_id` for the root task and propagates it through the resulting
 event chain. New tasks store their retry policy in the event itself.
 `agent-bus submit` defaults to no automatic retries unless `--max-retries` is
-supplied; direct event publishers retain the server default.
+supplied; direct event publishers retain the server default. New tasks also
+materialize immutable `normal` priority unless the publisher selects another
+class.
 
 After about one second, verify the bus, task, and derived workflow:
 
@@ -306,6 +309,46 @@ Resolved dependency input is limited to 32 KiB in aggregate.
 They are coordination data, not storage for prompts, transcripts, or large
 artifacts. v0.6 keeps that content out of SQLite by default and can store
 explicitly opted-in captures in a separate content-addressed artifact store.
+
+## Immutable scheduling policy
+
+v0.10 phase 1 adds scheduling policy to `task.created`, not to a mutable queue.
+Every task has one of four priority classes:
+
+```text
+low < normal < high < urgent
+```
+
+When several tasks are eligible for currently available workers, the PM
+considers higher priority first, then the lower `task.created` event id, then
+`task_id` as the final deterministic tie-breaker. Priority affects the next
+assignment only: it never interrupts an active attempt, bypasses dependencies,
+revives terminal work, exceeds worker capacity, or changes capability matching.
+Changing intent means creating or superseding a task rather than editing its
+priority in place. Until v0.10's fairness phase lands, a sustained stream of
+higher-priority eligible work can delay lower-priority tasks; this first phase
+deliberately makes that simple policy visible rather than implying fairness it
+does not yet provide.
+
+`not_before` is an optional absolute Unix timestamp. A future task remains
+visible and explainable but cannot be assigned until that timestamp. If both
+`not_before` and `deadline_at` are present, `not_before` must be earlier than
+the deadline. Historical tasks replay as immediately eligible `normal` work.
+Eligibility is checked against the PM clock; assignment may follow on the next
+event or idle reconciliation after the boundary rather than at sub-second
+timer precision.
+
+```sh
+agent-bus submit "Run the release checks" \
+  --priority high \
+  --not-before 2000000000
+```
+
+`agent-bus task`, `workflow`, and `explain` show the immutable policy. Before
+reconciliation, explanations identify a higher-priority or earlier-created
+eligible task considered first; after assignment consumes capacity, they name
+the active tasks occupying compatible workers. These answers are rebuilt from
+the event log and current worker leases—there is no hidden queue table.
 
 ## Cancellation and deadlines
 
@@ -956,13 +999,18 @@ v0.7 adds optional `payload.deadline_at` to task creation and assignments plus
 the cancellation/deadline topics below. These are additive v2 contracts;
 historical tasks without a deadline retain their previous behavior.
 
+v0.10 phase 1 adds `payload.priority` and `payload.not_before` to task creation.
+The server materializes omitted priority as `normal`; historical rows receive
+the same replay default. These fields are PM scheduling policy and are not
+delegated to executors.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
 |---|---|---|
 | `agent.registered` | worker | Announces a process instance, capabilities, and capacity |
 | `agent.heartbeat` | worker | Renews that process instance's lease |
-| `task.created` | human/agent | Requests a logical outcome and optional existing dependency edges |
+| `task.created` | human/agent | Requests a logical outcome with immutable dependency and scheduling policy |
 | `task.assigned` | PM | Creates a numbered execution attempt with decisions and completion references |
 | `task.started` | worker | Confirms the active attempt began |
 | `task.completed` | worker | Completes the active attempt and logical task |
