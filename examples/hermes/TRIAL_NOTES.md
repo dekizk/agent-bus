@@ -536,6 +536,96 @@ Roadmap evidence:
   read-only in-flight visibility, concurrent DAG execution, fan-in, usage
   aggregation, artifact integrity, and hard-loss recovery.
 
+## 2026-09-10 — live v0.10 phase 2 operator-control trials
+
+Three controlled Hermes workflows exercised task pause/resume, workflow
+pause/resume, and immutable supersession using provider `nous`, model
+`openai/gpt-5.5`, the `clarify` toolset, and worker
+`hermes-v010-phase2`. No content capture or external side effects were enabled.
+
+Task pause/resume (`v010-task-pause-1789006934`, task 11):
+
+- attempt 1 was assigned at `#1727`, started at `#1728`, and opened its model
+  span at `#1729`;
+- `task.pause_requested#1730` was acknowledged by `task.paused#1731`, which
+  named `task:11:attempt:1` as the interrupted assignment;
+- Hermes emitted only `telemetry.model.failed#1732` with
+  `error_code: hermes_cancelled` for the interrupted invocation. No
+  `task.completed` or `task.attempt_failed` escaped from the fenced attempt;
+- `task.resume_requested#1737` was acknowledged by `task.resumed#1738`.
+  The PM assigned monotonic `task:11:attempt:2` at `#1739`, and Hermes
+  completed the task at `#1746`;
+- the resumed assignment still carried `retryable_failures: 0` with
+  `max_retries: 0`. Its successful model call reported 4,341 tokens and
+  `$0.027244` estimated cost.
+
+Workflow pause/resume (`v010-workflow-pause-1789007217`, active task 13 and
+pause-created task 14):
+
+- task 13 attempt 1 started at `#1871`; `workflow.pause_requested#1873` was
+  acknowledged by `workflow.paused#1874` with that exact assignment in
+  `interrupted_assignments`;
+- cancellation produced only `telemetry.model.failed#1875`; no stale task
+  lifecycle outcome escaped from attempt 1;
+- task 14 was created at `#1879` while the workflow was paused and received no
+  assignment before `workflow.resume_requested#1883` and
+  `workflow.resumed#1884`;
+- task 13 resumed as attempt 2 at `#1885` and completed at `#1891`. Task 14
+  then received its first assignment at `#1892` and completed at `#1898`,
+  demonstrating both the workflow gate and capacity-one scheduling;
+- both post-resume assignments carried `retryable_failures: 0`. Their model
+  calls reported 4,413 and 4,080 tokens, costing `$0.0233824` and `$0.02088`.
+
+Supersession (`v010-supersede-1789007788`, old task 15 and replacement task
+16):
+
+- task 15 attempt 1 started at `#1947`; replacement `task.created#1949`
+  recorded `supersedes_task_id: 15`, inherited the workflow correlation, and
+  carried the changed intent and reason;
+- the PM emitted `task.superseded#1950`, caused by the replacement creation and
+  naming `task:15:attempt:1` as the last assignment;
+- the old invocation emitted only cancellation telemetry at `#1952`. It could
+  not complete, fail, or otherwise rewrite the terminal superseded state;
+- replacement task 16 was assigned at `#1951`, started at `#1953`, and
+  completed at `#1958` with zero retryable failures. Its model call reported
+  4,388 tokens and `$0.0228224` estimated cost.
+
+Across the four successful post-control model calls, Hermes reported 17,222
+tokens and `$0.0943288` estimated cost. Interrupted invocations reported no
+usage, while their explicit failed telemetry preserved the cancellation
+evidence. The immutable log retained every request, PM acknowledgement,
+assignment identity, and causal edge needed to reconstruct the transitions.
+
+Friction and boundaries observed:
+
+1. The first task-pause attempt confused the timestamp suffix in the
+   correlation id with the server-assigned task id, so the watcher waited for
+   a nonexistent task while task 10 completed normally. Parsing `--json`
+   submission output removed the ambiguity.
+2. The first workflow-pause watcher detected task 12 but used an Anaconda
+   environment whose `PATH` did not contain `agent-bus`; the task completed
+   before a command was recorded. The corrected watcher used the repository's
+   absolute virtual-environment executable and successfully controlled fresh
+   tasks 13 and 14.
+3. These false starts were operator/runbook failures, not accepted control
+   transitions. They demonstrate that future copyable trials should extract
+   task and correlation identities mechanically and avoid assuming shell
+   environment state across terminal tabs.
+4. Cancellation and persisted-deadline precedence while paused remain covered
+   by deterministic reducer tests rather than timing-sensitive paid trials.
+
+Roadmap evidence:
+
+- task- and workflow-scoped pause/resume now have live executor evidence for
+  cooperative cancellation, late-output fencing, crash-safe PM
+  acknowledgement, monotonic attempts, and retry-budget preservation;
+- tasks created during a workflow pause remained visible but ineligible until
+  the immutable resume pair was recorded;
+- supersession replaced intent with a new task and terminal event rather than
+  mutating the old task, and the replacement inherited the workflow identity;
+- phase 2's live criteria are satisfied. v0.10 still requires phase 3 fairness
+  and budget work plus its own live evidence before the release is complete.
+
 ## Trial-note template
 
 - Date and task category:

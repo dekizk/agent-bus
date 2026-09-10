@@ -23,6 +23,7 @@ DEPENDENCY_TERMINAL_STATUSES = {
     "dependency_failed",
     "cancelled",
     "deadline_exceeded",
+    "superseded",
 }
 TASK_TERMINAL_STATUSES = DEPENDENCY_TERMINAL_STATUSES | {"completed"}
 PROJECTION_TOPICS = tuple(sorted(COORDINATION_TOPICS))
@@ -81,6 +82,18 @@ class TaskRecord:
     cancel_reason: Optional[str] = None
     cancelled_event_id: Optional[int] = None
     deadline_exceeded_event_id: Optional[int] = None
+    pause_request_event_id: Optional[int] = None
+    pause_reason: Optional[str] = None
+    paused_event_id: Optional[int] = None
+    paused_from_status: Optional[str] = None
+    resume_request_event_id: Optional[int] = None
+    resume_reason: Optional[str] = None
+    resumed_event_id: Optional[int] = None
+    supersedes_task_id: Optional[int] = None
+    superseded_by_task_id: Optional[int] = None
+    supersession_request_event_id: Optional[int] = None
+    supersession_reason: Optional[str] = None
+    superseded_event_id: Optional[int] = None
     depends_on: tuple[int, ...] = ()
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
     context: dict = field(default_factory=dict)
@@ -89,10 +102,34 @@ class TaskRecord:
     ownership_owner: str = "agent-bus"
 
 
+@dataclass
+class WorkflowControlRecord:
+    correlation_id: str
+    status: str = "active"
+    pause_request_event_id: Optional[int] = None
+    pause_reason: Optional[str] = None
+    paused_event_id: Optional[int] = None
+    resume_request_event_id: Optional[int] = None
+    resume_reason: Optional[str] = None
+    resumed_event_id: Optional[int] = None
+    interrupted_task_ids: tuple[int, ...] = ()
+    last_event_id: Optional[int] = None
+
+
 class PMState:
     def __init__(self):
         self.workers: dict[str, WorkerRecord] = {}
         self.tasks: dict[int, TaskRecord] = {}
+        self.workflows: dict[str, WorkflowControlRecord] = {}
+
+    def workflow_control(self, correlation_id: Optional[str]) -> Optional[WorkflowControlRecord]:
+        if correlation_id is None:
+            return None
+        return self.workflows.get(correlation_id)
+
+    def workflow_is_paused(self, correlation_id: Optional[str]) -> bool:
+        control = self.workflow_control(correlation_id)
+        return control is not None and control.status != "active"
 
     def active_workers(self, now: float, lease_seconds: float) -> list[WorkerRecord]:
         return [
@@ -106,6 +143,7 @@ class PMState:
             1
             for task in self.tasks.values()
             if task.status in ACTIVE_TASK_STATUSES
+            and not self.workflow_is_paused(task.correlation_id)
             and task.assignee == worker.name
             and task.worker_instance_id == worker.instance_id
         )
@@ -168,8 +206,12 @@ def _payload(ev: dict) -> Optional[dict]:
     return value if isinstance(value, dict) else None
 
 
-def _active_assignment_matches(task: TaskRecord, ev: dict, payload: dict) -> bool:
+def _active_assignment_matches(
+    state: PMState, task: TaskRecord, ev: dict, payload: dict
+) -> bool:
     if task.status not in ACTIVE_TASK_STATUSES:
+        return False
+    if state.workflow_is_paused(task.correlation_id):
         return False
     assignment_id = payload.get("assignment_id")
     if assignment_id is None and ev.get("schema_version", 1) == 1:
@@ -207,6 +249,7 @@ def dependency_terminal_event_id(task: TaskRecord) -> Optional[int]:
         "dependency_failed": task.dependency_failed_event_id,
         "cancelled": task.cancelled_event_id,
         "deadline_exceeded": task.deadline_exceeded_event_id,
+        "superseded": task.superseded_event_id,
     }.get(task.status)
 
 
@@ -268,6 +311,111 @@ def apply_event(state: PMState, ev: dict) -> bool:
             worker.last_seen = max(worker.last_seen, float(timestamp))
             worker.last_event_id = event_id
             return True
+
+        if topic.startswith("workflow."):
+            correlation_id = ev.get("correlation_id")
+            if not isinstance(correlation_id, str) or not correlation_id:
+                return False
+            if not any(
+                task.correlation_id == correlation_id
+                for task in state.tasks.values()
+            ):
+                return False
+            control = state.workflows.setdefault(
+                correlation_id,
+                WorkflowControlRecord(correlation_id=correlation_id),
+            )
+            reason = payload.get("reason")
+            if topic == "workflow.pause_requested":
+                if (
+                    control.status != "active"
+                    or not isinstance(reason, str)
+                    or not reason.strip()
+                ):
+                    return False
+                control.status = "pause_requested"
+                control.pause_request_event_id = event_id
+                control.pause_reason = reason
+                control.paused_event_id = None
+                control.resume_request_event_id = None
+                control.resume_reason = None
+                control.resumed_event_id = None
+                control.interrupted_task_ids = ()
+                control.last_event_id = event_id
+                return True
+            if topic == "workflow.paused":
+                raw_interrupted = payload.get("interrupted_assignments")
+                if not isinstance(raw_interrupted, list):
+                    return False
+                expected = [
+                    {
+                        "task_id": task.task_id,
+                        "assignment_id": task.assignment_id,
+                    }
+                    for task in sorted(state.tasks.values(), key=lambda item: item.task_id)
+                    if task.correlation_id == correlation_id
+                    and task.status in ACTIVE_TASK_STATUSES
+                    and task.assignment_id is not None
+                ]
+                if (
+                    ev.get("actor") != "pm"
+                    or control.status != "pause_requested"
+                    or control.pause_request_event_id is None
+                    or ev.get("caused_by") != control.pause_request_event_id
+                    or payload.get("pause_request_event_id")
+                    != control.pause_request_event_id
+                    or reason != control.pause_reason
+                    or raw_interrupted != expected
+                ):
+                    return False
+                interrupted = []
+                for item in expected:
+                    task = state.tasks[item["task_id"]]
+                    task.last_assignment_id = task.assignment_id
+                    task.status = "open"
+                    task.status_event_id = event_id
+                    task.open_event_id = event_id
+                    _clear_active_assignment(task)
+                    interrupted.append(task.task_id)
+                control.status = "paused"
+                control.paused_event_id = event_id
+                control.interrupted_task_ids = tuple(interrupted)
+                control.last_event_id = event_id
+                return True
+            if topic == "workflow.resume_requested":
+                if (
+                    control.status != "paused"
+                    or not isinstance(reason, str)
+                    or not reason.strip()
+                ):
+                    return False
+                control.status = "resume_requested"
+                control.resume_request_event_id = event_id
+                control.resume_reason = reason
+                control.last_event_id = event_id
+                return True
+            if topic == "workflow.resumed":
+                if (
+                    ev.get("actor") != "pm"
+                    or control.status != "resume_requested"
+                    or control.resume_request_event_id is None
+                    or ev.get("caused_by") != control.resume_request_event_id
+                    or payload.get("resume_request_event_id")
+                    != control.resume_request_event_id
+                    or reason != control.resume_reason
+                ):
+                    return False
+                control.status = "active"
+                control.resumed_event_id = event_id
+                control.last_event_id = event_id
+                for task_id in control.interrupted_task_ids:
+                    task = state.tasks.get(task_id)
+                    if task is not None and task.status == "open":
+                        task.open_event_id = event_id
+                        task.status_event_id = event_id
+                control.interrupted_task_ids = ()
+                return True
+            return False
 
         task_id = _positive_int(payload.get("task_id"))
         if task_id is None:
@@ -349,6 +497,24 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 ):
                     return False
                 depends_on.append(dependency_task_id)
+            supersedes_task_id = payload.get("supersedes_task_id")
+            supersession_reason = payload.get("supersession_reason")
+            superseded_task = None
+            if supersedes_task_id is not None:
+                supersedes_task_id = _positive_int(supersedes_task_id)
+                superseded_task = state.tasks.get(supersedes_task_id or -1)
+                if (
+                    supersedes_task_id is None
+                    or superseded_task is None
+                    or superseded_task.correlation_id != ev.get("correlation_id")
+                    or supersedes_task_id in depends_on
+                    or not isinstance(supersession_reason, str)
+                    or not supersession_reason.strip()
+                    or superseded_task.superseded_by_task_id is not None
+                ):
+                    return False
+            elif supersession_reason is not None:
+                return False
             state.tasks[task_id] = TaskRecord(
                 task_id=task_id,
                 title=(
@@ -378,7 +544,27 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 ),
                 ownership_mode=ownership["mode"],
                 ownership_owner=ownership["owner"],
+                supersedes_task_id=supersedes_task_id,
+                supersession_reason=(
+                    supersession_reason
+                    if isinstance(supersession_reason, str)
+                    else None
+                ),
             )
+            if superseded_task is not None:
+                superseded_task.superseded_by_task_id = task_id
+                superseded_task.supersession_request_event_id = event_id
+                superseded_task.supersession_reason = supersession_reason
+            if (
+                superseded_task is not None
+                and superseded_task.status not in TASK_TERMINAL_STATUSES
+                and superseded_task.status != "cancellation_requested"
+                and not _deadline_reached(superseded_task, float(timestamp))
+            ):
+                if superseded_task.assignment_id is not None:
+                    superseded_task.last_assignment_id = superseded_task.assignment_id
+                superseded_task.status = "supersession_requested"
+                superseded_task.status_event_id = event_id
             return True
 
         task = state.tasks.get(task_id)
@@ -389,7 +575,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             reason = payload.get("reason")
             if (
                 task.status in TASK_TERMINAL_STATUSES
-                or task.status == "cancellation_requested"
+                or task.status in {"cancellation_requested", "supersession_requested"}
                 or _deadline_reached(task, float(timestamp))
                 or not isinstance(reason, str)
                 or not reason.strip()
@@ -403,6 +589,134 @@ def apply_event(state: PMState, ev: dict) -> bool:
             task.cancel_reason = reason
             task.decision_needed = False
             task.decision_event_id = None
+            return True
+
+        if topic == "task.pause_requested":
+            reason = payload.get("reason")
+            if (
+                task.status in TASK_TERMINAL_STATUSES
+                or task.status in {
+                    "cancellation_requested",
+                    "supersession_requested",
+                    "pause_requested",
+                    "paused",
+                    "resume_requested",
+                }
+                or _deadline_reached(task, float(timestamp))
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                return False
+            if task.assignment_id is not None:
+                task.last_assignment_id = task.assignment_id
+            task.paused_from_status = (
+                "blocked" if task.status == "blocked" else "open"
+            )
+            task.status = "pause_requested"
+            task.status_event_id = event_id
+            task.pause_request_event_id = event_id
+            task.pause_reason = reason
+            task.paused_event_id = None
+            task.resume_request_event_id = None
+            task.resume_reason = None
+            task.resumed_event_id = None
+            return True
+
+        if topic == "task.paused":
+            attempts = _nonnegative_int(payload.get("attempts"))
+            expected_last_assignment_id = (
+                task.assignment_id
+                if task.assignment_id is not None
+                else task.last_assignment_id
+            )
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "pause_requested"
+                or task.pause_request_event_id is None
+                or ev.get("caused_by") != task.pause_request_event_id
+                or payload.get("pause_request_event_id")
+                != task.pause_request_event_id
+                or payload.get("reason") != task.pause_reason
+                or payload.get("last_assignment_id")
+                != expected_last_assignment_id
+                or payload.get("resume_status") != task.paused_from_status
+                or attempts != task.attempt
+            ):
+                return False
+            task.status = "paused"
+            task.status_event_id = event_id
+            task.paused_event_id = event_id
+            task.open_event_id = None
+            if task.paused_from_status != "blocked":
+                task.decision_needed = False
+                task.decision_event_id = None
+                _clear_active_assignment(task)
+            return True
+
+        if topic == "task.resume_requested":
+            reason = payload.get("reason")
+            if (
+                task.status != "paused"
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                return False
+            task.status = "resume_requested"
+            task.status_event_id = event_id
+            task.resume_request_event_id = event_id
+            task.resume_reason = reason
+            return True
+
+        if topic == "task.resumed":
+            resume_status = payload.get("resume_status")
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "resume_requested"
+                or task.resume_request_event_id is None
+                or ev.get("caused_by") != task.resume_request_event_id
+                or payload.get("resume_request_event_id")
+                != task.resume_request_event_id
+                or payload.get("reason") != task.resume_reason
+                or resume_status != task.paused_from_status
+                or resume_status not in {"open", "blocked"}
+            ):
+                return False
+            task.status = resume_status
+            task.status_event_id = event_id
+            task.resumed_event_id = event_id
+            if resume_status == "open":
+                task.open_event_id = event_id
+            return True
+
+        if topic == "task.superseded":
+            attempts = _nonnegative_int(payload.get("attempts"))
+            expected_last_assignment_id = (
+                task.assignment_id
+                if task.assignment_id is not None
+                else task.last_assignment_id
+            )
+            if (
+                ev.get("actor") != "pm"
+                or task.status != "supersession_requested"
+                or task.supersession_request_event_id is None
+                or ev.get("caused_by") != task.supersession_request_event_id
+                or payload.get("replacement_task_id")
+                != task.superseded_by_task_id
+                or payload.get("replacement_created_event_id")
+                != task.supersession_request_event_id
+                or payload.get("reason") != task.supersession_reason
+                or payload.get("last_assignment_id")
+                != expected_last_assignment_id
+                or attempts != task.attempt
+            ):
+                return False
+            task.status = "superseded"
+            task.status_event_id = event_id
+            task.superseded_event_id = event_id
+            task.open_event_id = None
+            task.decision_needed = False
+            task.decision_event_id = None
+            _clear_active_assignment(task)
             return True
 
         if topic == "task.cancelled":
@@ -445,7 +759,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             if (
                 ev.get("actor") != "pm"
                 or task.status in TASK_TERMINAL_STATUSES
-                or task.status == "cancellation_requested"
+                or task.status in {"cancellation_requested", "supersession_requested"}
                 or task.deadline_at is None
                 or deadline_at != task.deadline_at
                 or ev.get("caused_by") != task.created_event_id
@@ -520,7 +834,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "task.started":
-            if not _active_assignment_matches(task, ev, payload):
+            if not _active_assignment_matches(state, task, ev, payload):
                 return False
             if task.status == "started":
                 return False
@@ -531,7 +845,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
         if topic == "task.completed":
             if (
                 _deadline_reached(task, float(timestamp))
-                or not _active_assignment_matches(task, ev, payload)
+                or not _active_assignment_matches(state, task, ev, payload)
             ):
                 return False
             task.last_assignment_id = task.assignment_id
@@ -547,7 +861,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
         if topic == "task.blocked":
             if (
                 _deadline_reached(task, float(timestamp))
-                or not _active_assignment_matches(task, ev, payload)
+                or not _active_assignment_matches(state, task, ev, payload)
             ):
                 return False
             task.status = "blocked"
@@ -562,7 +876,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
         if topic == "task.attempt_failed":
             if (
                 _deadline_reached(task, float(timestamp))
-                or not _active_assignment_matches(task, ev, payload)
+                or not _active_assignment_matches(state, task, ev, payload)
             ):
                 return False
             retryable = payload.get("retryable")

@@ -76,6 +76,11 @@ task.started  -> task.blocked -> decision.needed -> decision.made
               -> task.assigned (next attempt)
 task.created/assigned/started/blocked -> task.cancel_requested -> task.cancelled
 task.created/assigned/started/blocked -> task.deadline_exceeded
+task.open/assigned/started/blocked -> task.pause_requested -> task.paused
+task.paused -> task.resume_requested -> task.resumed -> task.assigned
+task.created (replacement, supersedes old) -> task.superseded (old)
+workflow.pause_requested -> workflow.paused -> workflow.resume_requested
+                         -> workflow.resumed
 ```
 
 ## Components
@@ -350,6 +355,54 @@ eligible task considered first; after assignment consumes capacity, they name
 the active tasks occupying compatible workers. These answers are rebuilt from
 the event log and current worker leases—there is no hidden queue table.
 
+## Pause, resume, and supersession
+
+v0.10 phase 2 adds operator controls as immutable commands followed by
+PM-derived acknowledgements. A task pause immediately fences its active
+attempt, then `task.paused` records the stable paused state. Resuming records a
+new command and acknowledgement; if execution had been interrupted, the next
+assignment uses the next attempt number without charging a retryable failure.
+A blocked task resumes to its existing human-decision state rather than losing
+the question it was waiting on.
+
+```sh
+agent-bus pause task 12 --reason "hold during maintenance"
+agent-bus resume task 12 --reason "maintenance complete"
+agent-bus pause workflow 01abc... --reason "freeze this rollout"
+agent-bus resume workflow 01abc... --reason "continue rollout"
+```
+
+A workflow pause is a correlation-scoped gate. It revokes active assignments,
+prevents new assignments and ordinary PM effects, and also gates tasks created
+while the workflow is paused. Cancellation and persisted task deadlines remain
+authoritative during a pause. Resuming the workflow reopens interrupted tasks
+with monotonic attempt identities while leaving individually paused tasks
+paused.
+
+Supersession records changed intent by creating a replacement task. It never
+edits the old task or its dependency edges:
+
+```sh
+agent-bus supersede 12 "Deploy the revised release" \
+  --reason "release requirements changed" \
+  --priority high
+```
+
+The replacement `task.created` carries `supersedes_task_id`. If the old task is
+still live, it is immediately fenced and the PM records terminal
+`task.superseded`; an already terminal task keeps its original outcome while
+retaining the replacement link. Existing DAG edges are not silently
+redirected. A task that depended on a live superseded task ends through the
+normal dependency-failure path, so changed downstream intent must also be
+represented by new tasks. Each old task may have only one direct replacement,
+while a later revision can supersede that replacement to form an auditable
+chain.
+
+The command helpers accept optional idempotency keys. Supply the same key when
+retrying an operator command after an uncertain HTTP response. Without one,
+the CLI generates a fresh command identity so a task can be paused and resumed
+more than once over its lifetime.
+
 ## Cancellation and deadlines
 
 v0.7 adds durable management controls without introducing mutable task state.
@@ -400,7 +453,8 @@ the PM projection. Executor timeouts and worker lease expiry remain separate
 retryable attempt failures—they are not task deadlines.
 
 The runtime arms a local timer from the persisted assignment deadline, and also
-follows cancellation requests and terminal control events. It terminates
+follows cancellation, pause, workflow-pause, and supersession control events.
+It terminates
 subprocess adapters, invokes cooperative `cancel(assignment_id)` on in-process
 adapters that provide it, and suppresses late lifecycle output. This stops
 local execution at the cutoff even if PM reconciliation is temporarily down;
@@ -1004,6 +1058,11 @@ The server materializes omitted priority as `normal`; historical rows receive
 the same replay default. These fields are PM scheduling policy and are not
 delegated to executors.
 
+v0.10 phase 2 adds task/workflow pause request and acknowledgement pairs plus
+immutable task supersession. Workflow control events require a top-level
+`correlation_id`; task controls inherit it from their target. These are
+additive v2 contracts and do not rewrite historical rows.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
@@ -1023,6 +1082,15 @@ Core v2 topics:
 | `task.cancel_requested` | human/agent | Requests terminal cancellation of an existing task |
 | `task.cancelled` | PM | Records crash-safe terminal cancellation and its last attempt |
 | `task.deadline_exceeded` | PM | Terminates a task after its persisted absolute deadline |
+| `task.pause_requested` | human/agent | Requests a non-terminal pause of one task |
+| `task.paused` | PM | Acknowledges a crash-safe task pause and fences its last attempt |
+| `task.resume_requested` | human/agent | Requests that one paused task become eligible again |
+| `task.resumed` | PM | Restores the task's pre-pause open or blocked state |
+| `task.superseded` | PM | Terminates old intent after a replacement task is created |
+| `workflow.pause_requested` | human/agent | Requests a correlation-scoped orchestration pause |
+| `workflow.paused` | PM | Records the active assignments interrupted by the workflow pause |
+| `workflow.resume_requested` | human/agent | Requests that a paused workflow continue |
+| `workflow.resumed` | PM | Re-enables ordinary reconciliation for the workflow |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |
 | `decision.made` | human | Records a response that is carried into the next attempt |
 

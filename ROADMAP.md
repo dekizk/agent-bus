@@ -285,10 +285,19 @@ Phase 1 — deterministic scheduling foundation:
 
 Phase 2 — operator controls:
 
-- [ ] add crash-safe task/workflow pause and resume;
-- [ ] add explicit immutable task supersession;
-- [ ] fence late output from paused or superseded attempts;
-- [ ] explain every control transition from event evidence.
+- [x] add crash-safe task/workflow pause and resume;
+- [x] add explicit immutable task supersession;
+- [x] fence late output from paused or superseded attempts;
+- [x] explain every control transition from event evidence.
+
+Phase 2 keeps control state in the log. Task pause/resume uses request and PM
+acknowledgement events; workflow pause is a correlation-scoped scheduling and
+ownership gate. Supersession creates a replacement `task.created` event and a
+PM-derived terminal event for the old task rather than editing old intent.
+Unit evidence covers replay, duplicate acknowledgements, crash windows,
+blocked-task preservation, tasks created under a workflow pause, hard
+deadlines, dependency propagation, and late worker output. Live executor
+evidence remains required before v0.10 is complete.
 
 Phase 3 — fairness and budgets:
 

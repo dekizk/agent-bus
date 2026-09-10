@@ -8,6 +8,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -88,6 +89,107 @@ class BusClient:
             "task.cancel_requested",
             {"task_id": task_id, "reason": reason.strip()},
             idempotency_key=idempotency_key or f"cancel:task:{task_id}",
+        )
+
+    def pause_task(
+        self,
+        task_id: int,
+        *,
+        reason: str = "paused by requester",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        self._validate_control_target(task_id, reason)
+        return self.publish(
+            "task.pause_requested",
+            {"task_id": task_id, "reason": reason.strip()},
+            idempotency_key=idempotency_key or f"pause:{uuid.uuid4().hex}",
+        )
+
+    def resume_task(
+        self,
+        task_id: int,
+        *,
+        reason: str = "resumed by requester",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        self._validate_control_target(task_id, reason)
+        return self.publish(
+            "task.resume_requested",
+            {"task_id": task_id, "reason": reason.strip()},
+            idempotency_key=idempotency_key or f"resume:{uuid.uuid4().hex}",
+        )
+
+    def pause_workflow(
+        self,
+        correlation_id: str,
+        *,
+        reason: str = "workflow paused by requester",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        return self._workflow_control(
+            "workflow.pause_requested",
+            correlation_id,
+            reason,
+            idempotency_key,
+        )
+
+    def resume_workflow(
+        self,
+        correlation_id: str,
+        *,
+        reason: str = "workflow resumed by requester",
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        return self._workflow_control(
+            "workflow.resume_requested",
+            correlation_id,
+            reason,
+            idempotency_key,
+        )
+
+    def supersede_task(
+        self,
+        task_id: int,
+        replacement: dict,
+        *,
+        reason: str,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        self._validate_control_target(task_id, reason)
+        if not isinstance(replacement, dict):
+            raise ValueError("replacement must be a JSON object")
+        payload = dict(replacement)
+        payload["supersedes_task_id"] = task_id
+        payload["supersession_reason"] = reason.strip()
+        return self.publish(
+            "task.created",
+            payload,
+            idempotency_key=idempotency_key or f"supersede:{uuid.uuid4().hex}",
+        )
+
+    @staticmethod
+    def _validate_control_target(task_id: int, reason: str) -> None:
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise ValueError("task_id must be a positive integer")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+
+    def _workflow_control(
+        self,
+        topic: str,
+        correlation_id: str,
+        reason: str,
+        idempotency_key: Optional[str],
+    ) -> dict:
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise ValueError("correlation_id must be a non-empty string")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        return self.publish(
+            topic,
+            {"reason": reason.strip()},
+            correlation_id=correlation_id.strip(),
+            idempotency_key=idempotency_key or f"workflow-control:{uuid.uuid4().hex}",
         )
 
     def subscribe(

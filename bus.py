@@ -206,6 +206,20 @@ def _validate_task_scheduling(payload: dict) -> None:
         )
 
 
+def _validate_control_attempt(payload: dict) -> None:
+    last_assignment_id = payload.get("last_assignment_id")
+    if last_assignment_id is not None and (
+        not isinstance(last_assignment_id, str) or not last_assignment_id.strip()
+    ):
+        raise EventValidationError(
+            "payload.last_assignment_id must be null or a non-empty string"
+        )
+    if not _is_nonnegative_int(payload.get("attempts")):
+        raise EventValidationError(
+            "payload.attempts must be a non-negative integer"
+        )
+
+
 def _validate_dependency_refs(payload: dict) -> None:
     refs = payload.get("dependency_refs", [])
     if not isinstance(refs, list):
@@ -576,6 +590,22 @@ def validate_event(
         _validate_task_scheduling(payload)
         _validate_external_origin(payload)
         _validate_ownership(payload)
+        supersedes_task_id = payload.get("supersedes_task_id")
+        supersession_reason = payload.get("supersession_reason")
+        if supersedes_task_id is not None:
+            if not _is_positive_int(supersedes_task_id):
+                raise EventValidationError(
+                    "payload.supersedes_task_id must be a positive integer"
+                )
+            _require_string(payload, "supersession_reason")
+            if supersedes_task_id in payload.get("depends_on", []):
+                raise EventValidationError(
+                    "a replacement task cannot depend on the task it supersedes"
+                )
+        elif supersession_reason is not None:
+            raise EventValidationError(
+                "payload.supersession_reason requires payload.supersedes_task_id"
+            )
         deadline_at = payload.get("deadline_at")
         if deadline_at is not None and not _is_positive_number(deadline_at):
             raise EventValidationError(
@@ -618,6 +648,50 @@ def validate_event(
                 raise EventValidationError("payload.capabilities must be a list of strings")
         return
 
+    if topic in {"workflow.pause_requested", "workflow.resume_requested"}:
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise EventValidationError(
+                f"{topic} requires a non-empty correlation_id"
+            )
+        _require_string(payload, "reason")
+        return
+
+    if topic in {"workflow.paused", "workflow.resumed"}:
+        if actor != "pm":
+            raise EventValidationError(f"{topic} must be emitted by pm")
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise EventValidationError(
+                f"{topic} requires a non-empty correlation_id"
+            )
+        _require_string(payload, "reason")
+        request_field = (
+            "pause_request_event_id"
+            if topic == "workflow.paused"
+            else "resume_request_event_id"
+        )
+        if not _is_positive_int(payload.get(request_field)):
+            raise EventValidationError(
+                f"payload.{request_field} must be a positive integer"
+            )
+        if topic == "workflow.paused":
+            interrupted = payload.get("interrupted_assignments")
+            if not isinstance(interrupted, list):
+                raise EventValidationError(
+                    "payload.interrupted_assignments must be a JSON array"
+                )
+            for index, item in enumerate(interrupted):
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"task_id", "assignment_id"}
+                    or not _is_positive_int(item.get("task_id"))
+                    or not isinstance(item.get("assignment_id"), str)
+                    or not item["assignment_id"].strip()
+                ):
+                    raise EventValidationError(
+                        f"payload.interrupted_assignments[{index}] has an invalid shape"
+                    )
+        return
+
     _require_task_id(payload)
 
     if topic == "task.assigned":
@@ -647,6 +721,46 @@ def validate_event(
             )
     elif topic == "task.cancel_requested":
         _require_string(payload, "reason")
+    elif topic in {"task.pause_requested", "task.resume_requested"}:
+        _require_string(payload, "reason")
+    elif topic == "task.paused":
+        if actor != "pm":
+            raise EventValidationError("task.paused must be emitted by pm")
+        if not _is_positive_int(payload.get("pause_request_event_id")):
+            raise EventValidationError(
+                "payload.pause_request_event_id must be a positive integer"
+            )
+        _require_string(payload, "reason")
+        if payload.get("resume_status") not in {"open", "blocked"}:
+            raise EventValidationError(
+                "payload.resume_status must be open or blocked"
+            )
+        _validate_control_attempt(payload)
+    elif topic == "task.resumed":
+        if actor != "pm":
+            raise EventValidationError("task.resumed must be emitted by pm")
+        if not _is_positive_int(payload.get("resume_request_event_id")):
+            raise EventValidationError(
+                "payload.resume_request_event_id must be a positive integer"
+            )
+        _require_string(payload, "reason")
+        if payload.get("resume_status") not in {"open", "blocked"}:
+            raise EventValidationError(
+                "payload.resume_status must be open or blocked"
+            )
+    elif topic == "task.superseded":
+        if actor != "pm":
+            raise EventValidationError("task.superseded must be emitted by pm")
+        if not _is_positive_int(payload.get("replacement_task_id")):
+            raise EventValidationError(
+                "payload.replacement_task_id must be a positive integer"
+            )
+        if not _is_positive_int(payload.get("replacement_created_event_id")):
+            raise EventValidationError(
+                "payload.replacement_created_event_id must be a positive integer"
+            )
+        _require_string(payload, "reason")
+        _validate_control_attempt(payload)
     elif topic == "task.cancelled":
         if actor != "pm":
             raise EventValidationError("task.cancelled must be emitted by pm")
@@ -887,6 +1001,36 @@ def init_db() -> None:
                     """,
                     (system, task_ref, row["id"]),
                 )
+        # One immutable task can name at most one direct replacement. This
+        # rebuildable uniqueness projection makes that invariant atomic across
+        # actors and concurrent publishers; later changes supersede the
+        # replacement task rather than branching the old intent.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_supersession_claims (
+                task_id  INTEGER PRIMARY KEY,
+                event_id INTEGER
+            )
+            """
+        )
+        for row in conn.execute(
+            "SELECT id, payload FROM events WHERE topic = 'task.created' ORDER BY id"
+        ):
+            try:
+                supersedes_task_id = json.loads(row["payload"]).get(
+                    "supersedes_task_id"
+                )
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if _is_positive_int(supersedes_task_id):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO task_supersession_claims
+                        (task_id, event_id)
+                    VALUES (?, ?)
+                    """,
+                    (supersedes_task_id, row["id"]),
+                )
 
 
 def next_task_id(conn: sqlite3.Connection) -> int:
@@ -958,6 +1102,23 @@ def _resolve_correlation_id(
         resolved = parent_correlation_id or resolved
 
     if topic == "task.created":
+        supersedes_task_id = payload.get("supersedes_task_id")
+        if supersedes_task_id is not None:
+            superseded = _find_task_created(conn, supersedes_task_id)
+            if superseded is None:
+                raise EventValidationError(
+                    f"task {supersedes_task_id} does not exist"
+                )
+            superseded_correlation_id = superseded["correlation_id"]
+            if superseded_correlation_id is None:
+                raise EventValidationError(
+                    f"task {supersedes_task_id} has no workflow identity"
+                )
+            if resolved is not None and resolved != superseded_correlation_id:
+                raise EventValidationError(
+                    "correlation_id conflicts with the superseded task"
+                )
+            resolved = superseded_correlation_id
         for dependency_task_id in payload.get("depends_on", []):
             dependency = _find_task_created(conn, dependency_task_id)
             if dependency is None:
@@ -975,7 +1136,11 @@ def _resolve_correlation_id(
                 )
             resolved = dependency_correlation_id
 
-    if topic == "task.cancel_requested":
+    if topic in {
+        "task.cancel_requested",
+        "task.pause_requested",
+        "task.resume_requested",
+    }:
         task = _find_task_created(conn, payload["task_id"])
         if task is None:
             raise EventValidationError(
@@ -991,6 +1156,18 @@ def _resolve_correlation_id(
                 "correlation_id conflicts with the target task"
             )
         resolved = task_correlation_id or resolved
+
+    if topic.startswith("workflow."):
+        if resolved is None:
+            raise EventValidationError(f"{topic} requires correlation_id")
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE topic = 'task.created' AND correlation_id = ? LIMIT 1",
+            (resolved,),
+        ).fetchone()
+        if exists is None:
+            raise EventValidationError(
+                f"workflow {resolved!r} does not exist"
+            )
 
     if resolved is not None:
         return resolved
@@ -1104,6 +1281,7 @@ def append_event(
         )
         payload = dict(requested_payload)
         origin_claim = None
+        supersession_claim = None
         if topic in {"task.created", "integration.task_observed"}:
             origin = payload.get("external_origin")
             if isinstance(origin, dict):
@@ -1136,6 +1314,34 @@ def append_event(
                         f"{event_label}; refusing possible dual ownership"
                     ) from exc
         if topic == "task.created":
+            supersedes_task_id = payload.get("supersedes_task_id")
+            if supersedes_task_id is not None:
+                supersession_claim = supersedes_task_id
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO task_supersession_claims (task_id, event_id)
+                        VALUES (?, NULL)
+                        """,
+                        (supersession_claim,),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    existing = conn.execute(
+                        """
+                        SELECT event_id FROM task_supersession_claims
+                        WHERE task_id = ?
+                        """,
+                        (supersession_claim,),
+                    ).fetchone()
+                    event_label = (
+                        f" at event #{existing['event_id']}"
+                        if existing is not None and existing["event_id"] is not None
+                        else ""
+                    )
+                    raise EventValidationError(
+                        f"task {supersession_claim} already has a replacement"
+                        f"{event_label}"
+                    ) from exc
             payload.setdefault(
                 "retry_policy",
                 {"max_retries": DEFAULT_MAX_RETRIES},
@@ -1210,6 +1416,14 @@ def append_event(
                 WHERE system = ? AND task_ref = ?
                 """,
                 (cur.lastrowid, *origin_claim),
+            )
+        if supersession_claim is not None:
+            conn.execute(
+                """
+                UPDATE task_supersession_claims SET event_id = ?
+                WHERE task_id = ?
+                """,
+                (cur.lastrowid, supersession_claim),
             )
     return row_to_dict(row)
 

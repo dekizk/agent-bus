@@ -110,12 +110,63 @@ def explain_task(
             f"Task deadline {task.deadline_at} was reached before completion.",
             evidence,
         )
+    if task.status == "superseded":
+        evidence.extend(
+            [task.supersession_request_event_id, task.superseded_event_id]
+        )
+        return _explanation(
+            "superseded",
+            f"Task intent was replaced by task {task.superseded_by_task_id}: "
+            f"{task.supersession_reason or 'no reason recorded'}",
+            evidence,
+            replacement_task_id=task.superseded_by_task_id,
+        )
+    if task.status == "supersession_requested":
+        evidence.append(task.supersession_request_event_id)
+        return _explanation(
+            "supersession_pending",
+            f"Replacement task {task.superseded_by_task_id} is recorded; the PM has not yet terminalized this task.",
+            evidence,
+            replacement_task_id=task.superseded_by_task_id,
+        )
     if task.status == "cancellation_requested":
         evidence.append(task.cancel_request_event_id)
         return _explanation(
             "cancellation_pending",
             "Cancellation is recorded and is waiting for PM reconciliation.",
             evidence,
+        )
+    if task.status == "pause_requested":
+        evidence.append(task.pause_request_event_id)
+        return _explanation(
+            "pause_pending",
+            "Pause is recorded and is waiting for PM acknowledgement.",
+            evidence,
+        )
+    if task.status == "paused":
+        evidence.extend([task.pause_request_event_id, task.paused_event_id])
+        return _explanation(
+            "paused",
+            f"Task is paused: {task.pause_reason or 'no reason recorded'}",
+            evidence,
+            resume_status=task.paused_from_status,
+        )
+    if task.status == "resume_requested":
+        evidence.append(task.resume_request_event_id)
+        return _explanation(
+            "resume_pending",
+            "Resume is recorded and is waiting for PM acknowledgement.",
+            evidence,
+        )
+
+    workflow_control = state.workflow_control(task.correlation_id)
+    if workflow_control is not None and workflow_control.status != "active":
+        evidence.append(workflow_control.last_event_id)
+        return _explanation(
+            f"workflow_{workflow_control.status}",
+            f"Workflow {task.correlation_id} is {workflow_control.status.replace('_', ' ')}; this task cannot advance.",
+            evidence,
+            workflow_status=workflow_control.status,
         )
     if task.status == "blocked":
         evidence.extend([task.block_event_id, task.decision_event_id])
@@ -350,11 +401,20 @@ def task_view(
                 "status_event_id": dependency.status_event_id,
             }
         )
+    workflow_control = state.workflow_control(task.correlation_id)
+    effective_status = task.status
+    if (
+        task.status not in TASK_TERMINAL_STATUSES
+        and workflow_control is not None
+        and workflow_control.status != "active"
+    ):
+        effective_status = f"workflow_{workflow_control.status}"
     return {
         "task_id": task.task_id,
         "title": task.title,
         "correlation_id": task.correlation_id,
         "status": task.status,
+        "effective_status": effective_status,
         "status_event_id": task.status_event_id,
         "created_event_id": task.created_event_id,
         "attempt": task.attempt,
@@ -384,6 +444,18 @@ def task_view(
             "owner": task.ownership_owner,
         },
         "completion_summary": task.completion_summary,
+        "control": {
+            "pause_request_event_id": task.pause_request_event_id,
+            "pause_reason": task.pause_reason,
+            "paused_event_id": task.paused_event_id,
+            "resume_request_event_id": task.resume_request_event_id,
+            "resume_reason": task.resume_reason,
+            "resumed_event_id": task.resumed_event_id,
+            "supersedes_task_id": task.supersedes_task_id,
+            "superseded_by_task_id": task.superseded_by_task_id,
+            "supersession_reason": task.supersession_reason,
+            "superseded_event_id": task.superseded_event_id,
+        },
         "explanation": explanation,
     }
 
@@ -411,11 +483,21 @@ def workflow_view(
     ]
     counts = Counter(task.status for task in tasks)
     statuses = {task.status for task in tasks}
-    if statuses == {"completed"}:
+    control = state.workflow_control(correlation_id)
+    if control is not None and control.status != "active":
+        status = control.status
+    elif statuses == {"completed"}:
         status = "completed"
     elif statuses.issubset(TASK_TERMINAL_STATUSES):
-        status = "ended_with_failures"
-    elif "blocked" in statuses or "cancellation_requested" in statuses:
+        failure_statuses = {"failed", "dependency_failed", "deadline_exceeded"}
+        status = (
+            "ended_with_failures"
+            if statuses.intersection(failure_statuses)
+            else "ended_by_control"
+        )
+    elif statuses.intersection(
+        {"blocked", "cancellation_requested", "pause_requested", "paused", "resume_requested", "supersession_requested"}
+    ):
         status = "needs_attention"
     elif statuses.intersection(ACTIVE_TASK_STATUSES):
         status = "running"
@@ -425,6 +507,15 @@ def workflow_view(
         {"from_task_id": dependency_id, "to_task_id": task.task_id}
         for task in tasks
         for dependency_id in task.depends_on
+    ]
+    supersessions = [
+        {
+            "from_task_id": task.supersedes_task_id,
+            "to_task_id": task.task_id,
+            "reason": task.supersession_reason,
+        }
+        for task in tasks
+        if task.supersedes_task_id is not None
     ]
     relevant_telemetry = [
         event
@@ -438,6 +529,21 @@ def workflow_view(
         "status_counts": dict(sorted(counts.items())),
         "tasks": views,
         "edges": edges,
+        "supersessions": supersessions,
+        "control": (
+            {
+                "status": control.status,
+                "pause_request_event_id": control.pause_request_event_id,
+                "pause_reason": control.pause_reason,
+                "paused_event_id": control.paused_event_id,
+                "resume_request_event_id": control.resume_request_event_id,
+                "resume_reason": control.resume_reason,
+                "resumed_event_id": control.resumed_event_id,
+                "last_event_id": control.last_event_id,
+            }
+            if control is not None
+            else {"status": "active"}
+        ),
         "telemetry": summarize_telemetry(relevant_telemetry),
         "event_ids": sorted(
             {
@@ -454,7 +560,12 @@ def workflow_mermaid(value: dict) -> str:
     """Render a derived workflow view as a read-only Mermaid flowchart."""
     tasks = value.get("tasks")
     edges = value.get("edges")
-    if not isinstance(tasks, list) or not isinstance(edges, list):
+    supersessions = value.get("supersessions", [])
+    if (
+        not isinstance(tasks, list)
+        or not isinstance(edges, list)
+        or not isinstance(supersessions, list)
+    ):
         raise ValueError("workflow view must contain task and edge arrays")
     lines = ["flowchart LR"]
     known = set()
@@ -466,7 +577,9 @@ def workflow_mermaid(value: dict) -> str:
             raise ValueError("workflow task id must be a positive integer")
         known.add(task_id)
         title = _mermaid_text(str(task.get("title", "Task")))
-        status = _mermaid_text(str(task.get("status", "unknown")))
+        status = _mermaid_text(
+            str(task.get("effective_status", task.get("status", "unknown")))
+        )
         lines.append(f'  T{task_id}["Task {task_id}: {title}<br/>{status}"]')
     for edge in edges:
         if not isinstance(edge, dict):
@@ -476,6 +589,14 @@ def workflow_mermaid(value: dict) -> str:
         if source not in known or target not in known:
             raise ValueError("workflow edge references an unknown task")
         lines.append(f"  T{source} --> T{target}")
+    for link in supersessions:
+        if not isinstance(link, dict):
+            raise ValueError("workflow supersession view must be an object")
+        source = link.get("from_task_id")
+        target = link.get("to_task_id")
+        if source not in known or target not in known:
+            raise ValueError("workflow supersession references an unknown task")
+        lines.append(f"  T{source} -. superseded by .-> T{target}")
     return "\n".join(lines)
 
 
@@ -627,6 +748,7 @@ def _ready_assignment_candidate(
 ) -> bool:
     if (
         task.status != "open"
+        or state.workflow_is_paused(task.correlation_id)
         or task.assignment_id is not None
         or task.ownership_owner != "agent-bus"
         or (task.deadline_at is not None and now >= task.deadline_at)

@@ -123,6 +123,35 @@ def plan_next_emission(
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
         if (
+            task.status != "supersession_requested"
+            or task.supersession_request_event_id is None
+            or task.superseded_by_task_id is None
+        ):
+            continue
+        return {
+            "topic": "task.superseded",
+            "payload": {
+                "task_id": task.task_id,
+                "replacement_task_id": task.superseded_by_task_id,
+                "replacement_created_event_id": task.supersession_request_event_id,
+                "reason": task.supersession_reason or "task intent was replaced",
+                "last_assignment_id": (
+                    task.assignment_id
+                    if task.assignment_id is not None
+                    else task.last_assignment_id
+                ),
+                "attempts": task.attempt,
+            },
+            "caused_by": task.supersession_request_event_id,
+            "idempotency_key": (
+                f"superseded:task:{task.task_id}:"
+                f"replacement:{task.superseded_by_task_id}"
+            ),
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if (
             task.status in TASK_TERMINAL_STATUSES
             or task.status == "cancellation_requested"
             or task.deadline_at is None
@@ -150,6 +179,89 @@ def plan_next_emission(
 
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if task.status != "pause_requested" or task.pause_request_event_id is None:
+            continue
+        return {
+            "topic": "task.paused",
+            "payload": {
+                "task_id": task.task_id,
+                "pause_request_event_id": task.pause_request_event_id,
+                "reason": task.pause_reason or "pause requested",
+                "last_assignment_id": (
+                    task.assignment_id
+                    if task.assignment_id is not None
+                    else task.last_assignment_id
+                ),
+                "attempts": task.attempt,
+                "resume_status": task.paused_from_status,
+            },
+            "caused_by": task.pause_request_event_id,
+            "idempotency_key": (
+                f"paused:task:{task.task_id}:request:{task.pause_request_event_id}"
+            ),
+        }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if task.status != "resume_requested" or task.resume_request_event_id is None:
+            continue
+        return {
+            "topic": "task.resumed",
+            "payload": {
+                "task_id": task.task_id,
+                "resume_request_event_id": task.resume_request_event_id,
+                "reason": task.resume_reason or "resume requested",
+                "resume_status": task.paused_from_status,
+            },
+            "caused_by": task.resume_request_event_id,
+            "idempotency_key": (
+                f"resumed:task:{task.task_id}:request:{task.resume_request_event_id}"
+            ),
+        }
+
+    for correlation_id in sorted(state.workflows):
+        control = state.workflows[correlation_id]
+        if control.status == "pause_requested" and control.pause_request_event_id is not None:
+            interrupted = [
+                {"task_id": task.task_id, "assignment_id": task.assignment_id}
+                for task in sorted(state.tasks.values(), key=lambda item: item.task_id)
+                if task.correlation_id == correlation_id
+                and task.status in ACTIVE_TASK_STATUSES
+                and task.assignment_id is not None
+            ]
+            return {
+                "topic": "workflow.paused",
+                "payload": {
+                    "pause_request_event_id": control.pause_request_event_id,
+                    "reason": control.pause_reason or "workflow pause requested",
+                    "interrupted_assignments": interrupted,
+                },
+                "caused_by": control.pause_request_event_id,
+                "correlation_id": correlation_id,
+                "idempotency_key": (
+                    f"paused:workflow:{correlation_id}:"
+                    f"request:{control.pause_request_event_id}"
+                ),
+            }
+        if control.status == "resume_requested" and control.resume_request_event_id is not None:
+            return {
+                "topic": "workflow.resumed",
+                "payload": {
+                    "resume_request_event_id": control.resume_request_event_id,
+                    "reason": control.resume_reason or "workflow resume requested",
+                },
+                "caused_by": control.resume_request_event_id,
+                "correlation_id": correlation_id,
+                "idempotency_key": (
+                    f"resumed:workflow:{correlation_id}:"
+                    f"request:{control.resume_request_event_id}"
+                ),
+            }
+
+    for task_id in sorted(state.tasks):
+        task = state.tasks[task_id]
+        if state.workflow_is_paused(task.correlation_id):
+            continue
         if task.status not in ACTIVE_TASK_STATUSES or task.assignment_id is None:
             continue
         worker = state.workers.get(task.assignee or "")
@@ -176,6 +288,8 @@ def plan_next_emission(
 
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if state.workflow_is_paused(task.correlation_id):
+            continue
         if task.status != "open" or task.assignment_id is not None:
             continue
         for dependency_task_id in task.depends_on:
@@ -205,6 +319,8 @@ def plan_next_emission(
 
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if state.workflow_is_paused(task.correlation_id):
+            continue
         if (
             task.status != "open"
             or task.last_failure_event_id is None
@@ -245,6 +361,8 @@ def plan_next_emission(
 
     for task_id in sorted(state.tasks):
         task = state.tasks[task_id]
+        if state.workflow_is_paused(task.correlation_id):
+            continue
         if task.status == "blocked" and not task.decision_needed:
             return {
                 "topic": "decision.needed",
@@ -260,6 +378,8 @@ def plan_next_emission(
 
     assignment_candidates = []
     for task in state.tasks.values():
+        if state.workflow_is_paused(task.correlation_id):
+            continue
         if task.status != "open" or task.assignment_id is not None:
             continue
         if task.ownership_owner != "agent-bus":
@@ -349,11 +469,16 @@ def reconcile(
         planned = plan_next_emission(state, current_time, lease_seconds)
         if planned is None:
             return emitted
+        publish_options = {
+            "caused_by": planned.get("caused_by"),
+            "idempotency_key": planned["idempotency_key"],
+        }
+        if "correlation_id" in planned:
+            publish_options["correlation_id"] = planned["correlation_id"]
         sent = bus.publish(
             planned["topic"],
             planned["payload"],
-            caused_by=planned.get("caused_by"),
-            idempotency_key=planned["idempotency_key"],
+            **publish_options,
         )
         if not apply_event(state, sent):
             raise RuntimeError(

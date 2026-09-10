@@ -123,6 +123,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_output_option(submit)
 
+    for command_name, help_text in (
+        ("pause", "pause one task or an entire workflow"),
+        ("resume", "resume one paused task or workflow"),
+    ):
+        control = commands.add_parser(command_name, help=help_text)
+        control.add_argument("scope", choices=("task", "workflow"))
+        control.add_argument("target", help="task id or workflow correlation id")
+        control.add_argument("--reason", required=True)
+        control.add_argument("--config", default="agent-bus.local.json")
+        control.add_argument("--idempotency-key")
+        _add_output_option(control)
+
+    supersede = commands.add_parser(
+        "supersede", help="replace immutable task intent with a new task"
+    )
+    supersede.add_argument("task_id", type=_positive_int)
+    supersede.add_argument("title", help="title for the replacement task")
+    supersede.add_argument("--reason", required=True)
+    supersede.add_argument("--config", default="agent-bus.local.json")
+    supersede.add_argument("--context", default="{}")
+    supersede.add_argument("--capability", action="append", default=[])
+    supersede.add_argument("--max-retries", type=_nonnegative_int, default=0)
+    supersede.add_argument(
+        "--priority", choices=TASK_PRIORITY_CLASSES, default=DEFAULT_TASK_PRIORITY
+    )
+    supersede.add_argument("--not-before", type=_positive_number)
+    supersede.add_argument("--idempotency-key")
+    _add_output_option(supersede)
+
     adapter = commands.add_parser(
         "adapter", help="check or run an existing agent integration"
     )
@@ -192,7 +221,10 @@ def main(
     local_config_path: Optional[str | Path] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    if args.command in {"init", "serve", "pm", "demo-worker", "submit", "adapter"}:
+    if args.command in {
+        "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
+        "supersede", "adapter",
+    }:
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
         except httpx.HTTPError as exc:
@@ -421,6 +453,62 @@ def _run_local_command(
             f"Submitted task {event['payload']['task_id']} · workflow {event['correlation_id']} · event #{event['id']}",
         )
         return 0
+    if args.command in {"pause", "resume"}:
+        from client import BusClient
+
+        bus = BusClient(local.bus_url, actor="human")
+        method_name = f"{args.command}_{args.scope}"
+        method = getattr(bus, method_name)
+        if args.scope == "task":
+            try:
+                target = int(args.target)
+            except ValueError as exc:
+                raise ValueError("task target must be a positive integer") from exc
+            if target <= 0:
+                raise ValueError("task target must be a positive integer")
+        else:
+            target = args.target
+        event = method(
+            target,
+            reason=args.reason,
+            idempotency_key=args.idempotency_key,
+        )
+        _render_simple(
+            event,
+            args,
+            stdout,
+            f"Recorded {args.command} request for {args.scope} {args.target} · event #{event['id']}",
+        )
+        return 0
+    if args.command == "supersede":
+        from client import BusClient
+
+        context = json.loads(args.context)
+        if not isinstance(context, dict):
+            raise ValueError("--context must decode to a JSON object")
+        replacement = {
+            "title": args.title,
+            "goal": args.title,
+            "context": context,
+            "required_capabilities": args.capability,
+            "retry_policy": {"max_retries": args.max_retries},
+            "priority": args.priority,
+        }
+        if args.not_before is not None:
+            replacement["not_before"] = args.not_before
+        event = BusClient(local.bus_url, actor="human").supersede_task(
+            args.task_id,
+            replacement,
+            reason=args.reason,
+            idempotency_key=args.idempotency_key,
+        )
+        _render_simple(
+            event,
+            args,
+            stdout,
+            f"Task {args.task_id} superseded by task {event['payload']['task_id']} · workflow {event['correlation_id']} · event #{event['id']}",
+        )
+        return 0
     if args.command == "adapter" and args.adapter_command == "run":
         from client import BusClient
         from integration import IntegrationConfig
@@ -457,7 +545,10 @@ def _doctor(client: ObserverClient, *, now: float, lease_seconds: float) -> dict
     state, events = _coordination_snapshot(client)
     workers = worker_views(state, now=now, lease_seconds=lease_seconds)
     warnings = []
-    if any(task.status == "open" for task in state.tasks.values()) and not any(
+    if any(
+        task.status == "open" and not state.workflow_is_paused(task.correlation_id)
+        for task in state.tasks.values()
+    ) and not any(
         worker["status"] == "healthy" for worker in workers
     ):
         warnings.append("No worker has a healthy lease; open work cannot be assigned.")
@@ -466,6 +557,11 @@ def _doctor(client: ObserverClient, *, now: float, lease_seconds: float) -> dict
         "active_worker_missing",
         "active_worker_replaced",
         "cancellation_pending",
+        "pause_pending",
+        "resume_pending",
+        "supersession_pending",
+        "workflow_pause_requested",
+        "workflow_resume_requested",
         "deadline_reconciliation_pending",
         "decision_request_pending",
         "dependency_failure_reconciliation_pending",
@@ -581,7 +677,14 @@ def _format_task(value: dict) -> str:
     remaining = "unbounded" if retry["remaining"] is None else retry["remaining"]
     lines = [
         f"Task {value['task_id']} · {value['title']}",
-        f"State: {value['status']} · event #{value['status_event_id']}",
+        "State: "
+        + value["effective_status"]
+        + (
+            f" (task state {value['status']})"
+            if value["effective_status"] != value["status"]
+            else ""
+        )
+        + f" · event #{value['status_event_id']}",
         f"Why: {value['explanation']['summary']}",
         f"Workflow: {value['correlation_id']}",
         f"Scheduling: priority {value['priority']}"
@@ -622,6 +725,11 @@ def _format_workflow(value: dict) -> str:
     lines = [
         f"Workflow {value['correlation_id']} · {value['status']} · {value['task_count']} tasks"
     ]
+    control = value.get("control", {})
+    if control.get("status") != "active":
+        lines.append(
+            f"  Control: {control.get('status')} · event #{control.get('last_event_id')}"
+        )
     for task in value["tasks"]:
         dependencies = [item["task_id"] for item in task["dependencies"]]
         dependency_text = f" · depends on {dependencies}" if dependencies else ""
@@ -631,7 +739,7 @@ def _format_workflow(value: dict) -> str:
             else ""
         )
         lines.append(
-            f"  Task {task['task_id']} · {task['status']}@#{task['status_event_id']} · "
+            f"  Task {task['task_id']} · {task['effective_status']}@#{task['status_event_id']} · "
             f"{task['title']}{dependency_text}{scheduling_text}"
         )
         lines.append(f"    {task['explanation']['summary']}")
