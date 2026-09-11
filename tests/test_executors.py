@@ -249,6 +249,47 @@ class AssignmentContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deadline_at"):
             assignment(deadline_at=float("inf"))
 
+    def test_workflow_policy_identity_is_validated_and_serialized(self):
+        value = assignment(workflow_policy_event_id=42)
+        self.assertEqual(42, value.to_dict()["workflow_policy_event_id"])
+        with self.assertRaisesRegex(ValueError, "workflow_policy_event_id"):
+            assignment(workflow_policy_event_id=0)
+
+    def test_fairness_evidence_is_validated_and_serialized(self):
+        value = assignment(
+            fairness_policy="workflow_round_robin_v1",
+            previous_assignment_event_id=41,
+        )
+        self.assertEqual(
+            {
+                "policy": "workflow_round_robin_v1",
+                "previous_assignment_event_id": 41,
+            },
+            value.to_dict()["fairness"],
+        )
+        with self.assertRaisesRegex(ValueError, "fairness_policy"):
+            assignment(fairness_policy="random")
+        with self.assertRaisesRegex(ValueError, "requires fairness_policy"):
+            assignment(previous_assignment_event_id=41)
+
+    def test_assignment_event_rejects_partial_fairness_evidence(self):
+        source = assignment()
+        event = {
+            "id": source.assignment_event_id,
+            "correlation_id": source.correlation_id,
+            "payload": {
+                "task_id": source.task_id,
+                "assignment_id": source.assignment_id,
+                "attempt": source.attempt,
+                "goal": source.goal,
+                "assignee": source.assignee,
+                "worker_instance_id": source.worker_instance_id,
+                "fairness": {"policy": "workflow_round_robin_v1"},
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "must contain"):
+            AssignmentContext.from_event(event)
+
     def test_v04_positional_constructor_order_remains_compatible(self):
         value = AssignmentContext(
             "workflow-one",

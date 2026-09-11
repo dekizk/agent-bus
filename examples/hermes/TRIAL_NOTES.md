@@ -673,6 +673,65 @@ idempotency conflict, fresh replay matched live state, and a restarted PM had no
 remaining effect to publish. This is automated crash-window evidence rather
 than a new paid Hermes trial.
 
+## 2026-09-11 — live v0.10 phase 3A workflow-concurrency trial
+
+A credential-free live trial ran an isolated loopback server and PM against a
+temporary SQLite database. One registered worker advertised capacity 4, while
+the PM defaulted each workflow to one active assignment.
+
+- two independent tasks were submitted to each of `live-flow-a` and
+  `live-flow-b`;
+- the PM materialized separate default policies at `#6` and `#7`, then assigned
+  exactly one task from each workflow despite the worker's spare capacity;
+- operator policy `#10` increased `live-flow-a` to two active assignments, and
+  its second assignment named `#10` as `workflow_policy_event_id`;
+- operator policy `#12` lowered the same workflow to one while two assignments
+  remained active. Neither was revoked, and a newly submitted fifth task stayed
+  open with explanation code `workflow_concurrency_limit`;
+- completing one active task did not release the waiting task because one slot
+  remained occupied at the new limit. Completing the second allowed
+  `task:5:attempt:1`, whose assignment named policy `#12`;
+- the PM was restarted with deployment default 9. It emitted no replacement
+  policy, and fresh replay still showed the workflow limit as 1 under `#12`.
+
+The server, PM, and temporary database were removed after inspection. No paid
+model, external provider, real project database, or executor content was used.
+This satisfies the phase 3A live criteria for independent workflow limits,
+append-only policy changes, non-revoking decreases, assignment policy evidence,
+restart stability, and replay-derived explanations.
+
+## 2026-09-11 — live v0.10 phase 3B deterministic-fairness trial
+
+A credential-free isolated loopback trial used a temporary SQLite database,
+one worker with capacity 1, and three simultaneously ready workflows. Workflow
+A contained an urgent and a low-priority task, workflow B contained two
+low-priority tasks, and workflow C contained one normal-priority task.
+
+- accepted assignments alternated `A urgent`, `B low one`, `C normal`, `A low`,
+  `B low two` at events `#10`, `#12`, `#14`, `#16`, and `#18`;
+- workflow A did not monopolize the slot after its first turn, while its urgent
+  task correctly preceded its low-priority sibling inside the workflow;
+- the PM was stopped after assignment `#10`. With the PM down, replay-derived
+  explanation for A's remaining task was `ready_after_fair_workflow`, selected
+  workflow B, and cited `#10` in its evidence trace;
+- restarting the PM assigned workflow B next at `#12`, with
+  `fairness.previous_assignment_event_id: 10`;
+- final fresh replay restored scheduling cursor `#18`, matching the latest
+  accepted assignment and the workflow inspection view.
+
+The server, PM, and temporary database were removed after inspection. No paid
+model, external provider, real project database, or executor content was used.
+This satisfies phase 3B's live criteria for cross-workflow fairness,
+within-workflow priority, predecessor evidence, restart recovery, explanations,
+and replay-derived cursor state.
+
+## Next trial criteria — v0.10 phase 3C agent limits and budgets
+
+No phase 3C live trial is claimed yet. Before implementation, token and cost
+budgets need explicit reservation, reconciliation, policy-change, and
+missing-usage semantics. Trials must then demonstrate those decisions across
+successful usage, absent usage reports, concurrency, and PM restart.
+
 ## Trial-note template
 
 - Date and task category:

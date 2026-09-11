@@ -16,6 +16,7 @@ def assigned_event(
     instance="alice-1",
     dependency_refs=(),
     deadline_at=None,
+    workflow_policy_event_id=None,
 ):
     event = {
         "id": event_id,
@@ -40,6 +41,10 @@ def assigned_event(
     }
     if deadline_at is not None:
         event["payload"]["deadline_at"] = deadline_at
+    if workflow_policy_event_id is not None:
+        event["payload"][
+            "workflow_policy_event_id"
+        ] = workflow_policy_event_id
     return event
 
 
@@ -427,6 +432,62 @@ class RuntimeOutcomeTests(unittest.TestCase):
 
 
 class RuntimeOwnershipTests(unittest.TestCase):
+    def test_policy_change_fences_stale_assignment_before_executor(self):
+        class RecordingExecutor:
+            def __init__(self):
+                self.assignments = []
+                self.policy_event_ids = []
+
+            def execute(self, assignment):
+                self.assignments.append(assignment.assignment_id)
+                self.policy_event_ids.append(assignment.workflow_policy_event_id)
+                return Completed("done")
+
+        policy = {
+            "id": 11,
+            "topic": "workflow.policy_set",
+            "correlation_id": "workflow-one",
+            "payload": {
+                "source": "operator",
+                "reason": "lower concurrency",
+                "max_active_assignments": 1,
+            },
+        }
+        stale = assigned_event(
+            event_id=12,
+            attempt=1,
+            workflow_policy_event_id=10,
+        )
+        current = assigned_event(
+            event_id=13,
+            attempt=2,
+            workflow_policy_event_id=11,
+        )
+        executor = RecordingExecutor()
+        fake_bus = FakeBus([policy, stale, current])
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run()
+
+        self.assertIn("workflow.policy_set", RUNTIME_TOPICS)
+        self.assertEqual(["task:1:attempt:2"], executor.assignments)
+        self.assertEqual([11], executor.policy_event_ids)
+        self.assertEqual(
+            1,
+            len(
+                [
+                    event
+                    for event in fake_bus.published
+                    if event["topic"] == "task.started"
+                ]
+            ),
+        )
+
     def test_already_expired_assignment_never_starts_or_executes(self):
         class CountingExecutor:
             calls = 0

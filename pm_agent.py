@@ -80,6 +80,31 @@ def _lock_path() -> Path:
 
 LOCK_PATH = _lock_path()
 WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
+_UNSET_POLICY_DEFAULT = object()
+
+
+def _default_workflow_max_active_assignments() -> Optional[int]:
+    raw = os.environ.get("AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS")
+    if raw is None or raw.strip().lower() in {"", "none", "null", "unbounded"}:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise SystemExit(
+            "[pm] AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
+            "a positive integer or 'unbounded'"
+        ) from exc
+    if value <= 0:
+        raise SystemExit(
+            "[pm] AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
+            "a positive integer or 'unbounded'"
+        )
+    return value
+
+
+DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS = (
+    _default_workflow_max_active_assignments()
+)
 
 
 @contextmanager
@@ -122,6 +147,7 @@ def plan_next_emission(
     state: PMState,
     now: float,
     lease_seconds: float = WORKER_LEASE_SECONDS,
+    default_workflow_max_active_assignments: object = _UNSET_POLICY_DEFAULT,
 ) -> Optional[dict]:
     """Return the next deterministic effect needed to reconcile derived state."""
     for task_id in sorted(state.tasks):
@@ -404,30 +430,65 @@ def plan_next_emission(
                 "idempotency_key": f"decision-needed:{task.assignment_id}",
             }
 
-    assignment_candidates = []
-    for task in state.tasks.values():
-        if state.workflow_is_paused(task.correlation_id):
-            continue
-        if task.status != "open" or task.assignment_id is not None:
-            continue
-        if task.ownership_owner != "agent-bus":
-            continue
-        if task.not_before is not None and now < task.not_before:
-            continue
-        if any(
-            state.tasks[dependency_task_id].status != "completed"
-            for dependency_task_id in task.depends_on
-        ):
-            continue
-        worker = state.choose_worker(task, now, lease_seconds)
-        if worker is None:
-            continue
-        assignment_candidates.append(
-            (state.task_schedule_key(task), task, worker)
-        )
+    if default_workflow_max_active_assignments is not _UNSET_POLICY_DEFAULT:
+        workflows_needing_policy = set()
+        for task in state.tasks.values():
+            if (
+                task.correlation_id is None
+                or task.ownership_owner != "agent-bus"
+                or task.status in TASK_TERMINAL_STATUSES
+            ):
+                continue
+            control = state.workflow_control(task.correlation_id)
+            if control is not None and control.policy_event_id is not None:
+                continue
+            workflows_needing_policy.add(task.correlation_id)
+        policy_candidates = {
+            correlation_id: min(
+                (
+                    task
+                    for task in state.tasks.values()
+                    if task.correlation_id == correlation_id
+                ),
+                key=lambda task: task.created_event_id or task.task_id,
+            )
+            for correlation_id in workflows_needing_policy
+        }
+        if policy_candidates:
+            correlation_id, first_task = min(
+                policy_candidates.items(),
+                key=lambda item: (
+                    item[1].created_event_id or item[1].task_id,
+                    item[0],
+                ),
+            )
+            limit = default_workflow_max_active_assignments
+            if limit is not None and (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit <= 0
+            ):
+                raise ValueError(
+                    "default workflow max active assignments must be null or positive"
+                )
+            return {
+                "topic": "workflow.policy_set",
+                "payload": {
+                    "source": "default",
+                    "reason": "materialized deployment default",
+                    "max_active_assignments": limit,
+                },
+                "caused_by": first_task.created_event_id,
+                "correlation_id": correlation_id,
+                "idempotency_key": (
+                    f"policy-default:workflow:{correlation_id}:"
+                    f"task:{first_task.task_id}:created:{first_task.created_event_id}"
+                ),
+            }
 
-    if assignment_candidates:
-        _, task, worker = min(assignment_candidates, key=lambda item: item[0])
+    assignment_candidate = state.next_assignment_candidate(now, lease_seconds)
+    if assignment_candidate is not None:
+        task, worker = assignment_candidate
         attempt = task.last_assignment_attempt + 1
         assignment_id = f"task:{task.task_id}:attempt:{attempt}"
         return {
@@ -454,6 +515,23 @@ def plan_next_emission(
                 "required_capabilities": sorted(task.required_capabilities),
                 "retry_policy": {"max_retries": task.max_retries},
                 "retryable_failures": task.retryable_failures,
+                "fairness": {
+                    "policy": "workflow_round_robin_v1",
+                    "previous_assignment_event_id": (
+                        state.last_scheduling_assignment_event_id
+                    ),
+                },
+                **(
+                    {
+                        "workflow_policy_event_id": state.workflow_control(
+                            task.correlation_id
+                        ).policy_event_id
+                    }
+                    if state.workflow_control(task.correlation_id) is not None
+                    and state.workflow_control(task.correlation_id).policy_event_id
+                    is not None
+                    else {}
+                ),
                 **(
                     {"deadline_at": task.deadline_at}
                     if task.deadline_at is not None
@@ -490,12 +568,18 @@ def reconcile(
     lease_seconds: float = WORKER_LEASE_SECONDS,
     clock: Callable[[], float] = time.time,
     cursor: Optional[OrderedProjectionCursor] = None,
+    default_workflow_max_active_assignments: object = _UNSET_POLICY_DEFAULT,
 ) -> list[dict]:
     """Publish effects until stable, consuming persisted order when available."""
     emitted: list[dict] = []
     for _ in range(10_000):
         current_time = now if now is not None else clock()
-        planned = plan_next_emission(state, current_time, lease_seconds)
+        planned = plan_next_emission(
+            state,
+            current_time,
+            lease_seconds,
+            default_workflow_max_active_assignments,
+        )
         if planned is None:
             return emitted
         publish_options = {
@@ -551,15 +635,36 @@ def main():
 
         # This closes the prototype's crash window: state replay is followed by
         # deterministic effect reconciliation before waiting for another event.
-        reconcile(state, bus, cursor=cursor)
+        reconcile(
+            state,
+            bus,
+            cursor=cursor,
+            default_workflow_max_active_assignments=(
+                DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
+            ),
+        )
 
         for event in bus.subscribe(
             from_id=cursor.last_event_id,
             topics=list(PM_TOPICS),
-            on_idle=lambda: reconcile(state, bus, cursor=cursor),
+            on_idle=lambda: reconcile(
+                state,
+                bus,
+                cursor=cursor,
+                default_workflow_max_active_assignments=(
+                    DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
+                ),
+            ),
         ):
             cursor.consume([event])
-            reconcile(state, bus, cursor=cursor)
+            reconcile(
+                state,
+                bus,
+                cursor=cursor,
+                default_workflow_max_active_assignments=(
+                    DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
+                ),
+            )
 
 
 if __name__ == "__main__":

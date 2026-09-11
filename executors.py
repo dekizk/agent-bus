@@ -178,6 +178,9 @@ class AssignmentContext:
     decisions: tuple[Mapping[str, Any], ...] = ()
     dependencies: tuple[Mapping[str, Any], ...] = ()
     deadline_at: Optional[float] = None
+    workflow_policy_event_id: Optional[int] = None
+    fairness_policy: Optional[str] = None
+    previous_assignment_event_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         _positive_int(self.task_id, "task_id")
@@ -191,6 +194,25 @@ class AssignmentContext:
             _nonempty_string(self.correlation_id, "correlation_id")
         if self.max_retries is not None:
             _nonnegative_int(self.max_retries, "max_retries")
+        if self.workflow_policy_event_id is not None:
+            _positive_int(
+                self.workflow_policy_event_id,
+                "workflow_policy_event_id",
+            )
+        if self.fairness_policy is not None:
+            if self.fairness_policy != "workflow_round_robin_v1":
+                raise ValueError(
+                    "fairness_policy must be workflow_round_robin_v1 or None"
+                )
+            if self.previous_assignment_event_id is not None:
+                _positive_int(
+                    self.previous_assignment_event_id,
+                    "previous_assignment_event_id",
+                )
+        elif self.previous_assignment_event_id is not None:
+            raise ValueError(
+                "previous_assignment_event_id requires fairness_policy"
+            )
         _nonnegative_int(self.retryable_failures, "retryable_failures")
         if self.deadline_at is not None and (
             not isinstance(self.deadline_at, (int, float))
@@ -253,6 +275,15 @@ class AssignmentContext:
             )
         if dependencies is None:
             dependencies = []
+        fairness = payload.get("fairness")
+        if fairness is None:
+            fairness = {}
+        elif not isinstance(fairness, Mapping):
+            raise ValueError("assignment fairness must be an object")
+        elif set(fairness) != {"policy", "previous_assignment_event_id"}:
+            raise ValueError(
+                "assignment fairness must contain policy and previous_assignment_event_id"
+            )
         assignment = cls(
             correlation_id=event.get("correlation_id"),
             task_id=payload.get("task_id"),
@@ -272,6 +303,11 @@ class AssignmentContext:
             external_origin=payload.get("external_origin"),
             dependencies=dependencies,
             deadline_at=payload.get("deadline_at"),
+            workflow_policy_event_id=payload.get("workflow_policy_event_id"),
+            fairness_policy=fairness.get("policy"),
+            previous_assignment_event_id=fairness.get(
+                "previous_assignment_event_id"
+            ),
         )
         if not isinstance(dependency_refs, list):
             raise ValueError("assignment dependency_refs must be a list")
@@ -324,6 +360,7 @@ class AssignmentContext:
             "retry_policy": {"max_retries": self.max_retries},
             "retryable_failures": self.retryable_failures,
             "deadline_at": self.deadline_at,
+            "workflow_policy_event_id": self.workflow_policy_event_id,
             "assignee": self.assignee,
             "worker_instance_id": self.worker_instance_id,
             "ownership": {
@@ -333,6 +370,11 @@ class AssignmentContext:
         }
         if self.external_origin is not None:
             result["external_origin"] = _thaw(self.external_origin)
+        if self.fairness_policy is not None:
+            result["fairness"] = {
+                "policy": self.fairness_policy,
+                "previous_assignment_event_id": self.previous_assignment_event_id,
+            }
         return result
 
 

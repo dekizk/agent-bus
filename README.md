@@ -193,7 +193,10 @@ event chain. New tasks store their retry policy in the event itself.
 `agent-bus submit` defaults to no automatic retries unless `--max-retries` is
 supplied; direct event publishers retain the server default. New tasks also
 materialize immutable `normal` priority unless the publisher selects another
-class.
+class. Before assigning the first task in a new workflow, the PM records the
+configured workflow-concurrency default as `workflow.policy_set`; the generated
+local configuration currently defaults to four active assignments per
+workflow.
 
 After about one second, verify the bus, task, and derived workflow:
 
@@ -354,6 +357,81 @@ reconciliation, explanations identify a higher-priority or earlier-created
 eligible task considered first; after assignment consumes capacity, they name
 the active tasks occupying compatible workers. These answers are rebuilt from
 the event log and current worker leases—there is no hidden queue table.
+
+## Workflow concurrency policy
+
+v0.10 phase 3A persists workflow-specific concurrency policy in the same event
+log as the work it governs. The PM materializes
+`default_workflow_max_active_assignments` from `agent-bus.local.json` before a
+workflow's first assignment. Older configuration files without this optional
+field materialize an unbounded default, preserving their previous behavior.
+Restarting with a different default does not alter a workflow that already has
+a policy event.
+
+An operator can append a later policy event without editing history:
+
+```sh
+agent-bus policy "$CORRELATION_ID" \
+  --max-active-assignments 2 \
+  --reason "bound this workflow's fan-out"
+
+# Explicitly return the workflow to unbounded concurrency:
+agent-bus policy "$CORRELATION_ID" \
+  --unbounded \
+  --reason "dedicated capacity is now available"
+```
+
+The latest accepted policy event takes effect for subsequent assignments. A
+lower limit never cancels work already assigned or running; the PM waits until
+active ownership falls below the new limit before assigning more. Every new
+`task.assigned` records `workflow_policy_event_id`, so inspection can identify
+the exact event that authorized it; the framework-neutral `AssignmentContext`
+also exposes that identity to adapters. Workers consume policy events and fence
+an assignment that names an older policy before invoking the executor. Such an
+assignment remains stale audit evidence and is reissued with a fresh attempt
+identity under the current policy.
+
+Workflow policy is orchestration intent. Deployment safety caps such as process
+limits, memory limits, and network restrictions remain external operational
+controls and may be stricter. Token/cost reservations remain later phase 3
+work.
+
+## Deterministic workflow fairness
+
+v0.10 phase 3B schedules ready workflows with a strict round-robin rule. A
+workflow gets one assignment turn, then the next ready workflow gets the next
+turn. Task priority and immutable creation order still decide which task is
+chosen *within* that workflow. This prevents one large or urgent workflow from
+monopolizing every available assignment while retaining useful priority
+semantics inside a single body of work.
+
+There is no mutable scheduler queue or private fairness counter. The cursor is
+the latest accepted `task.assigned` event, and workflow order is derived from
+each workflow's first `task.created` event. Every new assignment records:
+
+```json
+{
+  "fairness": {
+    "policy": "workflow_round_robin_v1",
+    "previous_assignment_event_id": 42
+  }
+}
+```
+
+The first policy-aware assignment records `null` as its predecessor. If
+another accepted assignment crosses a PM plan before publication, the stale
+plan cannot advance the cursor or become executable ownership. Reconciliation
+consumes that delivery identity and reissues the task with a fresh attempt and
+the current predecessor. Fresh replay therefore reconstructs the same cursor
+and next workflow without a scheduler side database. Historical assignments
+without `fairness` remain replayable and seed the cursor in event order;
+historical uncorrelated tasks retain their original global priority ordering.
+
+`agent-bus task`, `agent-bus explain`, and `agent-bus workflow` expose the
+policy and predecessor event, so an operator can distinguish capacity,
+workflow-concurrency, priority, and fairness waits. This is assignment fairness,
+not runtime time-slicing: it does not preempt active work or revoke a long
+running task.
 
 ## Pause, resume, and supersession
 
@@ -1080,6 +1158,14 @@ immutable task supersession. Workflow control events require a top-level
 `correlation_id`; task controls inherit it from their target. These are
 additive v2 contracts and do not rewrite historical rows.
 
+v0.10 phase 3A adds `workflow.policy_set` and the optional
+`workflow_policy_event_id` field on new assignments. Historical assignments
+without that field remain replayable when no workflow policy preceded them.
+
+v0.10 phase 3B adds the optional `fairness` evidence object to new assignments.
+It identifies the `workflow_round_robin_v1` policy and the preceding accepted
+assignment event. Historical assignments without it remain replayable.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
@@ -1106,6 +1192,7 @@ Core v2 topics:
 | `task.superseded` | PM | Terminates old intent after a replacement task is created |
 | `workflow.pause_requested` | human/agent | Requests a correlation-scoped orchestration pause |
 | `workflow.paused` | PM | Acknowledges the request-time assignment snapshot; replay interrupts only assignments that still match |
+| `workflow.policy_set` | PM/operator | Materializes or changes immutable workflow concurrency policy |
 | `workflow.resume_requested` | human/agent | Requests that a paused workflow continue |
 | `workflow.resumed` | PM | Re-enables ordinary reconciliation for the workflow |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |

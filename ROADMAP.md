@@ -315,12 +315,44 @@ hard deadlines, dependency propagation, stale PM effects, and late worker
 output. The original Hermes phase 2 trials and an isolated ordered-cursor live
 worker repeat passed; Phase 3 remains required before v0.10 is complete.
 
-Phase 3 — fairness and budgets:
+Phase 3A — persisted workflow policy and concurrency:
 
-- [ ] add per-workflow and per-agent concurrency limits;
-- [ ] add deterministic fairness between workflows or tenants;
-- [ ] add token, cost, attempt, and wall-clock budgets;
-- [ ] explain limit and budget decisions without hidden scheduler state.
+- [x] add immutable workflow policy events with deployment-configured defaults;
+- [x] materialize defaults before first assignment without changing existing
+  workflows when deployment configuration changes;
+- [x] add explicit append-only policy changes and unbounded policy;
+- [x] add per-workflow concurrency limits without revoking active work;
+- [x] identify the governing policy event on every policy-aware assignment;
+- [x] fence assignments that cross a policy change in both PM and worker
+  projections, then safely reissue them;
+- [x] expose policy and concurrency-limit explanations in task/workflow views;
+- [x] cover validation, idempotency, policy races, lowering, replay, and restart
+  behavior with deterministic regressions;
+- [x] pass a live multi-workflow policy and concurrency trial.
+
+Phase 3B — deterministic workflow fairness:
+
+- [x] derive a workflow round-robin cursor from accepted assignment events;
+- [x] retain priority and immutable creation order within each workflow;
+- [x] record the fairness policy and preceding assignment on every new
+  assignment;
+- [x] fence and deterministically reissue plans that cross a newer assignment;
+- [x] preserve replay of historical assignments and uncorrelated task ordering;
+- [x] expose fairness waits and event evidence through operator views;
+- [x] cover cross-workflow priority, changing eligibility, stale publication,
+  executor round trips, and fresh replay with regressions;
+- [x] pass an isolated live multi-workflow fairness and restart trial.
+
+Phase 3C — agent limits and accounted budgets:
+
+- [ ] add per-agent concurrency policy beyond worker-advertised capacity;
+- [ ] define token and cost reservation, reconciliation, and missing-usage
+  behavior before enforcing those budgets;
+- [ ] add token, cost, attempt, and wall-clock budgets as immutable workflow
+  policy;
+- [ ] identify the governing policy/reservation events in enforcement decisions;
+- [ ] explain agent limits and budget decisions without hidden scheduler state;
+- [ ] pass live usage, missing-usage, policy-change, and restart trials.
 
 v0.10 is not complete until phases 2 and 3 and their live trials pass.
 

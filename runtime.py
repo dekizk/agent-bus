@@ -42,6 +42,7 @@ RUNTIME_TOPICS = (
     "task.created",
     "workflow.pause_requested",
     "workflow.paused",
+    "workflow.policy_set",
     "workflow.resumed",
 )
 
@@ -116,6 +117,7 @@ class WorkerRuntime:
         self._deadline_timers: dict[str, threading.Timer] = {}
         self._paused_task_ids: set[int] = set()
         self._paused_correlations: set[str] = set()
+        self._workflow_policy_event_ids: dict[str, int] = {}
         self._accepting = False
         self._closed = False
         self._pool: Optional[ThreadPoolExecutor] = None
@@ -265,6 +267,21 @@ class WorkerRuntime:
                 self._revoke(assignment_id)
             return
 
+        if topic == "workflow.policy_set":
+            correlation_id = event.get("correlation_id")
+            event_id = event.get("id")
+            if (
+                isinstance(correlation_id, str)
+                and isinstance(event_id, int)
+                and not isinstance(event_id, bool)
+                and event_id > 0
+            ):
+                with self._lock:
+                    current = self._workflow_policy_event_ids.get(correlation_id, 0)
+                    if event_id > current:
+                        self._workflow_policy_event_ids[correlation_id] = event_id
+            return
+
 
         if topic == "workflow.resumed":
             correlation_id = event.get("correlation_id")
@@ -285,13 +302,41 @@ class WorkerRuntime:
         correlation_id = event.get("correlation_id")
         if isinstance(raw_assignment_id, str):
             with self._lock:
+                current_policy_event_id = (
+                    self._workflow_policy_event_ids.get(correlation_id)
+                    if isinstance(correlation_id, str)
+                    else None
+                )
+                raw_policy_event_id = payload.get("workflow_policy_event_id")
+                assignment_policy_event_id = (
+                    raw_policy_event_id
+                    if isinstance(raw_policy_event_id, int)
+                    and not isinstance(raw_policy_event_id, bool)
+                    and raw_policy_event_id > 0
+                    else None
+                )
                 if (
                     raw_assignment_id in self._seen_assignment_ids
                     or task_id in self._paused_task_ids
                     or correlation_id in self._paused_correlations
+                    or (
+                        current_policy_event_id is not None
+                        and assignment_policy_event_id != current_policy_event_id
+                    )
                 ):
                     self._seen_assignment_ids.add(raw_assignment_id)
                     return
+                if (
+                    isinstance(correlation_id, str)
+                    and current_policy_event_id is None
+                    and assignment_policy_event_id is not None
+                ):
+                    # A policy may predate this worker's registration and
+                    # therefore its stream offset. The first assignment safely
+                    # bootstraps that identity; later policy events advance it.
+                    self._workflow_policy_event_ids[
+                        correlation_id
+                    ] = assignment_policy_event_id
         try:
             resolved_event = self._resolve_dependency_refs_with_retry(event)
             if resolved_event is None:

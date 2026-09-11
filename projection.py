@@ -58,6 +58,9 @@ class TaskRecord:
     worker_instance_id: Optional[str] = None
     assignment_id: Optional[str] = None
     assignment_event_id: Optional[int] = None
+    assignment_policy_event_id: Optional[int] = None
+    assignment_fairness_policy: Optional[str] = None
+    assignment_previous_event_id: Optional[int] = None
     created_event_id: Optional[int] = None
     status_event_id: Optional[int] = None
     open_event_id: Optional[int] = None
@@ -118,11 +121,17 @@ class WorkflowControlRecord:
     resume_request_event_id: Optional[int] = None
     resume_reason: Optional[str] = None
     resumed_event_id: Optional[int] = None
+    policy_event_id: Optional[int] = None
+    policy_actor: Optional[str] = None
+    policy_source: Optional[str] = None
+    policy_reason: Optional[str] = None
+    max_active_assignments: Optional[int] = None
     # Immutable assignment ownership observed when the pause request entered
     # the ordered log. The acknowledgement names this snapshot even if a
     # stronger task control wins before the PM publishes it.
     pause_assignment_snapshot: tuple[tuple[int, str], ...] = ()
     interrupted_task_ids: tuple[int, ...] = ()
+    latest_event_id: Optional[int] = None
     last_event_id: Optional[int] = None
 
 
@@ -131,6 +140,10 @@ class PMState:
         self.workers: dict[str, WorkerRecord] = {}
         self.tasks: dict[int, TaskRecord] = {}
         self.workflows: dict[str, WorkflowControlRecord] = {}
+        # Derived exclusively from accepted task.assigned events. This is the
+        # round-robin cursor, not hidden mutable scheduler state.
+        self.last_scheduling_assignment_event_id: Optional[int] = None
+        self.last_scheduled_workflow_key: Optional[tuple[int, str]] = None
 
     def workflow_control(self, correlation_id: Optional[str]) -> Optional[WorkflowControlRecord]:
         if correlation_id is None:
@@ -158,6 +171,23 @@ class PMState:
             and task.worker_instance_id == worker.instance_id
         )
 
+    def workflow_active_tasks(self, correlation_id: Optional[str]) -> list[TaskRecord]:
+        if correlation_id is None:
+            return []
+        return [
+            task
+            for task in self.tasks.values()
+            if task.correlation_id == correlation_id
+            and task.status in ACTIVE_TASK_STATUSES
+        ]
+
+    def workflow_limit_reached(self, correlation_id: Optional[str]) -> bool:
+        control = self.workflow_control(correlation_id)
+        if control is None or control.policy_event_id is None:
+            return False
+        limit = control.max_active_assignments
+        return limit is not None and len(self.workflow_active_tasks(correlation_id)) >= limit
+
     def choose_worker(
         self,
         task: TaskRecord,
@@ -180,6 +210,92 @@ class PMState:
             task.priority,
             task.created_event_id,
             task.task_id,
+        )
+
+    @staticmethod
+    def workflow_identity(task: TaskRecord) -> str:
+        # Schema-v2 work has a correlation ID. Preserve historical global
+        # priority ordering by treating legacy uncorrelated work as one lane.
+        return (
+            task.correlation_id
+            if task.correlation_id is not None
+            else "legacy-uncorrelated"
+        )
+
+    def workflow_schedule_key(self, task: TaskRecord) -> tuple[int, str]:
+        identity = self.workflow_identity(task)
+        first_created_event_id = min(
+            (
+                item.created_event_id or item.task_id
+                for item in self.tasks.values()
+                if self.workflow_identity(item) == identity
+            ),
+            default=task.created_event_id or task.task_id,
+        )
+        return (first_created_event_id, identity)
+
+    def ready_assignment_candidates(
+        self,
+        now: float,
+        lease_seconds: float,
+    ) -> list[tuple[TaskRecord, WorkerRecord]]:
+        candidates: list[tuple[TaskRecord, WorkerRecord]] = []
+        for task in self.tasks.values():
+            if (
+                task.status != "open"
+                or task.assignment_id is not None
+                or task.ownership_owner != "agent-bus"
+                or self.workflow_is_paused(task.correlation_id)
+                or self.workflow_limit_reached(task.correlation_id)
+                or (task.deadline_at is not None and now >= task.deadline_at)
+                or (task.not_before is not None and now < task.not_before)
+                or task.permanent_failure_pending
+                or (
+                    task.last_failure_event_id is not None
+                    and task.max_retries is not None
+                    and task.retryable_failures > task.max_retries
+                )
+                or any(
+                    self.tasks[dependency_id].status != "completed"
+                    for dependency_id in task.depends_on
+                )
+            ):
+                continue
+            worker = self.choose_worker(task, now, lease_seconds)
+            if worker is not None:
+                candidates.append((task, worker))
+        return candidates
+
+    def next_assignment_candidate(
+        self,
+        now: float,
+        lease_seconds: float,
+    ) -> Optional[tuple[TaskRecord, WorkerRecord]]:
+        """Choose a workflow fairly, then use priority within that workflow."""
+        candidates = self.ready_assignment_candidates(now, lease_seconds)
+        if not candidates:
+            return None
+        by_workflow: dict[
+            tuple[int, str], list[tuple[TaskRecord, WorkerRecord]]
+        ] = {}
+        for task, worker in candidates:
+            by_workflow.setdefault(self.workflow_schedule_key(task), []).append(
+                (task, worker)
+            )
+        workflow_keys = sorted(by_workflow)
+        selected_workflow_key = workflow_keys[0]
+        if self.last_scheduled_workflow_key is not None:
+            selected_workflow_key = next(
+                (
+                    key
+                    for key in workflow_keys
+                    if key > self.last_scheduled_workflow_key
+                ),
+                workflow_keys[0],
+            )
+        return min(
+            by_workflow[selected_workflow_key],
+            key=lambda item: self.task_schedule_key(item[0]),
         )
 
 
@@ -335,9 +451,45 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 correlation_id,
                 WorkflowControlRecord(correlation_id=correlation_id),
             )
-            if control.last_event_id is not None and event_id <= control.last_event_id:
+            if (
+                control.latest_event_id is not None
+                and event_id <= control.latest_event_id
+            ):
                 return False
             reason = payload.get("reason")
+            if topic == "workflow.policy_set":
+                source = payload.get("source")
+                raw_limit = payload.get("max_active_assignments")
+                limit = None if raw_limit is None else _positive_int(raw_limit)
+                if (
+                    source not in {"default", "operator"}
+                    or (raw_limit is not None and limit is None)
+                    or not isinstance(reason, str)
+                    or not reason.strip()
+                ):
+                    return False
+                if source == "default":
+                    first_created_event_id = min(
+                        task.created_event_id
+                        for task in state.tasks.values()
+                        if task.correlation_id == correlation_id
+                        and task.created_event_id is not None
+                    )
+                    if (
+                        ev.get("actor") != "pm"
+                        or control.policy_event_id is not None
+                        or ev.get("caused_by") != first_created_event_id
+                    ):
+                        return False
+                elif ev.get("actor") == "pm":
+                    return False
+                control.policy_event_id = event_id
+                control.policy_actor = ev.get("actor")
+                control.policy_source = source
+                control.policy_reason = reason
+                control.max_active_assignments = limit
+                control.latest_event_id = event_id
+                return True
             if topic == "workflow.pause_requested":
                 if (
                     control.status != "active"
@@ -362,6 +514,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     and task.assignment_id is not None
                 )
                 control.interrupted_task_ids = ()
+                control.latest_event_id = event_id
                 control.last_event_id = event_id
                 return True
             if topic == "workflow.paused":
@@ -411,6 +564,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 )
                 control.paused_event_id = event_id
                 control.interrupted_task_ids = tuple(interrupted)
+                control.latest_event_id = event_id
                 control.last_event_id = event_id
                 return True
             if topic == "workflow.resume_requested":
@@ -428,6 +582,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     control.status = "resume_requested"
                 control.resume_request_event_id = event_id
                 control.resume_reason = reason
+                control.latest_event_id = event_id
                 control.last_event_id = event_id
                 return True
             if topic == "workflow.resumed":
@@ -443,6 +598,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     return False
                 control.status = "active"
                 control.resumed_event_id = event_id
+                control.latest_event_id = event_id
                 control.last_event_id = event_id
                 for task_id in control.interrupted_task_ids:
                     task = state.tasks.get(task_id)
@@ -845,6 +1001,42 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 task.status in {"pause_requested", "paused", "resume_requested"}
                 or state.workflow_is_paused(task.correlation_id)
             )
+            control = state.workflow_control(task.correlation_id)
+            current_policy_event_id = (
+                control.policy_event_id if control is not None else None
+            )
+            raw_policy_event_id = payload.get("workflow_policy_event_id")
+            assignment_policy_event_id = (
+                _positive_int(raw_policy_event_id)
+                if raw_policy_event_id is not None
+                else None
+            )
+            fenced_by_policy = (
+                assignment_policy_event_id != current_policy_event_id
+                or state.workflow_limit_reached(task.correlation_id)
+            )
+            raw_fairness = payload.get("fairness")
+            fairness_policy = None
+            previous_assignment_event_id = None
+            fenced_by_fairness = False
+            if raw_fairness is not None:
+                if not isinstance(raw_fairness, dict):
+                    return False
+                fairness_policy = raw_fairness.get("policy")
+                raw_previous = raw_fairness.get("previous_assignment_event_id")
+                if (
+                    fairness_policy != "workflow_round_robin_v1"
+                    or (
+                        raw_previous is not None
+                        and _positive_int(raw_previous) is None
+                    )
+                ):
+                    return False
+                previous_assignment_event_id = raw_previous
+                fenced_by_fairness = (
+                    previous_assignment_event_id
+                    != state.last_scheduling_assignment_event_id
+                )
             if task.status != "open" and not fenced_by_control:
                 return False
             payload_deadline_at = payload.get("deadline_at")
@@ -876,10 +1068,12 @@ def apply_event(state: PMState, ev: dict) -> bool:
             if not isinstance(worker_instance_id, str) or not worker_instance_id:
                 return False
             task.last_assignment_attempt = attempt
-            if fenced_by_control:
+            if fenced_by_control or fenced_by_policy or fenced_by_fairness:
                 # The event remains immutable evidence of a stale PM plan, but
-                # never becomes executable ownership. Advancing the delivery
-                # sequence gives the next post-resume assignment a fresh key.
+                # never becomes executable ownership. This includes policy
+                # changes and newly filled workflow limits as well as control
+                # boundaries. Advancing the delivery sequence gives the next
+                # valid assignment a fresh key.
                 task.status_event_id = event_id
                 return True
             task.status = "assigned"
@@ -889,9 +1083,14 @@ def apply_event(state: PMState, ev: dict) -> bool:
             task.worker_instance_id = worker_instance_id
             task.assignment_id = assignment_id
             task.assignment_event_id = event_id
+            task.assignment_policy_event_id = assignment_policy_event_id
+            task.assignment_fairness_policy = fairness_policy
+            task.assignment_previous_event_id = previous_assignment_event_id
             task.decision_needed = False
             task.decision_event_id = None
             task.block_reason = None
+            state.last_scheduling_assignment_event_id = event_id
+            state.last_scheduled_workflow_key = state.workflow_schedule_key(task)
             return True
 
         if topic == "task.started":

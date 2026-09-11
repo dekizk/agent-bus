@@ -218,6 +218,8 @@ def explain_task(
         )
     if task.status in ACTIVE_TASK_STATUSES:
         evidence.append(task.assignment_event_id)
+        evidence.append(task.assignment_policy_event_id)
+        evidence.append(task.assignment_previous_event_id)
         worker = state.workers.get(task.assignee or "")
         if worker is None:
             return _explanation(
@@ -246,6 +248,9 @@ def explain_task(
             f"Attempt {task.assignment_id} is {verb} {task.assignee} with a healthy lease.",
             evidence,
             lease_age_seconds=round(lease_age, 3),
+            workflow_policy_event_id=task.assignment_policy_event_id,
+            fairness_policy=task.assignment_fairness_policy,
+            previous_assignment_event_id=task.assignment_previous_event_id,
         )
 
     if task.status != "open":
@@ -310,6 +315,28 @@ def explain_task(
             seconds_remaining=round(task.not_before - now, 3),
         )
 
+    workflow_policy = state.workflow_control(task.correlation_id)
+    if (
+        workflow_policy is not None
+        and workflow_policy.policy_event_id is not None
+        and state.workflow_limit_reached(task.correlation_id)
+    ):
+        active_tasks = sorted(
+            state.workflow_active_tasks(task.correlation_id),
+            key=state.task_schedule_key,
+        )
+        evidence.append(workflow_policy.policy_event_id)
+        evidence.extend(item.assignment_event_id for item in active_tasks)
+        return _explanation(
+            "workflow_concurrency_limit",
+            f"Workflow {task.correlation_id} is using all "
+            f"{workflow_policy.max_active_assignments} permitted active assignment(s).",
+            evidence,
+            policy_event_id=workflow_policy.policy_event_id,
+            max_active_assignments=workflow_policy.max_active_assignments,
+            active_task_ids=[item.task_id for item in active_tasks],
+        )
+
     active = state.active_workers(now, lease_seconds)
     if not active:
         evidence.extend(worker.last_event_id for worker in state.workers.values())
@@ -366,17 +393,25 @@ def explain_task(
             ],
         )
 
-    task_key = state.task_schedule_key(task)
-    competitors = [
-        other
-        for other in state.tasks.values()
-        if other.task_id != task.task_id
-        and state.task_schedule_key(other) < task_key
-        and _ready_assignment_candidate(state, other, now, lease_seconds)
-    ]
-    if competitors:
-        preceding = min(competitors, key=state.task_schedule_key)
+    selected = state.next_assignment_candidate(now, lease_seconds)
+    if selected is not None and selected[0].task_id != task.task_id:
+        preceding = selected[0]
         evidence.append(preceding.created_event_id)
+        evidence.append(state.last_scheduling_assignment_event_id)
+        if preceding.correlation_id != task.correlation_id:
+            return _explanation(
+                "ready_after_fair_workflow",
+                f"Task is eligible; workflow {preceding.correlation_id} has the "
+                "next round-robin assignment turn.",
+                evidence,
+                priority=task.priority,
+                selected_workflow_correlation_id=preceding.correlation_id,
+                selected_task_id=preceding.task_id,
+                previous_assignment_event_id=(
+                    state.last_scheduling_assignment_event_id
+                ),
+                fairness_policy="workflow_round_robin_v1",
+            )
         if preceding.priority != task.priority:
             code = "ready_after_higher_priority"
             ordering = f"higher priority {preceding.priority}"
@@ -452,6 +487,12 @@ def task_view(
         "required_capabilities": sorted(task.required_capabilities),
         "priority": task.priority,
         "not_before": task.not_before,
+        "workflow_policy": _workflow_policy_view(workflow_control),
+        "assignment_policy_event_id": task.assignment_policy_event_id,
+        "assignment_fairness": {
+            "policy": task.assignment_fairness_policy,
+            "previous_assignment_event_id": task.assignment_previous_event_id,
+        },
         "dependencies": dependencies,
         "retry_policy": {
             "max_retries": task.max_retries,
@@ -570,12 +611,26 @@ def workflow_view(
             if control is not None
             else {"status": "active"}
         ),
+        "policy": _workflow_policy_view(control),
+        "scheduling": {
+            "policy": "workflow_round_robin_v1",
+            "last_assignment_event_id": state.last_scheduling_assignment_event_id,
+        },
         "telemetry": summarize_telemetry(relevant_telemetry),
         "event_ids": sorted(
             {
                 event_id
                 for task in tasks
                 for event_id in (task.created_event_id, task.status_event_id)
+                if event_id is not None
+            }
+            | {
+                event_id
+                for event_id in (
+                    control.policy_event_id if control is not None else None,
+                    control.last_event_id if control is not None else None,
+                    state.last_scheduling_assignment_event_id,
+                )
                 if event_id is not None
             }
         ),
@@ -766,32 +821,17 @@ def _get_task(state: CoordinationProjection, task_id: int) -> TaskRecord:
     return task
 
 
-def _ready_assignment_candidate(
-    state: CoordinationProjection,
-    task: TaskRecord,
-    now: float,
-    lease_seconds: float,
-) -> bool:
-    if (
-        task.status != "open"
-        or state.workflow_is_paused(task.correlation_id)
-        or task.assignment_id is not None
-        or task.ownership_owner != "agent-bus"
-        or (task.deadline_at is not None and now >= task.deadline_at)
-        or (task.not_before is not None and now < task.not_before)
-        or task.permanent_failure_pending
-        or (
-            task.last_failure_event_id is not None
-            and task.max_retries is not None
-            and task.retryable_failures > task.max_retries
-        )
-        or any(
-            state.tasks[dependency_id].status != "completed"
-            for dependency_id in task.depends_on
-        )
-    ):
-        return False
-    return state.choose_worker(task, now, lease_seconds) is not None
+def _workflow_policy_view(control) -> dict:
+    if control is None or control.policy_event_id is None:
+        return {"status": "unmaterialized"}
+    return {
+        "status": "active",
+        "event_id": control.policy_event_id,
+        "actor": control.policy_actor,
+        "source": control.policy_source,
+        "reason": control.policy_reason,
+        "max_active_assignments": control.max_active_assignments,
+    }
 
 
 def _explanation(

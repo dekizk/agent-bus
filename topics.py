@@ -24,6 +24,7 @@ COORDINATION_TOPICS = frozenset(
         "task.superseded",
         "workflow.pause_requested",
         "workflow.paused",
+        "workflow.policy_set",
         "workflow.resume_requested",
         "workflow.resumed",
         "decision.needed",

@@ -152,6 +152,26 @@ def build_parser() -> argparse.ArgumentParser:
     supersede.add_argument("--idempotency-key")
     _add_output_option(supersede)
 
+    policy = commands.add_parser(
+        "policy", help="set immutable scheduling policy for one workflow"
+    )
+    policy.add_argument("correlation_id")
+    concurrency = policy.add_mutually_exclusive_group(required=True)
+    concurrency.add_argument(
+        "--max-active-assignments",
+        type=_positive_int,
+        help="maximum simultaneously assigned or running tasks",
+    )
+    concurrency.add_argument(
+        "--unbounded",
+        action="store_true",
+        help="remove the workflow concurrency limit",
+    )
+    policy.add_argument("--reason", required=True)
+    policy.add_argument("--config", default="agent-bus.local.json")
+    policy.add_argument("--idempotency-key")
+    _add_output_option(policy)
+
     adapter = commands.add_parser(
         "adapter", help="check or run an existing agent integration"
     )
@@ -223,7 +243,7 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
-        "supersede", "adapter",
+        "supersede", "policy", "adapter",
     }:
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
@@ -509,6 +529,27 @@ def _run_local_command(
             f"Task {args.task_id} superseded by task {event['payload']['task_id']} · workflow {event['correlation_id']} · event #{event['id']}",
         )
         return 0
+    if args.command == "policy":
+        from client import BusClient
+
+        limit = None if args.unbounded else args.max_active_assignments
+        event = BusClient(local.bus_url, actor="human").set_workflow_policy(
+            args.correlation_id,
+            max_active_assignments=limit,
+            reason=args.reason,
+            idempotency_key=args.idempotency_key,
+        )
+        rendered_limit = "unbounded" if limit is None else str(limit)
+        _render_simple(
+            event,
+            args,
+            stdout,
+            (
+                f"Workflow {args.correlation_id} policy set to "
+                f"{rendered_limit} active assignment(s) · event #{event['id']}"
+            ),
+        )
+        return 0
     if args.command == "adapter" and args.adapter_command == "run":
         from client import BusClient
         from integration import IntegrationConfig
@@ -701,6 +742,21 @@ def _format_task(value: dict) -> str:
             f"{label}: {value['assignee']} ({value['worker_instance_id']}) · "
             f"{value['assignment_id']} · event #{value['assignment_event_id']}"
         )
+        fairness = value.get("assignment_fairness", {})
+        if fairness.get("policy"):
+            previous = fairness.get("previous_assignment_event_id")
+            lines.append(
+                "Fairness: workflow round-robin · previous assignment "
+                + (f"#{previous}" if previous is not None else "none")
+            )
+    policy = value["workflow_policy"]
+    if policy["status"] == "active":
+        limit = policy["max_active_assignments"]
+        lines.append(
+            "Workflow policy: "
+            + ("unbounded" if limit is None else f"max {limit} active")
+            + f" · event #{policy['event_id']}"
+        )
     if value["dependencies"]:
         labels = ", ".join(
             f"{item['task_id']}={item['status']}@#{item['status_event_id']}"
@@ -729,6 +785,23 @@ def _format_workflow(value: dict) -> str:
     if control.get("status") != "active":
         lines.append(
             f"  Control: {control.get('status')} · event #{control.get('last_event_id')}"
+        )
+    policy = value.get("policy", {"status": "unmaterialized"})
+    if policy.get("status") == "active":
+        limit = policy.get("max_active_assignments")
+        lines.append(
+            "  Policy: "
+            + ("unbounded concurrency" if limit is None else f"max {limit} active")
+            + f" · {policy.get('source')} · event #{policy.get('event_id')}"
+        )
+    else:
+        lines.append("  Policy: awaiting materialization by PM")
+    scheduling = value.get("scheduling", {})
+    if scheduling.get("policy"):
+        previous = scheduling.get("last_assignment_event_id")
+        lines.append(
+            "  Scheduling: workflow round-robin · latest assignment "
+            + (f"#{previous}" if previous is not None else "none")
         )
     for task in value["tasks"]:
         dependencies = [item["task_id"] for item in task["dependencies"]]

@@ -147,6 +147,35 @@ class BusClient:
             idempotency_key,
         )
 
+    def set_workflow_policy(
+        self,
+        correlation_id: str,
+        *,
+        max_active_assignments: Optional[int],
+        reason: str,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise ValueError("correlation_id must be a non-empty string")
+        if max_active_assignments is not None and (
+            not isinstance(max_active_assignments, int)
+            or isinstance(max_active_assignments, bool)
+            or max_active_assignments <= 0
+        ):
+            raise ValueError("max_active_assignments must be null or positive")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        return self.publish(
+            "workflow.policy_set",
+            {
+                "source": "operator",
+                "reason": reason.strip(),
+                "max_active_assignments": max_active_assignments,
+            },
+            correlation_id=correlation_id.strip(),
+            idempotency_key=idempotency_key or f"workflow-policy:{uuid.uuid4().hex}",
+        )
+
     def supersede_task(
         self,
         task_id: int,

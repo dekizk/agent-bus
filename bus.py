@@ -656,6 +656,32 @@ def validate_event(
         _require_string(payload, "reason")
         return
 
+    if topic == "workflow.policy_set":
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise EventValidationError(
+                "workflow.policy_set requires a non-empty correlation_id"
+            )
+        source = payload.get("source")
+        if source not in {"default", "operator"}:
+            raise EventValidationError(
+                "payload.source must be default or operator"
+            )
+        if source == "default" and actor != "pm":
+            raise EventValidationError(
+                "default workflow policy must be emitted by pm"
+            )
+        if source == "operator" and actor == "pm":
+            raise EventValidationError(
+                "operator workflow policy must not be emitted by pm"
+            )
+        _require_string(payload, "reason")
+        limit = payload.get("max_active_assignments")
+        if limit is not None and not _is_positive_int(limit):
+            raise EventValidationError(
+                "payload.max_active_assignments must be null or a positive integer"
+            )
+        return
+
     if topic in {"workflow.paused", "workflow.resumed"}:
         if actor != "pm":
             raise EventValidationError(f"{topic} must be emitted by pm")
@@ -699,6 +725,29 @@ def validate_event(
             _require_string(payload, field)
         if not _is_positive_int(payload.get("attempt")):
             raise EventValidationError("payload.attempt must be a positive integer")
+        policy_event_id = payload.get("workflow_policy_event_id")
+        if policy_event_id is not None and not _is_positive_int(policy_event_id):
+            raise EventValidationError(
+                "payload.workflow_policy_event_id must be null or a positive integer"
+            )
+        fairness = payload.get("fairness")
+        if fairness is not None:
+            if not isinstance(fairness, dict) or set(fairness) != {
+                "policy",
+                "previous_assignment_event_id",
+            }:
+                raise EventValidationError(
+                    "payload.fairness must contain policy and previous_assignment_event_id"
+                )
+            if fairness.get("policy") != "workflow_round_robin_v1":
+                raise EventValidationError(
+                    "payload.fairness.policy must be workflow_round_robin_v1"
+                )
+            previous = fairness.get("previous_assignment_event_id")
+            if previous is not None and not _is_positive_int(previous):
+                raise EventValidationError(
+                    "payload.fairness.previous_assignment_event_id must be null or a positive integer"
+                )
         _validate_capabilities(payload)
         _validate_json_object(
             payload,

@@ -7,7 +7,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Optional
 
 
 LOCAL_CONFIG_VERSION = 1
@@ -21,6 +21,7 @@ class LocalConfig:
     port: int
     database_path: Path
     worker_lease_seconds: float
+    default_workflow_max_active_assignments: Optional[int] = None
 
     @property
     def bus_url(self) -> str:
@@ -37,11 +38,15 @@ class LocalConfig:
             ) from exc
         except json.JSONDecodeError as exc:
             raise ValueError(f"local config is not valid JSON: {exc}") from exc
-        if not isinstance(value, Mapping) or set(value) != {
-            "schema_version",
-            "bus",
-            "worker_lease_seconds",
-        }:
+        required_keys = {"schema_version", "bus", "worker_lease_seconds"}
+        allowed_keys = required_keys | {
+            "default_workflow_max_active_assignments"
+        }
+        if (
+            not isinstance(value, Mapping)
+            or not required_keys.issubset(value)
+            or not set(value).issubset(allowed_keys)
+        ):
             raise ValueError("local config has an invalid shape")
         if value["schema_version"] != LOCAL_CONFIG_VERSION:
             raise ValueError(
@@ -70,12 +75,22 @@ class LocalConfig:
             or lease <= 0
         ):
             raise ValueError("worker_lease_seconds must be positive")
+        workflow_limit = value.get("default_workflow_max_active_assignments")
+        if workflow_limit is not None and (
+            not isinstance(workflow_limit, int)
+            or isinstance(workflow_limit, bool)
+            or workflow_limit <= 0
+        ):
+            raise ValueError(
+                "default_workflow_max_active_assignments must be null or positive"
+            )
         return cls(
             path=config_path,
             host=host,
             port=port,
             database_path=database_path.resolve(),
             worker_lease_seconds=float(lease),
+            default_workflow_max_active_assignments=workflow_limit,
         )
 
     def apply_environment(self) -> None:
@@ -83,6 +98,11 @@ class LocalConfig:
         os.environ["AGENT_BUS_URL"] = self.bus_url
         os.environ["AGENT_BUS_DB_PATH"] = str(self.database_path)
         os.environ["AGENT_BUS_WORKER_LEASE_SECONDS"] = str(self.worker_lease_seconds)
+        os.environ["AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"] = (
+            str(self.default_workflow_max_active_assignments)
+            if self.default_workflow_max_active_assignments is not None
+            else "unbounded"
+        )
 
 
 def initialize_local_config(directory: str | Path) -> Path:
@@ -97,6 +117,7 @@ def initialize_local_config(directory: str | Path) -> Path:
             "database_path": ".agent-bus/events.db",
         },
         "worker_lease_seconds": 20,
+        "default_workflow_max_active_assignments": 4,
     }
     encoded = json.dumps(value, indent=2, sort_keys=True) + "\n"
     try:
