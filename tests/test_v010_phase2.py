@@ -13,7 +13,7 @@ from pm_agent import PMState, plan_next_emission
 from projection import apply_event
 from runtime import WorkerRuntime
 from tests.test_pm_agent import assigned, created, event, registered
-from tests.test_runtime import FakeBus as RuntimeFakeBus, assigned_event
+from tests.test_runtime import FakeBus as RuntimeFakeBus, RuntimeTestCase, assigned_event
 
 
 def materialize(planned, event_id, *, ts=101.0):
@@ -421,7 +421,7 @@ class PhaseTwoBusTests(unittest.TestCase):
             )
 
 
-class PhaseTwoRuntimeTests(unittest.TestCase):
+class PhaseTwoRuntimeTests(RuntimeTestCase):
     def test_workflow_pause_revokes_executor_and_suppresses_late_result(self):
         began = threading.Event()
         release = threading.Event()

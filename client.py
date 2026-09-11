@@ -3,6 +3,7 @@
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -15,6 +16,7 @@ from typing import Callable, Iterator, Optional
 import httpx
 
 CURRENT_SCHEMA_VERSION = 2
+_UNSET = object()
 
 
 class BusProtocolError(RuntimeError):
@@ -151,12 +153,120 @@ class BusClient:
         self,
         correlation_id: str,
         *,
-        max_active_assignments: Optional[int],
+        max_active_assignments: object = _UNSET,
+        max_total_tokens: object = _UNSET,
+        max_total_cost_usd: object = _UNSET,
+        max_attempts: object = _UNSET,
+        max_wall_clock_seconds: object = _UNSET,
+        reserve_tokens_per_assignment: object = _UNSET,
+        reserve_cost_usd_per_assignment: object = _UNSET,
         reason: str,
         idempotency_key: Optional[str] = None,
     ) -> dict:
         if not isinstance(correlation_id, str) or not correlation_id.strip():
             raise ValueError("correlation_id must be a non-empty string")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        payload = {"source": "operator", "reason": reason.strip()}
+        integer_limits = {
+            "max_active_assignments": max_active_assignments,
+            "max_total_tokens": max_total_tokens,
+            "max_attempts": max_attempts,
+        }
+        number_limits = {
+            "max_total_cost_usd": max_total_cost_usd,
+            "max_wall_clock_seconds": max_wall_clock_seconds,
+        }
+        for name, value in integer_limits.items():
+            if value is _UNSET:
+                continue
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be null or positive")
+            payload[name] = value
+        for name, value in number_limits.items():
+            if value is _UNSET:
+                continue
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be null or positive")
+            payload[name] = value
+        for name, value, integer in (
+            (
+                "reserve_tokens_per_assignment",
+                reserve_tokens_per_assignment,
+                True,
+            ),
+            (
+                "reserve_cost_usd_per_assignment",
+                reserve_cost_usd_per_assignment,
+                False,
+            ),
+        ):
+            if value is _UNSET:
+                continue
+            valid_type = (
+                isinstance(value, int)
+                if integer
+                else isinstance(value, (int, float))
+            )
+            if not valid_type or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+            if not integer and not math.isfinite(value):
+                raise ValueError(f"{name} must be non-negative")
+            payload[name] = value
+        if set(payload) == {"source", "reason"}:
+            raise ValueError("at least one workflow policy field is required")
+        token_fields = {
+            "max_total_tokens",
+            "reserve_tokens_per_assignment",
+        }
+        if token_fields.intersection(payload) and not token_fields.issubset(payload):
+            raise ValueError("token budget and reservation must be changed together")
+        if payload.get("max_total_tokens") is not None and not (
+            0 < payload["reserve_tokens_per_assignment"]
+            <= payload["max_total_tokens"]
+        ):
+            raise ValueError(
+                "finite token budget requires a positive reservation no larger than the budget"
+            )
+        cost_fields = {
+            "max_total_cost_usd",
+            "reserve_cost_usd_per_assignment",
+        }
+        if cost_fields.intersection(payload) and not cost_fields.issubset(payload):
+            raise ValueError("cost budget and reservation must be changed together")
+        if payload.get("max_total_cost_usd") is not None and not (
+            0 < payload["reserve_cost_usd_per_assignment"]
+            <= payload["max_total_cost_usd"]
+        ):
+            raise ValueError(
+                "finite cost budget requires a positive reservation no larger than the budget"
+            )
+        return self.publish(
+            "workflow.policy_set",
+            payload,
+            correlation_id=correlation_id.strip(),
+            idempotency_key=idempotency_key or f"workflow-policy:{uuid.uuid4().hex}",
+        )
+
+    def set_agent_policy(
+        self,
+        agent_name: str,
+        *,
+        max_active_assignments: Optional[int],
+        reason: str,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        if not isinstance(agent_name, str) or not agent_name.strip():
+            raise ValueError("agent_name must be a non-empty string")
         if max_active_assignments is not None and (
             not isinstance(max_active_assignments, int)
             or isinstance(max_active_assignments, bool)
@@ -166,14 +276,14 @@ class BusClient:
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reason must be a non-empty string")
         return self.publish(
-            "workflow.policy_set",
+            "agent.policy_set",
             {
+                "agent_name": agent_name.strip(),
                 "source": "operator",
                 "reason": reason.strip(),
                 "max_active_assignments": max_active_assignments,
             },
-            correlation_id=correlation_id.strip(),
-            idempotency_key=idempotency_key or f"workflow-policy:{uuid.uuid4().hex}",
+            idempotency_key=idempotency_key or f"agent-policy:{uuid.uuid4().hex}",
         )
 
     def supersede_task(

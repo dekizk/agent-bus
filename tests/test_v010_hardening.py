@@ -18,7 +18,7 @@ from pm_agent import (
 from projection import apply_event, replay_events
 from runtime import WorkerRuntime
 from tests.test_pm_agent import assigned, created, event, registered
-from tests.test_runtime import FakeBus as RuntimeFakeBus, assigned_event
+from tests.test_runtime import FakeBus as RuntimeFakeBus, RuntimeTestCase, assigned_event
 
 
 class DirectPMBus:
@@ -560,7 +560,7 @@ class HardeningProjectionTests(unittest.TestCase):
         self.assertEqual("paused", explanation["details"]["control_status"])
 
 
-class HardeningRuntimeTests(unittest.TestCase):
+class HardeningRuntimeTests(RuntimeTestCase):
     def test_worker_ignores_assignment_inside_workflow_pause(self):
         class RecordingExecutor:
             def __init__(self):

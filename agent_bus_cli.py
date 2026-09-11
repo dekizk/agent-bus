@@ -156,21 +156,80 @@ def build_parser() -> argparse.ArgumentParser:
         "policy", help="set immutable scheduling policy for one workflow"
     )
     policy.add_argument("correlation_id")
-    concurrency = policy.add_mutually_exclusive_group(required=True)
+    concurrency = policy.add_mutually_exclusive_group()
     concurrency.add_argument(
         "--max-active-assignments",
         type=_positive_int,
+        default=argparse.SUPPRESS,
         help="maximum simultaneously assigned or running tasks",
     )
     concurrency.add_argument(
+        "--unbounded-concurrency",
         "--unbounded",
-        action="store_true",
+        dest="max_active_assignments",
+        action="store_const",
+        const=None,
+        default=argparse.SUPPRESS,
         help="remove the workflow concurrency limit",
+    )
+    for option, destination, value_type, label in (
+        ("tokens", "max_total_tokens", _positive_int, "token"),
+        ("cost", "max_total_cost_usd", _positive_number, "cost"),
+        ("attempts", "max_attempts", _positive_int, "attempt"),
+        (
+            "wall-clock",
+            "max_wall_clock_seconds",
+            _positive_number,
+            "wall-clock",
+        ),
+    ):
+        group = policy.add_mutually_exclusive_group()
+        group.add_argument(
+            f"--max-{option}",
+            dest=destination,
+            type=value_type,
+            default=argparse.SUPPRESS,
+            help=f"maximum workflow {label} budget",
+        )
+        group.add_argument(
+            f"--unbounded-{option}",
+            dest=destination,
+            action="store_const",
+            const=None,
+            default=argparse.SUPPRESS,
+            help=f"remove the workflow {label} budget",
+        )
+    policy.add_argument(
+        "--reserve-tokens-per-assignment",
+        type=_nonnegative_int,
+        default=argparse.SUPPRESS,
+    )
+    policy.add_argument(
+        "--reserve-cost-per-assignment",
+        dest="reserve_cost_usd_per_assignment",
+        type=_nonnegative_number,
+        default=argparse.SUPPRESS,
     )
     policy.add_argument("--reason", required=True)
     policy.add_argument("--config", default="agent-bus.local.json")
     policy.add_argument("--idempotency-key")
     _add_output_option(policy)
+
+    agent_policy = commands.add_parser(
+        "agent-policy", help="set an immutable concurrency policy for one agent"
+    )
+    agent_policy.add_argument("agent_name")
+    agent_concurrency = agent_policy.add_mutually_exclusive_group(required=True)
+    agent_concurrency.add_argument(
+        "--max-active-assignments", type=_positive_int
+    )
+    agent_concurrency.add_argument(
+        "--unbounded", action="store_true"
+    )
+    agent_policy.add_argument("--reason", required=True)
+    agent_policy.add_argument("--config", default="agent-bus.local.json")
+    agent_policy.add_argument("--idempotency-key")
+    _add_output_option(agent_policy)
 
     adapter = commands.add_parser(
         "adapter", help="check or run an existing agent integration"
@@ -243,7 +302,7 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
-        "supersede", "policy", "adapter",
+        "supersede", "policy", "agent-policy", "adapter",
     }:
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
@@ -532,22 +591,54 @@ def _run_local_command(
     if args.command == "policy":
         from client import BusClient
 
-        limit = None if args.unbounded else args.max_active_assignments
+        field_names = (
+            "max_active_assignments",
+            "max_total_tokens",
+            "max_total_cost_usd",
+            "max_attempts",
+            "max_wall_clock_seconds",
+            "reserve_tokens_per_assignment",
+            "reserve_cost_usd_per_assignment",
+        )
+        changes = {
+            field_name: getattr(args, field_name)
+            for field_name in field_names
+            if hasattr(args, field_name)
+        }
+        if not changes:
+            raise ValueError("at least one workflow policy option is required")
         event = BusClient(local.bus_url, actor="human").set_workflow_policy(
             args.correlation_id,
-            max_active_assignments=limit,
             reason=args.reason,
             idempotency_key=args.idempotency_key,
+            **changes,
         )
-        rendered_limit = "unbounded" if limit is None else str(limit)
         _render_simple(
             event,
             args,
             stdout,
             (
-                f"Workflow {args.correlation_id} policy set to "
-                f"{rendered_limit} active assignment(s) · event #{event['id']}"
+                f"Workflow {args.correlation_id} policy updated "
+                f"({', '.join(changes)}) · event #{event['id']}"
             ),
+        )
+        return 0
+    if args.command == "agent-policy":
+        from client import BusClient
+
+        limit = None if args.unbounded else args.max_active_assignments
+        event = BusClient(local.bus_url, actor="human").set_agent_policy(
+            args.agent_name,
+            max_active_assignments=limit,
+            reason=args.reason,
+            idempotency_key=args.idempotency_key,
+        )
+        rendered = "unbounded" if limit is None else f"max {limit} active"
+        _render_simple(
+            event,
+            args,
+            stdout,
+            f"Agent {args.agent_name} policy set to {rendered} · event #{event['id']}",
         )
         return 0
     if args.command == "adapter" and args.adapter_command == "run":
@@ -707,7 +798,13 @@ def _format_workers(value: dict) -> str:
     for worker in workers:
         capabilities = ", ".join(worker["capabilities"]) or "none"
         lines.append(
-            f"{worker['name']} · {worker['status']} · load {worker['load']}/{worker['capacity']} · "
+            f"{worker['name']} · {worker['status']} · load {worker['load']}/{worker['effective_capacity']}"
+            + (
+                f" (advertised {worker['capacity']})"
+                if worker["effective_capacity"] != worker["capacity"]
+                else ""
+            )
+            + " · "
             f"lease {worker['lease_age_seconds']:.1f}s · capabilities: {capabilities} · event #{worker['last_event_id']}"
         )
     return "\n".join(lines)
@@ -749,6 +846,12 @@ def _format_task(value: dict) -> str:
                 "Fairness: workflow round-robin · previous assignment "
                 + (f"#{previous}" if previous is not None else "none")
             )
+        reservation = value.get("budget_reservation", {})
+        if reservation.get("tokens") or reservation.get("cost_usd"):
+            lines.append(
+                f"Reservation: {reservation.get('tokens', 0)} tokens · "
+                f"${reservation.get('cost_usd', 0):.6f}"
+            )
     policy = value["workflow_policy"]
     if policy["status"] == "active":
         limit = policy["max_active_assignments"]
@@ -757,6 +860,19 @@ def _format_task(value: dict) -> str:
             + ("unbounded" if limit is None else f"max {limit} active")
             + f" · event #{policy['event_id']}"
         )
+        budget_labels = []
+        if policy.get("max_total_tokens") is not None:
+            budget_labels.append(f"{policy['max_total_tokens']} tokens")
+        if policy.get("max_total_cost_usd") is not None:
+            budget_labels.append(f"${policy['max_total_cost_usd']:.6f}")
+        if policy.get("max_attempts") is not None:
+            budget_labels.append(f"{policy['max_attempts']} attempts")
+        if policy.get("max_wall_clock_seconds") is not None:
+            budget_labels.append(
+                f"{policy['max_wall_clock_seconds']}s wall clock"
+            )
+        if budget_labels:
+            lines.append("Workflow budgets: " + " · ".join(budget_labels))
     if value["dependencies"]:
         labels = ", ".join(
             f"{item['task_id']}={item['status']}@#{item['status_event_id']}"
@@ -803,6 +919,13 @@ def _format_workflow(value: dict) -> str:
             "  Scheduling: workflow round-robin · latest assignment "
             + (f"#{previous}" if previous is not None else "none")
         )
+    budget = value.get("budget", {})
+    lines.append(
+        f"  Accounting: {budget.get('tokens', 0)} tokens · "
+        f"${budget.get('cost_usd', 0):.6f} · "
+        f"{budget.get('attempts', 0)} attempts · "
+        f"{budget.get('active_reservations', 0)} active reservations"
+    )
     for task in value["tasks"]:
         dependencies = [item["task_id"] for item in task["dependencies"]]
         dependency_text = f" · depends on {dependencies}" if dependencies else ""
@@ -875,6 +998,16 @@ def _positive_number(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
+def _nonnegative_number(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative finite number")
     return parsed
 
 

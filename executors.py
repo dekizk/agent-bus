@@ -181,6 +181,10 @@ class AssignmentContext:
     workflow_policy_event_id: Optional[int] = None
     fairness_policy: Optional[str] = None
     previous_assignment_event_id: Optional[int] = None
+    agent_policy_event_id: Optional[int] = None
+    budget_policy_event_id: Optional[int] = None
+    reserved_tokens: int = 0
+    reserved_cost_usd: float = 0.0
 
     def __post_init__(self) -> None:
         _positive_int(self.task_id, "task_id")
@@ -213,6 +217,24 @@ class AssignmentContext:
             raise ValueError(
                 "previous_assignment_event_id requires fairness_policy"
             )
+        if self.agent_policy_event_id is not None:
+            _positive_int(self.agent_policy_event_id, "agent_policy_event_id")
+        _nonnegative_int(self.reserved_tokens, "reserved_tokens")
+        if (
+            not isinstance(self.reserved_cost_usd, (int, float))
+            or isinstance(self.reserved_cost_usd, bool)
+            or not math.isfinite(self.reserved_cost_usd)
+            or self.reserved_cost_usd < 0
+        ):
+            raise ValueError("reserved_cost_usd must be a non-negative number")
+        if self.budget_policy_event_id is not None:
+            _positive_int(self.budget_policy_event_id, "budget_policy_event_id")
+            if self.budget_policy_event_id != self.workflow_policy_event_id:
+                raise ValueError(
+                    "budget_policy_event_id must match workflow_policy_event_id"
+                )
+        elif self.reserved_tokens or self.reserved_cost_usd:
+            raise ValueError("non-zero reservation requires budget_policy_event_id")
         _nonnegative_int(self.retryable_failures, "retryable_failures")
         if self.deadline_at is not None and (
             not isinstance(self.deadline_at, (int, float))
@@ -284,6 +306,15 @@ class AssignmentContext:
             raise ValueError(
                 "assignment fairness must contain policy and previous_assignment_event_id"
             )
+        reservation = payload.get("budget_reservation")
+        if reservation is None:
+            reservation = {}
+        elif not isinstance(reservation, Mapping) or set(reservation) != {
+            "policy_event_id",
+            "tokens",
+            "cost_usd",
+        }:
+            raise ValueError("assignment budget_reservation has an invalid shape")
         assignment = cls(
             correlation_id=event.get("correlation_id"),
             task_id=payload.get("task_id"),
@@ -308,6 +339,10 @@ class AssignmentContext:
             previous_assignment_event_id=fairness.get(
                 "previous_assignment_event_id"
             ),
+            agent_policy_event_id=payload.get("agent_policy_event_id"),
+            budget_policy_event_id=reservation.get("policy_event_id"),
+            reserved_tokens=reservation.get("tokens", 0),
+            reserved_cost_usd=reservation.get("cost_usd", 0.0),
         )
         if not isinstance(dependency_refs, list):
             raise ValueError("assignment dependency_refs must be a list")
@@ -361,6 +396,7 @@ class AssignmentContext:
             "retryable_failures": self.retryable_failures,
             "deadline_at": self.deadline_at,
             "workflow_policy_event_id": self.workflow_policy_event_id,
+            "agent_policy_event_id": self.agent_policy_event_id,
             "assignee": self.assignee,
             "worker_instance_id": self.worker_instance_id,
             "ownership": {
@@ -374,6 +410,12 @@ class AssignmentContext:
             result["fairness"] = {
                 "policy": self.fairness_policy,
                 "previous_assignment_event_id": self.previous_assignment_event_id,
+            }
+        if self.budget_policy_event_id is not None:
+            result["budget_reservation"] = {
+                "policy_event_id": self.budget_policy_event_id,
+                "tokens": self.reserved_tokens,
+                "cost_usd": self.reserved_cost_usd,
             }
         return result
 

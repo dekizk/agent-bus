@@ -22,6 +22,13 @@ class LocalConfig:
     database_path: Path
     worker_lease_seconds: float
     default_workflow_max_active_assignments: Optional[int] = None
+    default_agent_max_active_assignments: Optional[int] = None
+    default_workflow_max_total_tokens: Optional[int] = None
+    default_workflow_max_total_cost_usd: Optional[float] = None
+    default_workflow_max_attempts: Optional[int] = None
+    default_workflow_max_wall_clock_seconds: Optional[float] = None
+    default_workflow_reserve_tokens_per_assignment: int = 0
+    default_workflow_reserve_cost_usd_per_assignment: float = 0.0
 
     @property
     def bus_url(self) -> str:
@@ -40,7 +47,14 @@ class LocalConfig:
             raise ValueError(f"local config is not valid JSON: {exc}") from exc
         required_keys = {"schema_version", "bus", "worker_lease_seconds"}
         allowed_keys = required_keys | {
-            "default_workflow_max_active_assignments"
+            "default_workflow_max_active_assignments",
+            "default_agent_max_active_assignments",
+            "default_workflow_max_total_tokens",
+            "default_workflow_max_total_cost_usd",
+            "default_workflow_max_attempts",
+            "default_workflow_max_wall_clock_seconds",
+            "default_workflow_reserve_tokens_per_assignment",
+            "default_workflow_reserve_cost_usd_per_assignment",
         }
         if (
             not isinstance(value, Mapping)
@@ -84,6 +98,64 @@ class LocalConfig:
             raise ValueError(
                 "default_workflow_max_active_assignments must be null or positive"
             )
+        agent_limit = value.get("default_agent_max_active_assignments")
+        token_limit = value.get("default_workflow_max_total_tokens")
+        attempt_limit = value.get("default_workflow_max_attempts")
+        for field_name, field_value in (
+            ("default_agent_max_active_assignments", agent_limit),
+            ("default_workflow_max_total_tokens", token_limit),
+            ("default_workflow_max_attempts", attempt_limit),
+        ):
+            if field_value is not None and (
+                not isinstance(field_value, int)
+                or isinstance(field_value, bool)
+                or field_value <= 0
+            ):
+                raise ValueError(f"{field_name} must be null or positive")
+        cost_limit = value.get("default_workflow_max_total_cost_usd")
+        wall_limit = value.get("default_workflow_max_wall_clock_seconds")
+        for field_name, field_value in (
+            ("default_workflow_max_total_cost_usd", cost_limit),
+            ("default_workflow_max_wall_clock_seconds", wall_limit),
+        ):
+            if field_value is not None and (
+                not isinstance(field_value, (int, float))
+                or isinstance(field_value, bool)
+                or not math.isfinite(field_value)
+                or field_value <= 0
+            ):
+                raise ValueError(f"{field_name} must be null or positive")
+        reserve_tokens = value.get(
+            "default_workflow_reserve_tokens_per_assignment", 0
+        )
+        if (
+            not isinstance(reserve_tokens, int)
+            or isinstance(reserve_tokens, bool)
+            or reserve_tokens < 0
+        ):
+            raise ValueError(
+                "default_workflow_reserve_tokens_per_assignment must be non-negative"
+            )
+        reserve_cost = value.get(
+            "default_workflow_reserve_cost_usd_per_assignment", 0.0
+        )
+        if (
+            not isinstance(reserve_cost, (int, float))
+            or isinstance(reserve_cost, bool)
+            or not math.isfinite(reserve_cost)
+            or reserve_cost < 0
+        ):
+            raise ValueError(
+                "default_workflow_reserve_cost_usd_per_assignment must be non-negative"
+            )
+        if token_limit is not None and not 0 < reserve_tokens <= token_limit:
+            raise ValueError(
+                "a finite default token budget requires a positive reservation no larger than the budget"
+            )
+        if cost_limit is not None and not 0 < reserve_cost <= cost_limit:
+            raise ValueError(
+                "a finite default cost budget requires a positive reservation no larger than the budget"
+            )
         return cls(
             path=config_path,
             host=host,
@@ -91,6 +163,17 @@ class LocalConfig:
             database_path=database_path.resolve(),
             worker_lease_seconds=float(lease),
             default_workflow_max_active_assignments=workflow_limit,
+            default_agent_max_active_assignments=agent_limit,
+            default_workflow_max_total_tokens=token_limit,
+            default_workflow_max_total_cost_usd=(
+                float(cost_limit) if cost_limit is not None else None
+            ),
+            default_workflow_max_attempts=attempt_limit,
+            default_workflow_max_wall_clock_seconds=(
+                float(wall_limit) if wall_limit is not None else None
+            ),
+            default_workflow_reserve_tokens_per_assignment=reserve_tokens,
+            default_workflow_reserve_cost_usd_per_assignment=float(reserve_cost),
         )
 
     def apply_environment(self) -> None:
@@ -103,6 +186,33 @@ class LocalConfig:
             if self.default_workflow_max_active_assignments is not None
             else "unbounded"
         )
+        optional_values = {
+            "AGENT_BUS_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS": (
+                self.default_agent_max_active_assignments
+            ),
+            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS": (
+                self.default_workflow_max_total_tokens
+            ),
+            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD": (
+                self.default_workflow_max_total_cost_usd
+            ),
+            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ATTEMPTS": (
+                self.default_workflow_max_attempts
+            ),
+            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS": (
+                self.default_workflow_max_wall_clock_seconds
+            ),
+        }
+        for name, configured in optional_values.items():
+            os.environ[name] = (
+                str(configured) if configured is not None else "unbounded"
+            )
+        os.environ[
+            "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT"
+        ] = str(self.default_workflow_reserve_tokens_per_assignment)
+        os.environ[
+            "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT"
+        ] = str(self.default_workflow_reserve_cost_usd_per_assignment)
 
 
 def initialize_local_config(directory: str | Path) -> Path:
@@ -118,6 +228,13 @@ def initialize_local_config(directory: str | Path) -> Path:
         },
         "worker_lease_seconds": 20,
         "default_workflow_max_active_assignments": 4,
+        "default_agent_max_active_assignments": None,
+        "default_workflow_max_total_tokens": None,
+        "default_workflow_max_total_cost_usd": None,
+        "default_workflow_max_attempts": None,
+        "default_workflow_max_wall_clock_seconds": None,
+        "default_workflow_reserve_tokens_per_assignment": 0,
+        "default_workflow_reserve_cost_usd_per_assignment": 0.0,
     }
     encoded = json.dumps(value, indent=2, sort_keys=True) + "\n"
     try:

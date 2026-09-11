@@ -37,6 +37,7 @@ class WorkerRecord:
     capacity: int = 1
     capabilities: frozenset[str] = field(default_factory=frozenset)
     last_event_id: int = 0
+    registered_event_id: int = 0
 
 
 @dataclass
@@ -61,7 +62,11 @@ class TaskRecord:
     assignment_policy_event_id: Optional[int] = None
     assignment_fairness_policy: Optional[str] = None
     assignment_previous_event_id: Optional[int] = None
+    assignment_agent_policy_event_id: Optional[int] = None
+    assignment_reserved_tokens: int = 0
+    assignment_reserved_cost_usd: float = 0.0
     created_event_id: Optional[int] = None
+    created_at: Optional[float] = None
     status_event_id: Optional[int] = None
     open_event_id: Optional[int] = None
     block_event_id: Optional[int] = None
@@ -126,6 +131,12 @@ class WorkflowControlRecord:
     policy_source: Optional[str] = None
     policy_reason: Optional[str] = None
     max_active_assignments: Optional[int] = None
+    max_total_tokens: Optional[int] = None
+    max_total_cost_usd: Optional[float] = None
+    max_attempts: Optional[int] = None
+    max_wall_clock_seconds: Optional[float] = None
+    reserve_tokens_per_assignment: int = 0
+    reserve_cost_usd_per_assignment: float = 0.0
     # Immutable assignment ownership observed when the pause request entered
     # the ordered log. The acknowledgement names this snapshot even if a
     # stronger task control wins before the PM publishes it.
@@ -135,11 +146,57 @@ class WorkflowControlRecord:
     last_event_id: Optional[int] = None
 
 
+@dataclass
+class AgentPolicyRecord:
+    agent_name: str
+    policy_event_id: int
+    actor: str
+    source: str
+    reason: str
+    max_active_assignments: Optional[int] = None
+
+
+@dataclass
+class AssignmentAccountingRecord:
+    assignment_id: str
+    assignment_event_id: int
+    task_id: int
+    correlation_id: Optional[str]
+    assignee: str
+    worker_instance_id: str
+    workflow_policy_event_id: Optional[int]
+    agent_policy_event_id: Optional[int]
+    reserved_tokens: int = 0
+    reserved_cost_usd: float = 0.0
+    active: bool = True
+    ended_event_id: Optional[int] = None
+    # invocation_id -> (accounting event id, tokens, cost)
+    usage: dict[str, tuple[int, Optional[int], Optional[float]]] = field(
+        default_factory=dict
+    )
+
+    def charged_tokens(self) -> int:
+        reported = sum(item[1] or 0 for item in self.usage.values())
+        missing = not self.usage or any(item[1] is None for item in self.usage.values())
+        return max(self.reserved_tokens, reported) if self.active or missing else reported
+
+    def charged_cost_usd(self) -> float:
+        reported = sum(item[2] or 0.0 for item in self.usage.values())
+        missing = not self.usage or any(item[2] is None for item in self.usage.values())
+        return (
+            max(self.reserved_cost_usd, reported)
+            if self.active or missing
+            else reported
+        )
+
+
 class PMState:
     def __init__(self):
         self.workers: dict[str, WorkerRecord] = {}
         self.tasks: dict[int, TaskRecord] = {}
         self.workflows: dict[str, WorkflowControlRecord] = {}
+        self.agent_policies: dict[str, AgentPolicyRecord] = {}
+        self.assignment_accounting: dict[str, AssignmentAccountingRecord] = {}
         # Derived exclusively from accepted task.assigned events. This is the
         # round-robin cursor, not hidden mutable scheduler state.
         self.last_scheduling_assignment_event_id: Optional[int] = None
@@ -171,6 +228,18 @@ class PMState:
             and task.worker_instance_id == worker.instance_id
         )
 
+    def agent_policy(self, agent_name: str) -> Optional[AgentPolicyRecord]:
+        return self.agent_policies.get(agent_name)
+
+    def agent_limit(self, worker: WorkerRecord) -> int:
+        policy = self.agent_policy(worker.name)
+        if policy is None or policy.max_active_assignments is None:
+            return worker.capacity
+        return min(worker.capacity, policy.max_active_assignments)
+
+    def agent_limit_reached(self, worker: WorkerRecord) -> bool:
+        return self.worker_load(worker) >= self.agent_limit(worker)
+
     def workflow_active_tasks(self, correlation_id: Optional[str]) -> list[TaskRecord]:
         if correlation_id is None:
             return []
@@ -188,6 +257,96 @@ class PMState:
         limit = control.max_active_assignments
         return limit is not None and len(self.workflow_active_tasks(correlation_id)) >= limit
 
+    def workflow_first_created_at(self, correlation_id: Optional[str]) -> Optional[float]:
+        values = [
+            task.created_at
+            for task in self.tasks.values()
+            if task.correlation_id == correlation_id and task.created_at is not None
+        ]
+        return min(values) if values else None
+
+    def workflow_accounting(
+        self, correlation_id: Optional[str]
+    ) -> list[AssignmentAccountingRecord]:
+        return [
+            record
+            for record in self.assignment_accounting.values()
+            if record.correlation_id == correlation_id
+        ]
+
+    def workflow_budget_usage(self, correlation_id: Optional[str]) -> dict[str, object]:
+        records = self.workflow_accounting(correlation_id)
+        return {
+            "tokens": sum(record.charged_tokens() for record in records),
+            "cost_usd": sum(record.charged_cost_usd() for record in records),
+            "attempts": len(records),
+            "active_reservations": sum(1 for record in records if record.active),
+            "missing_token_reports": sum(
+                1
+                for record in records
+                if not record.active
+                and (
+                    not record.usage
+                    or any(item[1] is None for item in record.usage.values())
+                )
+            ),
+            "missing_cost_reports": sum(
+                1
+                for record in records
+                if not record.active
+                and (
+                    not record.usage
+                    or any(item[2] is None for item in record.usage.values())
+                )
+            ),
+        }
+
+    def workflow_budget_block(
+        self,
+        correlation_id: Optional[str],
+        now: float,
+    ) -> Optional[dict[str, object]]:
+        control = self.workflow_control(correlation_id)
+        if control is None or control.policy_event_id is None:
+            return None
+        usage = self.workflow_budget_usage(correlation_id)
+        checks = (
+            ("attempts", control.max_attempts, 1),
+            (
+                "tokens",
+                control.max_total_tokens,
+                control.reserve_tokens_per_assignment,
+            ),
+            (
+                "cost_usd",
+                control.max_total_cost_usd,
+                control.reserve_cost_usd_per_assignment,
+            ),
+        )
+        for resource, maximum, reservation in checks:
+            if maximum is not None and usage[resource] + reservation > maximum:
+                return {
+                    "resource": resource,
+                    "used": usage[resource],
+                    "reservation": reservation,
+                    "maximum": maximum,
+                    "policy_event_id": control.policy_event_id,
+                }
+        started_at = self.workflow_first_created_at(correlation_id)
+        if (
+            control.max_wall_clock_seconds is not None
+            and started_at is not None
+            and now >= started_at + control.max_wall_clock_seconds
+        ):
+            return {
+                "resource": "wall_clock_seconds",
+                "used": max(0.0, now - started_at),
+                "reservation": 0,
+                "maximum": control.max_wall_clock_seconds,
+                "policy_event_id": control.policy_event_id,
+            }
+        return None
+
     def choose_worker(
         self,
         task: TaskRecord,
@@ -197,7 +356,7 @@ class PMState:
         candidates = []
         for worker in self.active_workers(now, lease_seconds):
             load = self.worker_load(worker)
-            if load >= worker.capacity:
+            if load >= self.agent_limit(worker):
                 continue
             if not task.required_capabilities.issubset(worker.capabilities):
                 continue
@@ -247,6 +406,7 @@ class PMState:
                 or task.ownership_owner != "agent-bus"
                 or self.workflow_is_paused(task.correlation_id)
                 or self.workflow_limit_reached(task.correlation_id)
+                or self.workflow_budget_block(task.correlation_id, now) is not None
                 or (task.deadline_at is not None and now >= task.deadline_at)
                 or (task.not_before is not None and now < task.not_before)
                 or task.permanent_failure_pending
@@ -327,6 +487,17 @@ def _positive_number(value: object) -> Optional[float]:
     return None
 
 
+def _nonnegative_number(value: object) -> Optional[float]:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    ):
+        return float(value)
+    return None
+
+
 def _payload(ev: dict) -> Optional[dict]:
     value = ev.get("payload")
     return value if isinstance(value, dict) else None
@@ -356,6 +527,19 @@ def _clear_active_assignment(task: TaskRecord) -> None:
     task.worker_instance_id = None
     task.assignment_id = None
     task.assignment_event_id = None
+
+
+def _end_assignment_accounting(
+    state: PMState,
+    task: TaskRecord,
+    event_id: int,
+) -> None:
+    if task.assignment_id is None:
+        return
+    record = state.assignment_accounting.get(task.assignment_id)
+    if record is not None and record.active:
+        record.active = False
+        record.ended_event_id = event_id
 
 
 def retry_budget_exhausted(task: TaskRecord) -> bool:
@@ -420,6 +604,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 capacity=capacity,
                 capabilities=capabilities,
                 last_event_id=event_id,
+                registered_event_id=event_id,
             )
             return True
 
@@ -436,6 +621,84 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             worker.last_seen = max(worker.last_seen, float(timestamp))
             worker.last_event_id = event_id
+            return True
+
+        if topic == "agent.policy_set":
+            agent_name = payload.get("agent_name")
+            source = payload.get("source")
+            reason = payload.get("reason")
+            raw_limit = payload.get("max_active_assignments")
+            limit = None if raw_limit is None else _positive_int(raw_limit)
+            existing = (
+                state.agent_policies.get(agent_name)
+                if isinstance(agent_name, str)
+                else None
+            )
+            if (
+                not isinstance(agent_name, str)
+                or not agent_name
+                or source not in {"default", "operator"}
+                or (raw_limit is not None and limit is None)
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or (existing is not None and event_id <= existing.policy_event_id)
+            ):
+                return False
+            if source == "default":
+                worker = state.workers.get(agent_name)
+                if (
+                    ev.get("actor") != "pm"
+                    or existing is not None
+                    or worker is None
+                    or ev.get("caused_by") != worker.registered_event_id
+                ):
+                    return False
+            elif ev.get("actor") == "pm":
+                return False
+            state.agent_policies[agent_name] = AgentPolicyRecord(
+                agent_name=agent_name,
+                policy_event_id=event_id,
+                actor=str(ev.get("actor")),
+                source=source,
+                reason=reason,
+                max_active_assignments=limit,
+            )
+            return True
+
+        if topic == "workflow.usage_recorded":
+            correlation_id = ev.get("correlation_id")
+            assignment_id = payload.get("assignment_id")
+            invocation_id = payload.get("invocation_id")
+            record = (
+                state.assignment_accounting.get(assignment_id)
+                if isinstance(assignment_id, str)
+                else None
+            )
+            tokens = payload.get("tokens")
+            cost = payload.get("cost_usd")
+            parsed_tokens = None if tokens is None else _nonnegative_int(tokens)
+            parsed_cost = None if cost is None else _nonnegative_number(cost)
+            telemetry_event_id = _positive_int(payload.get("telemetry_event_id"))
+            if (
+                record is None
+                or correlation_id != record.correlation_id
+                or payload.get("task_id") != record.task_id
+                or payload.get("worker_instance_id") != record.worker_instance_id
+                or ev.get("actor") != record.assignee
+                or not isinstance(invocation_id, str)
+                or not invocation_id
+                or invocation_id in record.usage
+                or telemetry_event_id is None
+                or ev.get("caused_by") != telemetry_event_id
+                or (tokens is not None and parsed_tokens is None)
+                or (cost is not None and parsed_cost is None)
+            ):
+                return False
+            record.usage[invocation_id] = (
+                event_id,
+                parsed_tokens,
+                parsed_cost,
+            )
             return True
 
         if topic.startswith("workflow."):
@@ -459,13 +722,80 @@ def apply_event(state: PMState, ev: dict) -> bool:
             reason = payload.get("reason")
             if topic == "workflow.policy_set":
                 source = payload.get("source")
-                raw_limit = payload.get("max_active_assignments")
-                limit = None if raw_limit is None else _positive_int(raw_limit)
                 if (
                     source not in {"default", "operator"}
-                    or (raw_limit is not None and limit is None)
                     or not isinstance(reason, str)
                     or not reason.strip()
+                ):
+                    return False
+                effective = {
+                    "max_active_assignments": control.max_active_assignments,
+                    "max_total_tokens": control.max_total_tokens,
+                    "max_total_cost_usd": control.max_total_cost_usd,
+                    "max_attempts": control.max_attempts,
+                    "max_wall_clock_seconds": control.max_wall_clock_seconds,
+                    "reserve_tokens_per_assignment": (
+                        control.reserve_tokens_per_assignment
+                    ),
+                    "reserve_cost_usd_per_assignment": (
+                        control.reserve_cost_usd_per_assignment
+                    ),
+                }
+                integer_limits = {
+                    "max_active_assignments",
+                    "max_total_tokens",
+                    "max_attempts",
+                }
+                number_limits = {
+                    "max_total_cost_usd",
+                    "max_wall_clock_seconds",
+                }
+                for field_name in integer_limits:
+                    if field_name not in payload:
+                        continue
+                    raw_value = payload[field_name]
+                    parsed = None if raw_value is None else _positive_int(raw_value)
+                    if raw_value is not None and parsed is None:
+                        return False
+                    effective[field_name] = parsed
+                for field_name in number_limits:
+                    if field_name not in payload:
+                        continue
+                    raw_value = payload[field_name]
+                    parsed = None if raw_value is None else _positive_number(raw_value)
+                    if raw_value is not None and parsed is None:
+                        return False
+                    effective[field_name] = parsed
+                if "reserve_tokens_per_assignment" in payload:
+                    parsed_tokens = _nonnegative_int(
+                        payload["reserve_tokens_per_assignment"]
+                    )
+                    if parsed_tokens is None:
+                        return False
+                    effective["reserve_tokens_per_assignment"] = parsed_tokens
+                if "reserve_cost_usd_per_assignment" in payload:
+                    parsed_cost = _nonnegative_number(
+                        payload["reserve_cost_usd_per_assignment"]
+                    )
+                    if parsed_cost is None:
+                        return False
+                    effective["reserve_cost_usd_per_assignment"] = parsed_cost
+                if (
+                    effective["max_total_tokens"] is not None
+                    and (
+                        effective["reserve_tokens_per_assignment"] <= 0
+                        or effective["reserve_tokens_per_assignment"]
+                        > effective["max_total_tokens"]
+                    )
+                ):
+                    return False
+                if (
+                    effective["max_total_cost_usd"] is not None
+                    and (
+                        effective["reserve_cost_usd_per_assignment"] <= 0
+                        or effective["reserve_cost_usd_per_assignment"]
+                        > effective["max_total_cost_usd"]
+                    )
                 ):
                     return False
                 if source == "default":
@@ -487,7 +817,21 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 control.policy_actor = ev.get("actor")
                 control.policy_source = source
                 control.policy_reason = reason
-                control.max_active_assignments = limit
+                control.max_active_assignments = effective[
+                    "max_active_assignments"
+                ]
+                control.max_total_tokens = effective["max_total_tokens"]
+                control.max_total_cost_usd = effective["max_total_cost_usd"]
+                control.max_attempts = effective["max_attempts"]
+                control.max_wall_clock_seconds = effective[
+                    "max_wall_clock_seconds"
+                ]
+                control.reserve_tokens_per_assignment = effective[
+                    "reserve_tokens_per_assignment"
+                ]
+                control.reserve_cost_usd_per_assignment = effective[
+                    "reserve_cost_usd_per_assignment"
+                ]
                 control.latest_event_id = event_id
                 return True
             if topic == "workflow.pause_requested":
@@ -513,6 +857,10 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     and task.status in ACTIVE_TASK_STATUSES
                     and task.assignment_id is not None
                 )
+                for task_id, _ in control.pause_assignment_snapshot:
+                    _end_assignment_accounting(
+                        state, state.tasks[task_id], event_id
+                    )
                 control.interrupted_task_ids = ()
                 control.latest_event_id = event_id
                 control.last_event_id = event_id
@@ -721,6 +1069,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     else None
                 ),
                 created_event_id=event_id,
+                created_at=float(timestamp),
                 status_event_id=event_id,
                 open_event_id=event_id,
                 priority=priority,
@@ -756,6 +1105,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             ):
                 if superseded_task.assignment_id is not None:
                     superseded_task.last_assignment_id = superseded_task.assignment_id
+                    _end_assignment_accounting(state, superseded_task, event_id)
                 superseded_task.status = "supersession_requested"
                 superseded_task.status_event_id = event_id
             return True
@@ -778,6 +1128,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             if task.assignment_id is not None:
                 task.last_assignment_id = task.assignment_id
+                _end_assignment_accounting(state, task, event_id)
             task.status = "cancellation_requested"
             task.status_event_id = event_id
             task.cancel_request_event_id = event_id
@@ -804,6 +1155,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             if task.assignment_id is not None:
                 task.last_assignment_id = task.assignment_id
+                _end_assignment_accounting(state, task, event_id)
             task.paused_from_status = (
                 "blocked" if task.status == "blocked" else "open"
             )
@@ -973,6 +1325,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 return False
             if task.assignment_id is not None:
                 task.last_assignment_id = task.assignment_id
+                _end_assignment_accounting(state, task, event_id)
             task.status = "deadline_exceeded"
             task.status_event_id = event_id
             task.deadline_exceeded_event_id = event_id
@@ -1015,6 +1368,52 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 assignment_policy_event_id != current_policy_event_id
                 or state.workflow_limit_reached(task.correlation_id)
             )
+            raw_agent_policy_event_id = payload.get("agent_policy_event_id")
+            assignment_agent_policy_event_id = (
+                _positive_int(raw_agent_policy_event_id)
+                if raw_agent_policy_event_id is not None
+                else None
+            )
+            current_agent_policy = state.agent_policy(assignee)
+            current_agent_policy_event_id = (
+                current_agent_policy.policy_event_id
+                if current_agent_policy is not None
+                else None
+            )
+            raw_reservation = payload.get("budget_reservation")
+            reserved_tokens = 0
+            reserved_cost = 0.0
+            fenced_by_budget = False
+            if raw_reservation is not None:
+                if not isinstance(raw_reservation, dict):
+                    return False
+                reservation_policy_id = _positive_int(
+                    raw_reservation.get("policy_event_id")
+                )
+                reservation_tokens = _nonnegative_int(
+                    raw_reservation.get("tokens")
+                )
+                reservation_cost = _nonnegative_number(
+                    raw_reservation.get("cost_usd")
+                )
+                if (
+                    reservation_policy_id is None
+                    or reservation_tokens is None
+                    or reservation_cost is None
+                ):
+                    return False
+                reserved_tokens = reservation_tokens
+                reserved_cost = reservation_cost
+                fenced_by_budget = (
+                    control is None
+                    or reservation_policy_id != current_policy_event_id
+                    or reservation_tokens
+                    != control.reserve_tokens_per_assignment
+                    or reservation_cost
+                    != control.reserve_cost_usd_per_assignment
+                    or state.workflow_budget_block(task.correlation_id, float(timestamp))
+                    is not None
+                )
             raw_fairness = payload.get("fairness")
             fairness_policy = None
             previous_assignment_event_id = None
@@ -1067,8 +1466,19 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 worker_instance_id = worker.instance_id if worker else f"legacy:{assignee}"
             if not isinstance(worker_instance_id, str) or not worker_instance_id:
                 return False
+            fenced_by_agent_policy = (
+                assignment_agent_policy_event_id
+                != current_agent_policy_event_id
+                or (worker is not None and state.agent_limit_reached(worker))
+            )
             task.last_assignment_attempt = attempt
-            if fenced_by_control or fenced_by_policy or fenced_by_fairness:
+            if (
+                fenced_by_control
+                or fenced_by_policy
+                or fenced_by_fairness
+                or fenced_by_agent_policy
+                or fenced_by_budget
+            ):
                 # The event remains immutable evidence of a stale PM plan, but
                 # never becomes executable ownership. This includes policy
                 # changes and newly filled workflow limits as well as control
@@ -1086,11 +1496,30 @@ def apply_event(state: PMState, ev: dict) -> bool:
             task.assignment_policy_event_id = assignment_policy_event_id
             task.assignment_fairness_policy = fairness_policy
             task.assignment_previous_event_id = previous_assignment_event_id
+            task.assignment_agent_policy_event_id = (
+                assignment_agent_policy_event_id
+            )
+            task.assignment_reserved_tokens = reserved_tokens
+            task.assignment_reserved_cost_usd = reserved_cost
             task.decision_needed = False
             task.decision_event_id = None
             task.block_reason = None
             state.last_scheduling_assignment_event_id = event_id
             state.last_scheduled_workflow_key = state.workflow_schedule_key(task)
+            state.assignment_accounting[assignment_id] = (
+                AssignmentAccountingRecord(
+                    assignment_id=assignment_id,
+                    assignment_event_id=event_id,
+                    task_id=task.task_id,
+                    correlation_id=task.correlation_id,
+                    assignee=assignee,
+                    worker_instance_id=worker_instance_id,
+                    workflow_policy_event_id=assignment_policy_event_id,
+                    agent_policy_event_id=assignment_agent_policy_event_id,
+                    reserved_tokens=reserved_tokens,
+                    reserved_cost_usd=reserved_cost,
+                )
+            )
             return True
 
         if topic == "task.started":
@@ -1109,6 +1538,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             ):
                 return False
             task.last_assignment_id = task.assignment_id
+            _end_assignment_accounting(state, task, event_id)
             task.status = "completed"
             task.status_event_id = event_id
             task.completion_event_id = event_id
@@ -1124,6 +1554,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 or not _active_assignment_matches(state, task, ev, payload)
             ):
                 return False
+            _end_assignment_accounting(state, task, event_id)
             task.status = "blocked"
             task.status_event_id = event_id
             task.block_event_id = event_id
@@ -1151,6 +1582,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             ):
                 return False
             task.last_assignment_id = task.assignment_id
+            _end_assignment_accounting(state, task, event_id)
             task.last_failure_event_id = event_id
             task.last_failure_code = failure_code
             task.last_failure_reason = reason
@@ -1177,6 +1609,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             ):
                 return False
             task.last_assignment_id = task.assignment_id
+            _end_assignment_accounting(state, task, event_id)
             task.last_failure_event_id = event_id
             task.last_failure_code = "assignment_expired"
             task.last_failure_reason = payload.get("reason")

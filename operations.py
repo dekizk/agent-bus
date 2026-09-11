@@ -44,6 +44,8 @@ def worker_views(
         worker = state.workers[name]
         lease_age = max(0.0, now - worker.last_seen)
         load = state.worker_load(worker)
+        policy = state.agent_policy(worker.name)
+        effective_capacity = state.agent_limit(worker)
         views.append(
             {
                 "name": worker.name,
@@ -52,8 +54,19 @@ def worker_views(
                 "lease_age_seconds": round(lease_age, 3),
                 "lease_seconds": lease_seconds,
                 "capacity": worker.capacity,
+                "effective_capacity": effective_capacity,
                 "load": load,
-                "available_slots": max(0, worker.capacity - load),
+                "available_slots": max(0, effective_capacity - load),
+                "policy": (
+                    {
+                        "event_id": policy.policy_event_id,
+                        "source": policy.source,
+                        "reason": policy.reason,
+                        "max_active_assignments": policy.max_active_assignments,
+                    }
+                    if policy is not None
+                    else {"status": "unmaterialized"}
+                ),
                 "capabilities": sorted(worker.capabilities),
                 "last_event_id": worker.last_event_id,
             }
@@ -220,6 +233,7 @@ def explain_task(
         evidence.append(task.assignment_event_id)
         evidence.append(task.assignment_policy_event_id)
         evidence.append(task.assignment_previous_event_id)
+        evidence.append(task.assignment_agent_policy_event_id)
         worker = state.workers.get(task.assignee or "")
         if worker is None:
             return _explanation(
@@ -251,6 +265,11 @@ def explain_task(
             workflow_policy_event_id=task.assignment_policy_event_id,
             fairness_policy=task.assignment_fairness_policy,
             previous_assignment_event_id=task.assignment_previous_event_id,
+            agent_policy_event_id=task.assignment_agent_policy_event_id,
+            budget_reservation={
+                "tokens": task.assignment_reserved_tokens,
+                "cost_usd": task.assignment_reserved_cost_usd,
+            },
         )
 
     if task.status != "open":
@@ -337,6 +356,23 @@ def explain_task(
             active_task_ids=[item.task_id for item in active_tasks],
         )
 
+    budget_block = state.workflow_budget_block(task.correlation_id, now)
+    if budget_block is not None:
+        evidence.append(budget_block.get("policy_event_id"))
+        usage = state.workflow_budget_usage(task.correlation_id)
+        evidence.extend(
+            record.assignment_event_id
+            for record in state.workflow_accounting(task.correlation_id)
+        )
+        return _explanation(
+            "workflow_budget_limit",
+            f"Workflow {task.correlation_id} cannot reserve another assignment: "
+            f"{budget_block['resource']} budget is exhausted.",
+            evidence,
+            **budget_block,
+            accounting=usage,
+        )
+
     active = state.active_workers(now, lease_seconds)
     if not active:
         evidence.extend(worker.last_event_id for worker in state.workers.values())
@@ -359,10 +395,37 @@ def explain_task(
             evidence,
             required_capabilities=sorted(task.required_capabilities),
         )
-    available = [
-        worker for worker in capable if state.worker_load(worker) < worker.capacity
-    ]
+    available = [worker for worker in capable if not state.agent_limit_reached(worker)]
     if not available:
+        policy_limited = [
+            worker
+            for worker in capable
+            if state.agent_policy(worker.name) is not None
+            and state.agent_policy(worker.name).max_active_assignments is not None
+            and state.agent_limit(worker) < worker.capacity
+            and state.agent_limit_reached(worker)
+        ]
+        if policy_limited:
+            evidence.extend(
+                state.agent_policy(worker.name).policy_event_id
+                for worker in policy_limited
+            )
+            return _explanation(
+                "agent_concurrency_limit",
+                "All capable agents are at their persisted concurrency limit.",
+                evidence,
+                agents=[
+                    {
+                        "name": worker.name,
+                        "load": state.worker_load(worker),
+                        "limit": state.agent_limit(worker),
+                        "policy_event_id": state.agent_policy(
+                            worker.name
+                        ).policy_event_id,
+                    }
+                    for worker in policy_limited
+                ],
+            )
         capable_worker_names = {worker.name for worker in capable}
         occupying = sorted(
             (
@@ -489,6 +552,11 @@ def task_view(
         "not_before": task.not_before,
         "workflow_policy": _workflow_policy_view(workflow_control),
         "assignment_policy_event_id": task.assignment_policy_event_id,
+        "assignment_agent_policy_event_id": task.assignment_agent_policy_event_id,
+        "budget_reservation": {
+            "tokens": task.assignment_reserved_tokens,
+            "cost_usd": task.assignment_reserved_cost_usd,
+        },
         "assignment_fairness": {
             "policy": task.assignment_fairness_policy,
             "previous_assignment_event_id": task.assignment_previous_event_id,
@@ -616,6 +684,13 @@ def workflow_view(
             "policy": "workflow_round_robin_v1",
             "last_assignment_event_id": state.last_scheduling_assignment_event_id,
         },
+        "budget": {
+            "policy_event_id": (
+                control.policy_event_id if control is not None else None
+            ),
+            **state.workflow_budget_usage(correlation_id),
+            "blocked": state.workflow_budget_block(correlation_id, now),
+        },
         "telemetry": summarize_telemetry(relevant_telemetry),
         "event_ids": sorted(
             {
@@ -632,6 +707,11 @@ def workflow_view(
                     state.last_scheduling_assignment_event_id,
                 )
                 if event_id is not None
+            }
+            | {
+                usage[0]
+                for record in state.workflow_accounting(correlation_id)
+                for usage in record.usage.values()
             }
         ),
     }
@@ -831,6 +911,14 @@ def _workflow_policy_view(control) -> dict:
         "source": control.policy_source,
         "reason": control.policy_reason,
         "max_active_assignments": control.max_active_assignments,
+        "max_total_tokens": control.max_total_tokens,
+        "max_total_cost_usd": control.max_total_cost_usd,
+        "max_attempts": control.max_attempts,
+        "max_wall_clock_seconds": control.max_wall_clock_seconds,
+        "reserve_tokens_per_assignment": control.reserve_tokens_per_assignment,
+        "reserve_cost_usd_per_assignment": (
+            control.reserve_cost_usd_per_assignment
+        ),
     }
 
 

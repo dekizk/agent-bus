@@ -725,12 +725,81 @@ This satisfies phase 3B's live criteria for cross-workflow fairness,
 within-workflow priority, predecessor evidence, restart recovery, explanations,
 and replay-derived cursor state.
 
-## Next trial criteria — v0.10 phase 3C agent limits and budgets
+## 2026-09-11 — live v0.10 phase 3C accounting and restart trial
 
-No phase 3C live trial is claimed yet. Before implementation, token and cost
-budgets need explicit reservation, reconciliation, policy-change, and
-missing-usage semantics. Trials must then demonstrate those decisions across
-successful usage, absent usage reports, concurrency, and PM restart.
+A credential-free isolated loopback trial used a temporary SQLite database,
+the real server and PM processes, one synthetic worker advertising capacity 3,
+and the production telemetry sink. The deployment defaults limited that
+logical agent to one active assignment and gave the workflow 100 tokens and
+$1.00, reserving 60 tokens and $0.60 per assignment.
+
+- the PM materialized workflow policy `#5` and agent policy `#6`; the worker's
+  effective capacity was 1 despite its advertised capacity of 3;
+- assignment `#7` reserved 60 tokens and $0.60, then raw terminal telemetry
+  `#9` reported 40 tokens and $0.20. Compact accounting event `#10` reconciled
+  the charge to those actual values;
+- assignment `#12` ended without telemetry, so accounting conservatively kept
+  its 60-token and $0.60 reservation;
+- total charge became 100 tokens and $0.80 across two attempts, with one
+  missing token report and one missing cost report. The next task remained
+  open with `workflow_budget_limit` on tokens;
+- the PM restarted under deliberately different deployment defaults. Fresh
+  replay retained the workflow's 100-token limit and the logical agent's
+  effective capacity of 1 rather than silently applying the new defaults;
+- operator policy `#14` extended the existing workflow to 160 tokens and
+  $2.00, after which the waiting task was assigned at `#15` and named policy
+  `#14` in its reservation evidence.
+
+The temporary server, PM, database, and synthetic worker were removed after
+inspection. No paid model, external provider, real project database, prompt,
+or executor content was used. This satisfies phase 3C's isolated live criteria
+for agent limits, successful usage reconciliation, missing-usage charging,
+multi-resource blocking, append-only policy extension, restart stability, and
+event-linked accounting evidence. A sustained real-agent workload remains
+useful soak evidence rather than a prerequisite for these semantics.
+
+## 2026-09-12 — live v0.10 Phase 3C admission hardening
+
+Review found two PM/runtime disagreements that the 2026-09-11 accounting trial
+did not exercise: late usage could invalidate a published assignment that a
+worker still executed, and an obsolete default policy could override an
+operator policy in the worker's local view while the PM correctly ignored it.
+The earlier trial remains valid for its recorded cases; these publication
+races required additional hardening before the Phase 3C checkpoint.
+
+Three isolated trials used temporary SQLite databases, a real loopback HTTP
+server, the production PM reconciler with controlled publication interleavings,
+and a continuously running `WorkerRuntime` consuming the real SSE stream. A
+synthetic executor recorded every invocation. No paid model was called.
+
+- **Late usage:** with a 100-token budget and 60-token reservation, the first
+  task reported 40 tokens. Additional telemetry `#10` raised the recorded
+  charge to 120 while the PM was publishing task 2's assignment `#12`. Both PM
+  and worker rejected that assignment: task 2 remained open, no `task.started`
+  was emitted for it, and the executor recorded no call while heartbeats
+  continued. Budget extension `#15` to 200 tokens allowed assignment `#16`,
+  `task:2:attempt:2`, which executed once and completed.
+- **Agent policy:** operator policy `#4` arrived before obsolete default `#6`.
+  Assignment `#7` referenced `#4`; the running worker executed it once and
+  completed. The obsolete default did not stall admission.
+- **Workflow policy:** operator policy `#3` arrived before obsolete default
+  `#4`. Assignment `#7` referenced `#3` and completed exactly once.
+- Fresh replay in every case agreed with the final completed task state.
+  Event IDs above belong to each trial's separate database.
+
+Workers now verify each assignment by replaying coordination history through
+that event with the shared reducer. Automated regressions additionally cover
+wall-clock expiry during publication, policy history before registration,
+incremental replay, prospective policy changes, and unreadable admission
+history. A stop during event handling now exits the stream loop immediately
+and stops heartbeats, allowing lease recovery without waiting for another SSE
+event. The final live rerun shut down cleanly and removed its temporary
+servers and databases.
+
+The focused regressions are in `tests/test_v010_admission.py`. Runtime unit
+tests with deliberately incomplete event fixtures mock the admission boundary;
+the admission regressions and existing integration tests use real persisted
+history and the shared reducer.
 
 ## Trial-note template
 

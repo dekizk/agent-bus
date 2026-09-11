@@ -24,6 +24,9 @@ class DirectClient:
             raise LookupError(event_id)
         return event
 
+    def query_all(self, *, after_id=0, topics=None):
+        return bus.fetch_after(after_id, topics)
+
 
 class ExistingAgentIntegrationTests(unittest.TestCase):
     def test_active_task_cancellation_reaches_adapter_and_terminal_log(self):

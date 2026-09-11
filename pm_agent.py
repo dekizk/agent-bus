@@ -8,6 +8,7 @@ import fcntl
 import getpass
 import hashlib
 import json
+import math
 import os
 import stat
 import sys
@@ -81,6 +82,7 @@ def _lock_path() -> Path:
 LOCK_PATH = _lock_path()
 WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
 _UNSET_POLICY_DEFAULT = object()
+_UNSET_AGENT_POLICY_DEFAULT = object()
 
 
 def _default_workflow_max_active_assignments() -> Optional[int]:
@@ -105,6 +107,69 @@ def _default_workflow_max_active_assignments() -> Optional[int]:
 DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS = (
     _default_workflow_max_active_assignments()
 )
+
+
+def _optional_positive_env(name: str, *, integer: bool) -> Optional[float | int]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip().lower() in {"", "none", "null", "unbounded"}:
+        return None
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError as exc:
+        raise SystemExit(f"[pm] {name} must be positive or 'unbounded'") from exc
+    if (not integer and not math.isfinite(value)) or value <= 0:
+        raise SystemExit(f"[pm] {name} must be positive or 'unbounded'")
+    return value
+
+
+def _nonnegative_env(name: str, *, integer: bool) -> float | int:
+    raw = os.environ.get(name, "0")
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError as exc:
+        raise SystemExit(f"[pm] {name} must be non-negative") from exc
+    if (not integer and not math.isfinite(value)) or value < 0:
+        raise SystemExit(f"[pm] {name} must be non-negative")
+    return value
+
+
+DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS = _optional_positive_env(
+    "AGENT_BUS_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS", integer=True
+)
+DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS = _optional_positive_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS", integer=True
+)
+DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD = _optional_positive_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD", integer=False
+)
+DEFAULT_WORKFLOW_MAX_ATTEMPTS = _optional_positive_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ATTEMPTS", integer=True
+)
+DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS = _optional_positive_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS", integer=False
+)
+DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT = _nonnegative_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT", integer=True
+)
+DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT = _nonnegative_env(
+    "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT", integer=False
+)
+if DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS is not None and not (
+    0 < DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT
+    <= DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS
+):
+    raise SystemExit(
+        "[pm] a finite default token budget requires a positive reservation "
+        "no larger than the budget"
+    )
+if DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD is not None and not (
+    0 < DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT
+    <= DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD
+):
+    raise SystemExit(
+        "[pm] a finite default cost budget requires a positive reservation "
+        "no larger than the budget"
+    )
 
 
 @contextmanager
@@ -148,6 +213,13 @@ def plan_next_emission(
     now: float,
     lease_seconds: float = WORKER_LEASE_SECONDS,
     default_workflow_max_active_assignments: object = _UNSET_POLICY_DEFAULT,
+    default_agent_max_active_assignments: object = _UNSET_AGENT_POLICY_DEFAULT,
+    default_workflow_max_total_tokens: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_total_cost_usd: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_attempts: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_wall_clock_seconds: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_reserve_tokens_per_assignment: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_reserve_cost_usd_per_assignment: object = _UNSET_POLICY_DEFAULT,
 ) -> Optional[dict]:
     """Return the next deterministic effect needed to reconcile derived state."""
     for task_id in sorted(state.tasks):
@@ -477,12 +549,98 @@ def plan_next_emission(
                     "source": "default",
                     "reason": "materialized deployment default",
                     "max_active_assignments": limit,
+                    **(
+                        {"max_total_tokens": default_workflow_max_total_tokens}
+                        if default_workflow_max_total_tokens
+                        is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
+                    **(
+                        {
+                            "max_total_cost_usd": (
+                                default_workflow_max_total_cost_usd
+                            )
+                        }
+                        if default_workflow_max_total_cost_usd
+                        is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
+                    **(
+                        {"max_attempts": default_workflow_max_attempts}
+                        if default_workflow_max_attempts is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
+                    **(
+                        {
+                            "max_wall_clock_seconds": (
+                                default_workflow_max_wall_clock_seconds
+                            )
+                        }
+                        if default_workflow_max_wall_clock_seconds
+                        is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
+                    **(
+                        {
+                            "reserve_tokens_per_assignment": (
+                                default_workflow_reserve_tokens_per_assignment
+                            )
+                        }
+                        if default_workflow_reserve_tokens_per_assignment
+                        is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
+                    **(
+                        {
+                            "reserve_cost_usd_per_assignment": (
+                                default_workflow_reserve_cost_usd_per_assignment
+                            )
+                        }
+                        if default_workflow_reserve_cost_usd_per_assignment
+                        is not _UNSET_POLICY_DEFAULT
+                        else {}
+                    ),
                 },
                 "caused_by": first_task.created_event_id,
                 "correlation_id": correlation_id,
                 "idempotency_key": (
                     f"policy-default:workflow:{correlation_id}:"
                     f"task:{first_task.task_id}:created:{first_task.created_event_id}"
+                ),
+            }
+
+    if default_agent_max_active_assignments is not _UNSET_AGENT_POLICY_DEFAULT:
+        workers_needing_policy = [
+            worker
+            for worker in state.workers.values()
+            if state.agent_policy(worker.name) is None
+        ]
+        if workers_needing_policy:
+            worker = min(
+                workers_needing_policy,
+                key=lambda item: (item.registered_event_id, item.name),
+            )
+            limit = default_agent_max_active_assignments
+            if limit is not None and (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit <= 0
+            ):
+                raise ValueError(
+                    "default agent max active assignments must be null or positive"
+                )
+            return {
+                "topic": "agent.policy_set",
+                "payload": {
+                    "agent_name": worker.name,
+                    "source": "default",
+                    "reason": "materialized deployment default",
+                    "max_active_assignments": limit,
+                },
+                "caused_by": worker.registered_event_id,
+                "idempotency_key": (
+                    f"policy-default:agent:{worker.name}:"
+                    f"registered:{worker.registered_event_id}"
                 ),
             }
 
@@ -521,6 +679,34 @@ def plan_next_emission(
                         state.last_scheduling_assignment_event_id
                     ),
                 },
+                **(
+                    {
+                        "agent_policy_event_id": state.agent_policy(
+                            worker.name
+                        ).policy_event_id
+                    }
+                    if state.agent_policy(worker.name) is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "budget_reservation": {
+                            "policy_event_id": state.workflow_control(
+                                task.correlation_id
+                            ).policy_event_id,
+                            "tokens": state.workflow_control(
+                                task.correlation_id
+                            ).reserve_tokens_per_assignment,
+                            "cost_usd": state.workflow_control(
+                                task.correlation_id
+                            ).reserve_cost_usd_per_assignment,
+                        }
+                    }
+                    if state.workflow_control(task.correlation_id) is not None
+                    and state.workflow_control(task.correlation_id).policy_event_id
+                    is not None
+                    else {}
+                ),
                 **(
                     {
                         "workflow_policy_event_id": state.workflow_control(
@@ -569,6 +755,13 @@ def reconcile(
     clock: Callable[[], float] = time.time,
     cursor: Optional[OrderedProjectionCursor] = None,
     default_workflow_max_active_assignments: object = _UNSET_POLICY_DEFAULT,
+    default_agent_max_active_assignments: object = _UNSET_AGENT_POLICY_DEFAULT,
+    default_workflow_max_total_tokens: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_total_cost_usd: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_attempts: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_max_wall_clock_seconds: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_reserve_tokens_per_assignment: object = _UNSET_POLICY_DEFAULT,
+    default_workflow_reserve_cost_usd_per_assignment: object = _UNSET_POLICY_DEFAULT,
 ) -> list[dict]:
     """Publish effects until stable, consuming persisted order when available."""
     emitted: list[dict] = []
@@ -579,6 +772,13 @@ def reconcile(
             current_time,
             lease_seconds,
             default_workflow_max_active_assignments,
+            default_agent_max_active_assignments,
+            default_workflow_max_total_tokens,
+            default_workflow_max_total_cost_usd,
+            default_workflow_max_attempts,
+            default_workflow_max_wall_clock_seconds,
+            default_workflow_reserve_tokens_per_assignment,
+            default_workflow_reserve_cost_usd_per_assignment,
         )
         if planned is None:
             return emitted
@@ -633,15 +833,38 @@ def main():
         print(f"[pm] replaying log up to #{head}, then reconciling...", flush=True)
         cursor.consume(history)
 
+        policy_defaults = {
+            "default_workflow_max_active_assignments": (
+                DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
+            ),
+            "default_agent_max_active_assignments": (
+                DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS
+            ),
+            "default_workflow_max_total_tokens": (
+                DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS
+            ),
+            "default_workflow_max_total_cost_usd": (
+                DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD
+            ),
+            "default_workflow_max_attempts": DEFAULT_WORKFLOW_MAX_ATTEMPTS,
+            "default_workflow_max_wall_clock_seconds": (
+                DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS
+            ),
+            "default_workflow_reserve_tokens_per_assignment": (
+                DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT
+            ),
+            "default_workflow_reserve_cost_usd_per_assignment": (
+                DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT
+            ),
+        }
+
         # This closes the prototype's crash window: state replay is followed by
         # deterministic effect reconciliation before waiting for another event.
         reconcile(
             state,
             bus,
             cursor=cursor,
-            default_workflow_max_active_assignments=(
-                DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
-            ),
+            **policy_defaults,
         )
 
         for event in bus.subscribe(
@@ -651,9 +874,7 @@ def main():
                 state,
                 bus,
                 cursor=cursor,
-                default_workflow_max_active_assignments=(
-                    DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
-                ),
+                **policy_defaults,
             ),
         ):
             cursor.consume([event])
@@ -661,9 +882,7 @@ def main():
                 state,
                 bus,
                 cursor=cursor,
-                default_workflow_max_active_assignments=(
-                    DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS
-                ),
+                **policy_defaults,
             )
 
 

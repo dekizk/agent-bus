@@ -229,6 +229,15 @@ class TelemetryBusContractTests(unittest.TestCase):
             usage={"total_tokens": 10},
             caused_by=started["id"],
         )
+        model_done_retry = sink.model_completed(
+            context,
+            invocation_id="invocation-1",
+            provider="nous",
+            model="openai/gpt-5.5",
+            duration_ms=12,
+            usage={"total_tokens": 10},
+            caused_by=started["id"],
+        )
         tool_started = sink.tool_started(
             context,
             tool_call_id="call-1",
@@ -246,12 +255,18 @@ class TelemetryBusContractTests(unittest.TestCase):
         )
 
         self.assertEqual(started["id"], retried["id"])
+        self.assertEqual(model_done["id"], model_done_retry["id"])
         self.assertEqual(started["id"], model_done["caused_by"])
         self.assertEqual(tool_started["id"], tool_done["caused_by"])
         self.assertEqual(
             4,
             len(bus.fetch_after(0, list(TELEMETRY_TOPICS))),
         )
+        accounting = bus.fetch_after(0, ["workflow.usage_recorded"])
+        self.assertEqual(1, len(accounting))
+        self.assertEqual(model_done["id"], accounting[0]["caused_by"])
+        self.assertEqual(10, accounting[0]["payload"]["tokens"])
+        self.assertIsNone(accounting[0]["payload"]["cost_usd"])
 
 
 if __name__ == "__main__":

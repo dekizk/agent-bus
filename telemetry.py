@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 
@@ -109,7 +110,7 @@ class BusTelemetrySink:
         output_content: object = None,
         caused_by: Optional[int] = None,
     ) -> dict:
-        return self._publish(
+        event = self._publish(
             "telemetry.model.completed",
             assignment,
             {
@@ -124,6 +125,13 @@ class BusTelemetrySink:
             caused_by=caused_by or assignment.assignment_event_id,
             idempotency_key=f"telemetry:model:{invocation_id}:completed",
         )
+        self._record_usage(
+            assignment,
+            invocation_id=invocation_id,
+            telemetry_event=event,
+            usage=usage,
+        )
+        return event
 
     def model_failed(
         self,
@@ -140,7 +148,7 @@ class BusTelemetrySink:
         output_content: object = None,
         caused_by: Optional[int] = None,
     ) -> dict:
-        return self._publish(
+        event = self._publish(
             "telemetry.model.failed",
             assignment,
             {
@@ -157,6 +165,13 @@ class BusTelemetrySink:
             caused_by=caused_by or assignment.assignment_event_id,
             idempotency_key=f"telemetry:model:{invocation_id}:failed",
         )
+        self._record_usage(
+            assignment,
+            invocation_id=invocation_id,
+            telemetry_event=event,
+            usage=usage,
+        )
+        return event
 
     def tool_started(
         self,
@@ -268,6 +283,59 @@ class BusTelemetrySink:
             },
             caused_by=caused_by,
             idempotency_key=idempotency_key,
+            correlation_id=assignment.correlation_id,
+            producer=self.producer.to_dict(),
+        )
+
+    def _record_usage(
+        self,
+        assignment: AssignmentContext,
+        *,
+        invocation_id: str,
+        telemetry_event: Mapping[str, Any],
+        usage: Optional[Mapping[str, Any]],
+    ) -> dict:
+        """Mirror only compact accounting data into coordination replay."""
+        values = dict(usage) if isinstance(usage, Mapping) else {}
+        tokens = values.get("total_tokens")
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
+            input_tokens = values.get("input_tokens")
+            output_tokens = values.get("output_tokens")
+            if all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+                for value in (input_tokens, output_tokens)
+            ):
+                tokens = input_tokens + output_tokens
+            else:
+                tokens = None
+        cost = values.get("cost_usd", values.get("estimated_cost_usd"))
+        if (
+            not isinstance(cost, (int, float))
+            or isinstance(cost, bool)
+            or not math.isfinite(cost)
+            or cost < 0
+        ):
+            cost = None
+        telemetry_event_id = telemetry_event.get("id")
+        if not isinstance(telemetry_event_id, int) or isinstance(
+            telemetry_event_id, bool
+        ) or telemetry_event_id <= 0:
+            raise ValueError("telemetry publisher returned an invalid event id")
+        return self.bus.publish(
+            "workflow.usage_recorded",
+            {
+                "task_id": assignment.task_id,
+                "assignment_id": assignment.assignment_id,
+                "worker_instance_id": assignment.worker_instance_id,
+                "invocation_id": invocation_id,
+                "telemetry_event_id": telemetry_event_id,
+                "tokens": tokens,
+                "cost_usd": cost,
+            },
+            caused_by=telemetry_event_id,
+            idempotency_key=f"accounting:model:{invocation_id}:terminal",
             correlation_id=assignment.correlation_id,
             producer=self.producer.to_dict(),
         )

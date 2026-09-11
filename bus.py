@@ -98,6 +98,15 @@ def _is_positive_number(value: object) -> bool:
     )
 
 
+def _is_nonnegative_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
 def _require_string(payload: dict, field: str) -> None:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -648,6 +657,27 @@ def validate_event(
                 raise EventValidationError("payload.capabilities must be a list of strings")
         return
 
+    if topic == "agent.policy_set":
+        if correlation_id is not None:
+            raise EventValidationError("agent.policy_set must not have correlation_id")
+        _require_string(payload, "agent_name")
+        source = payload.get("source")
+        if source not in {"default", "operator"}:
+            raise EventValidationError(
+                "payload.source must be default or operator"
+            )
+        if source == "default" and actor != "pm":
+            raise EventValidationError("default agent policy must be emitted by pm")
+        if source == "operator" and actor == "pm":
+            raise EventValidationError("operator agent policy must not be emitted by pm")
+        _require_string(payload, "reason")
+        limit = payload.get("max_active_assignments")
+        if limit is not None and not _is_positive_int(limit):
+            raise EventValidationError(
+                "payload.max_active_assignments must be null or a positive integer"
+            )
+        return
+
     if topic in {"workflow.pause_requested", "workflow.resume_requested"}:
         if not isinstance(correlation_id, str) or not correlation_id.strip():
             raise EventValidationError(
@@ -676,9 +706,130 @@ def validate_event(
             )
         _require_string(payload, "reason")
         limit = payload.get("max_active_assignments")
-        if limit is not None and not _is_positive_int(limit):
+        if "max_active_assignments" in payload and (
+            limit is not None and not _is_positive_int(limit)
+        ):
             raise EventValidationError(
                 "payload.max_active_assignments must be null or a positive integer"
+            )
+        for field in ("max_total_tokens", "max_attempts"):
+            value = payload.get(field)
+            if field in payload and value is not None and not _is_positive_int(value):
+                raise EventValidationError(
+                    f"payload.{field} must be null or a positive integer"
+                )
+        for field in ("max_total_cost_usd", "max_wall_clock_seconds"):
+            value = payload.get(field)
+            if field in payload and value is not None and not _is_positive_number(value):
+                raise EventValidationError(
+                    f"payload.{field} must be null or a positive number"
+                )
+        if "reserve_tokens_per_assignment" in payload and not _is_nonnegative_int(
+            payload.get("reserve_tokens_per_assignment")
+        ):
+            raise EventValidationError(
+                "payload.reserve_tokens_per_assignment must be a non-negative integer"
+            )
+        if "reserve_cost_usd_per_assignment" in payload and not _is_nonnegative_number(
+            payload.get("reserve_cost_usd_per_assignment")
+        ):
+            raise EventValidationError(
+                "payload.reserve_cost_usd_per_assignment must be a non-negative number"
+            )
+        token_fields = {
+            "max_total_tokens",
+            "reserve_tokens_per_assignment",
+        }
+        if token_fields.intersection(payload) and not token_fields.issubset(payload):
+            raise EventValidationError(
+                "token budget and reservation must be changed together"
+            )
+        if payload.get("max_total_tokens") is not None and not (
+            0 < payload["reserve_tokens_per_assignment"]
+            <= payload["max_total_tokens"]
+        ):
+            raise EventValidationError(
+                "finite token budget requires a positive reservation no larger than the budget"
+            )
+        cost_fields = {
+            "max_total_cost_usd",
+            "reserve_cost_usd_per_assignment",
+        }
+        if cost_fields.intersection(payload) and not cost_fields.issubset(payload):
+            raise EventValidationError(
+                "cost budget and reservation must be changed together"
+            )
+        if payload.get("max_total_cost_usd") is not None and not (
+            0 < payload["reserve_cost_usd_per_assignment"]
+            <= payload["max_total_cost_usd"]
+        ):
+            raise EventValidationError(
+                "finite cost budget requires a positive reservation no larger than the budget"
+            )
+        policy_fields = {
+            "max_active_assignments",
+            "max_total_tokens",
+            "max_total_cost_usd",
+            "max_attempts",
+            "max_wall_clock_seconds",
+            "reserve_tokens_per_assignment",
+            "reserve_cost_usd_per_assignment",
+        }
+        if not policy_fields.intersection(payload):
+            raise EventValidationError(
+                "workflow.policy_set must change at least one policy field"
+            )
+        return
+
+    if topic == "workflow.usage_recorded":
+        if actor == "pm":
+            raise EventValidationError("workflow.usage_recorded must be emitted by a worker")
+        if producer is None:
+            raise EventValidationError(
+                "workflow.usage_recorded requires producer identity"
+            )
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise EventValidationError(
+                "workflow.usage_recorded requires a non-empty correlation_id"
+            )
+        expected_fields = {
+            "task_id",
+            "assignment_id",
+            "worker_instance_id",
+            "invocation_id",
+            "telemetry_event_id",
+            "tokens",
+            "cost_usd",
+        }
+        if set(payload) != expected_fields:
+            raise EventValidationError(
+                "workflow.usage_recorded has an invalid payload shape"
+            )
+        _require_task_id(payload)
+        for field in (
+            "assignment_id",
+            "worker_instance_id",
+            "invocation_id",
+        ):
+            _require_telemetry_string(payload, field)
+        telemetry_event_id = payload.get("telemetry_event_id")
+        if not _is_positive_int(telemetry_event_id):
+            raise EventValidationError(
+                "payload.telemetry_event_id must be a positive integer"
+            )
+        if caused_by != telemetry_event_id:
+            raise EventValidationError(
+                "workflow.usage_recorded must be caused by its telemetry event"
+            )
+        tokens = payload.get("tokens")
+        if tokens is not None and not _is_nonnegative_int(tokens):
+            raise EventValidationError(
+                "payload.tokens must be null or a non-negative integer"
+            )
+        cost = payload.get("cost_usd")
+        if cost is not None and not _is_nonnegative_number(cost):
+            raise EventValidationError(
+                "payload.cost_usd must be null or a non-negative number"
             )
         return
 
@@ -730,6 +881,35 @@ def validate_event(
             raise EventValidationError(
                 "payload.workflow_policy_event_id must be null or a positive integer"
             )
+        agent_policy_event_id = payload.get("agent_policy_event_id")
+        if agent_policy_event_id is not None and not _is_positive_int(
+            agent_policy_event_id
+        ):
+            raise EventValidationError(
+                "payload.agent_policy_event_id must be null or a positive integer"
+            )
+        reservation = payload.get("budget_reservation")
+        if reservation is not None:
+            if not isinstance(reservation, dict) or set(reservation) != {
+                "policy_event_id",
+                "tokens",
+                "cost_usd",
+            }:
+                raise EventValidationError(
+                    "payload.budget_reservation has an invalid shape"
+                )
+            if not _is_positive_int(reservation.get("policy_event_id")):
+                raise EventValidationError(
+                    "payload.budget_reservation.policy_event_id must be positive"
+                )
+            if not _is_nonnegative_int(reservation.get("tokens")):
+                raise EventValidationError(
+                    "payload.budget_reservation.tokens must be non-negative"
+                )
+            if not _is_nonnegative_number(reservation.get("cost_usd")):
+                raise EventValidationError(
+                    "payload.budget_reservation.cost_usd must be non-negative"
+                )
         fairness = payload.get("fairness")
         if fairness is not None:
             if not isinstance(fairness, dict) or set(fairness) != {
@@ -1126,15 +1306,17 @@ def _resolve_correlation_id(
     conn: sqlite3.Connection,
     *,
     topic: str,
+    actor: str,
     caused_by: Optional[int],
     correlation_id: Optional[str],
     payload: dict,
+    producer: Optional[dict],
 ) -> Optional[str]:
     """Resolve a new event's workflow identity inside its append transaction."""
     resolved = correlation_id
     if caused_by is not None:
         parent = conn.execute(
-            "SELECT correlation_id FROM events WHERE id = ?",
+            "SELECT * FROM events WHERE id = ?",
             (caused_by,),
         ).fetchone()
         if parent is None:
@@ -1149,6 +1331,64 @@ def _resolve_correlation_id(
                 "correlation_id conflicts with the caused_by event"
             )
         resolved = parent_correlation_id or resolved
+
+        if topic == "workflow.usage_recorded":
+            try:
+                parent_payload = json.loads(parent["payload"])
+                parent_producer = (
+                    json.loads(parent["producer"])
+                    if parent["producer"] is not None
+                    else None
+                )
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise EventValidationError(
+                    "usage accounting parent is malformed"
+                ) from exc
+            if parent["topic"] not in {
+                "telemetry.model.completed",
+                "telemetry.model.failed",
+            }:
+                raise EventValidationError(
+                    "workflow.usage_recorded must follow terminal model telemetry"
+                )
+            for field in (
+                "task_id",
+                "assignment_id",
+                "worker_instance_id",
+                "invocation_id",
+            ):
+                if payload.get(field) != parent_payload.get(field):
+                    raise EventValidationError(
+                        f"usage accounting {field} conflicts with telemetry"
+                    )
+            if parent["actor"] != actor or parent_producer != producer:
+                raise EventValidationError(
+                    "usage accounting identity conflicts with telemetry"
+                )
+            usage = parent_payload.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            expected_tokens = usage.get("total_tokens")
+            if not _is_nonnegative_int(expected_tokens):
+                input_tokens = usage.get("input_tokens")
+                output_tokens = usage.get("output_tokens")
+                expected_tokens = (
+                    input_tokens + output_tokens
+                    if _is_nonnegative_int(input_tokens)
+                    and _is_nonnegative_int(output_tokens)
+                    else None
+                )
+            expected_cost = usage.get(
+                "cost_usd", usage.get("estimated_cost_usd")
+            )
+            if not _is_nonnegative_number(expected_cost):
+                expected_cost = None
+            if (
+                payload.get("tokens") != expected_tokens
+                or payload.get("cost_usd") != expected_cost
+            ):
+                raise EventValidationError(
+                    "usage accounting values conflict with telemetry"
+                )
 
     if topic == "task.created":
         supersedes_task_id = payload.get("supersedes_task_id")
@@ -1359,9 +1599,11 @@ def append_event(
         resolved_correlation_id = _resolve_correlation_id(
             conn,
             topic=topic,
+            actor=actor,
             caused_by=caused_by,
             correlation_id=correlation_id,
             payload=requested_payload,
+            producer=producer,
         )
         payload = dict(requested_payload)
         origin_claim = None

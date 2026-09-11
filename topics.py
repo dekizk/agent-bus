@@ -4,6 +4,7 @@ COORDINATION_TOPICS = frozenset(
     {
         "agent.registered",
         "agent.heartbeat",
+        "agent.policy_set",
         "task.created",
         "task.assigned",
         "task.started",
@@ -25,6 +26,7 @@ COORDINATION_TOPICS = frozenset(
         "workflow.pause_requested",
         "workflow.paused",
         "workflow.policy_set",
+        "workflow.usage_recorded",
         "workflow.resume_requested",
         "workflow.resumed",
         "decision.needed",

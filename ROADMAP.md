@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current implementation — v0.9 release candidate
+## Current implementation — v0.10 release candidate
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -85,13 +85,19 @@ agent control plane:
 - loopback-only local onboarding commands, minimal Python/CLI examples, a
   guarded HTTP bridge, safe rollout/outbox guidance, and Mermaid DAG export;
 - cross-actor external-origin claims that make accidental dual ownership a
-  transactionally rejected conflict rather than a documentation convention.
+  transactionally rejected conflict rather than a documentation convention;
+- immutable scheduling priority, delayed eligibility, task/workflow pause and
+  resume, and task supersession;
+- persisted workflow and agent concurrency policy, deterministic workflow
+  fairness, and accounted token, cost, attempt, and wall-clock budgets;
+- shared PM/runtime assignment admission from coordination history, including
+  intervening usage and obsolete default-policy rejection.
 
-The v0.9 implementation, automated checks, clean-environment package preflight,
-and live configured-CLI trial are complete. The tree remains a release
-candidate until final human review, commit, and push. Evidence is recorded in
-`examples/cli_agent/TRIAL_NOTES.md`; earlier live evidence remains in
-`examples/hermes/TRIAL_NOTES.md`.
+v0.9's integration work and its CLI/HTTP trials are complete and committed.
+v0.10's Phase 3C accounting and admission hardening complete the implementation
+checklist below. The project remains a release candidate for release review.
+Evidence is recorded in the CLI, HTTP, and Hermes example trial notes; the
+Hermes notes also record credential-free coordination trials.
 
 ## Completed release step — v0.8
 
@@ -313,7 +319,8 @@ Unit evidence covers replay, duplicate acknowledgements, concurrent commands,
 crash windows, blocked-task preservation, tasks created under a workflow pause,
 hard deadlines, dependency propagation, stale PM effects, and late worker
 output. The original Hermes phase 2 trials and an isolated ordered-cursor live
-worker repeat passed; Phase 3 remains required before v0.10 is complete.
+worker repeat passed. The Phase 3 sections below record the policy, fairness,
+and accounting work that subsequently completed v0.10.
 
 Phase 3A — persisted workflow policy and concurrency:
 
@@ -345,16 +352,39 @@ Phase 3B — deterministic workflow fairness:
 
 Phase 3C — agent limits and accounted budgets:
 
-- [ ] add per-agent concurrency policy beyond worker-advertised capacity;
-- [ ] define token and cost reservation, reconciliation, and missing-usage
+- [x] add per-agent concurrency policy beyond worker-advertised capacity;
+- [x] define token and cost reservation, reconciliation, and missing-usage
   behavior before enforcing those budgets;
-- [ ] add token, cost, attempt, and wall-clock budgets as immutable workflow
+- [x] add token, cost, attempt, and wall-clock budgets as immutable workflow
   policy;
-- [ ] identify the governing policy/reservation events in enforcement decisions;
-- [ ] explain agent limits and budget decisions without hidden scheduler state;
-- [ ] pass live usage, missing-usage, policy-change, and restart trials.
+- [x] materialize deployment defaults once so restart configuration changes do
+  not silently alter existing workflows or agents;
+- [x] identify the governing policy/reservation events in enforcement decisions;
+- [x] keep raw model telemetry outside PM replay while deriving compact,
+  validated workflow accounting events;
+- [x] explain agent limits and budget decisions without hidden scheduler state;
+- [x] cover policy races, replay, validation, missing usage, over-reservation,
+  and configuration compatibility with deterministic regressions;
+- [x] pass an isolated live usage, missing-usage, policy-change, and restart
+  trial.
 
-v0.10 is not complete until phases 2 and 3 and their live trials pass.
+Phase 3C admission hardening:
+
+- [x] reproduce late usage crossing assignment publication and obsolete
+  default-policy races;
+- [x] use the shared reducer to authorize execution through each assignment's
+  event position, including history before worker registration;
+- [x] preserve later policy changes as prospective and skip obsolete defaults
+  consistently for both agent and workflow policies;
+- [x] stop safely when admission history is unavailable;
+- [x] cover budget extension recovery, wall-clock publication boundaries,
+  replay, and incremental history reads with regressions;
+- [x] repeat budget and both policy races over live HTTP/SSE with a running
+  worker, then record the evidence.
+
+The v0.10 implementation and hardening checklists are complete, with automated
+regressions and isolated live HTTP/SSE evidence. A sustained real-agent soak
+remains useful release evidence beyond these correctness trials.
 
 ## v0.11 — local scale, retention, and recovery hardening
 
@@ -365,6 +395,8 @@ Address known local-scale boundaries while preserving the event log as truth:
 - add disposable materialized projections and replay snapshots;
 - verify that every projection can be deleted and rebuilt;
 - benchmark large logs, many workers, and wide/deep DAGs;
+- include worker admission replay, memory use, and incremental history reads
+  in those benchmarks and snapshot designs;
 - add safe artifact reachability analysis and retention tools;
 - test backup, restore, corruption detection, and recovery procedures;
 - consider archival log segments without silently rewriting history;

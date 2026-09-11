@@ -333,10 +333,10 @@ considers higher priority first, then the lower `task.created` event id, then
 assignment only: it never interrupts an active attempt, bypasses dependencies,
 revives terminal work, exceeds worker capacity, or changes capability matching.
 Changing intent means creating or superseding a task rather than editing its
-priority in place. Until v0.10's fairness phase lands, a sustained stream of
-higher-priority eligible work can delay lower-priority tasks; this first phase
-deliberately makes that simple policy visible rather than implying fairness it
-does not yet provide.
+priority in place. Within a workflow, a sustained stream of higher-priority
+eligible work can delay lower-priority siblings. Across workflows, the
+round-robin policy described below prevents one workflow from monopolizing all
+new assignment turns.
 
 `not_before` is an optional absolute Unix timestamp. A future task remains
 visible and explainable but cannot be assigned until that timestamp. If both
@@ -386,15 +386,14 @@ lower limit never cancels work already assigned or running; the PM waits until
 active ownership falls below the new limit before assigning more. Every new
 `task.assigned` records `workflow_policy_event_id`, so inspection can identify
 the exact event that authorized it; the framework-neutral `AssignmentContext`
-also exposes that identity to adapters. Workers consume policy events and fence
-an assignment that names an older policy before invoking the executor. Such an
-assignment remains stale audit evidence and is reissued with a fresh attempt
-identity under the current policy.
+also exposes that identity to adapters. Before invoking the executor, workers
+replay coordination history through the assignment using the same reducer as
+the PM. Only an accepted assignment can execute. Stale plans remain audit
+evidence and are reissued with a fresh attempt identity when eligible.
 
 Workflow policy is orchestration intent. Deployment safety caps such as process
 limits, memory limits, and network restrictions remain external operational
-controls and may be stricter. Token/cost reservations remain later phase 3
-work.
+controls and may be stricter.
 
 ## Deterministic workflow fairness
 
@@ -432,6 +431,75 @@ policy and predecessor event, so an operator can distinguish capacity,
 workflow-concurrency, priority, and fairness waits. This is assignment fairness,
 not runtime time-slicing: it does not preempt active work or revoke a long
 running task.
+
+## Agent limits and accounted workflow budgets
+
+v0.10 phase 3C separates an agent's advertised worker capacity from the
+operator's persisted concurrency policy. The effective capacity is the lower
+of the two. A later decrease does not revoke work already running; it prevents
+new assignments until active work falls below the new limit:
+
+```sh
+agent-bus agent-policy hermes \
+  --max-active-assignments 1 \
+  --reason "canary one assignment at a time"
+```
+
+Workflow policy also supports token, cost, attempt, and elapsed wall-clock
+budgets. Token and cost limits use an explicit per-assignment reservation so
+the PM does not admit several concurrent attempts against the same remaining
+budget:
+
+```sh
+agent-bus policy "$CORRELATION_ID" \
+  --max-tokens 100000 \
+  --reserve-tokens-per-assignment 20000 \
+  --max-cost 5 \
+  --reserve-cost-per-assignment 1 \
+  --max-attempts 10 \
+  --max-wall-clock 3600 \
+  --reason "bounded integration trial"
+```
+
+Each accepted `task.assigned` is the reservation record. It names the workflow
+and agent policy events that governed admission. While active, an attempt is
+charged at least its reservation. Once it ends, fully reported usage replaces
+the reservation with actual usage; if usage is absent, the reservation remains
+as the conservative charge. Actual usage above a reservation is authoritative
+and may block subsequent assignments. A later policy change is a new event,
+not an edit, and only governs later admission decisions.
+
+Use `--unbounded-tokens --reserve-tokens-per-assignment 0` or
+`--unbounded-cost --reserve-cost-per-assignment 0` to remove a budget
+explicitly. A limit and its reservation must be changed together. Attempt
+budgets count accepted assignments. Wall-clock budgets begin at the first
+`task.created` timestamp in the workflow. These are orchestration admission
+controls, not hard provider billing cutoffs: an in-flight model call can exceed
+its reservation, and late valid usage is still reconciled into the log.
+
+`agent-bus task`, `agent-bus workflow`, `agent-bus workers`, and
+`agent-bus explain` expose effective limits, charges, missing reports,
+reservations, blocking resources, and the relevant policy/accounting event
+IDs. Deployment defaults are materialized once as policy events. Restarting
+the PM with different defaults therefore cannot silently change an existing
+workflow or logical agent.
+
+Worker admission includes usage recorded between planning and publication,
+wall-clock budget boundaries, and policies that predate worker registration.
+An obsolete default policy arriving after an operator policy is ignored by
+both PM and worker. The worker caches its replay cursor and reads the unseen
+coordination suffix on later assignments. Raw telemetry is excluded. If this
+history cannot be read or the assignment is missing from it, the worker stops
+so heartbeats cease and lease recovery can proceed. A policy change after an
+accepted assignment does not retroactively revoke that work.
+
+The first admission requires a full coordination replay. This adds per-worker
+memory and read costs; disposable snapshots and large-log benchmarks remain
+part of the scale work in `ROADMAP.md`.
+
+Embedded runtimes that supply a finite event iterable still need a bus client
+with `query_all()` returning persisted coordination history in event-ID order.
+The standard `BusClient` provides this automatically.
 
 ## Pause, resume, and supersession
 
@@ -561,9 +629,13 @@ terminal tasks; create a new task to record new intent.
 
 ## Telemetry and artifacts
 
-Telemetry is observational and is never consumed by the PM. Model and tool
+Raw telemetry is observational and is never consumed by the PM. Model and tool
 lifecycles use their own canonical topic group, so coordination replay remains
-small even when an executor emits many telemetry events. Each telemetry event
+small even when an executor emits many telemetry events. For budget accounting,
+a model terminal event also produces one compact, validated
+`workflow.usage_recorded` coordination event containing only normalized token
+and cost totals plus identity references; prompts, outputs, and tool details do
+not enter PM replay. Each raw telemetry event
 retains `correlation_id`, `task_id`, `assignment_id`, worker process identity,
 and a stable invocation or tool-call id. The top-level `producer` envelope
 identifies the implementation and process that emitted it; provider and model
@@ -1166,6 +1238,12 @@ v0.10 phase 3B adds the optional `fairness` evidence object to new assignments.
 It identifies the `workflow_round_robin_v1` policy and the preceding accepted
 assignment event. Historical assignments without it remain replayable.
 
+v0.10 phase 3C adds `agent.policy_set`, compact `workflow.usage_recorded`
+accounting, and optional agent-policy and budget-reservation evidence on new
+assignments. Workflow policy patches may add token, cost, attempt, and
+wall-clock limits. Historical assignments without these fields remain
+replayable and uncharged unless their history supplies accounting evidence.
+
 Core v2 topics:
 
 | Topic | Emitted by | Purpose |
@@ -1192,7 +1270,9 @@ Core v2 topics:
 | `task.superseded` | PM | Terminates old intent after a replacement task is created |
 | `workflow.pause_requested` | human/agent | Requests a correlation-scoped orchestration pause |
 | `workflow.paused` | PM | Acknowledges the request-time assignment snapshot; replay interrupts only assignments that still match |
-| `workflow.policy_set` | PM/operator | Materializes or changes immutable workflow concurrency policy |
+| `workflow.policy_set` | PM/operator | Materializes or changes immutable workflow concurrency and budget policy |
+| `agent.policy_set` | PM/operator | Materializes or changes immutable concurrency policy for one logical agent |
+| `workflow.usage_recorded` | telemetry sink | Carries compact validated model usage into workflow accounting |
 | `workflow.resume_requested` | human/agent | Requests that a paused workflow continue |
 | `workflow.resumed` | PM | Re-enables ordinary reconciliation for the workflow |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |

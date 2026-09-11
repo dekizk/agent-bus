@@ -23,12 +23,14 @@ from executors import (
     mutable_json,
 )
 from limits import MAX_INLINE_DEPENDENCY_BYTES, MAX_INLINE_RESULT_BYTES
+from projection import PMState, PROJECTION_TOPICS, apply_event
 
 DEFAULT_HEARTBEAT_SECONDS = 5.0
 DEFAULT_PUBLISH_RETRY_SECONDS = 1.0
 DEFAULT_DEPENDENCY_FETCH_ATTEMPTS = 3
 RUNTIME_TOPICS = (
     "agent.registered",
+    "agent.policy_set",
     "task.assigned",
     "task.assignment_expired",
     "task.failed",
@@ -117,7 +119,11 @@ class WorkerRuntime:
         self._deadline_timers: dict[str, threading.Timer] = {}
         self._paused_task_ids: set[int] = set()
         self._paused_correlations: set[str] = set()
-        self._workflow_policy_event_ids: dict[str, int] = {}
+        # Admission is derived from the same ordered history as the PM. This
+        # cache is private to the serial stream consumer and never authorizes
+        # work based on a policy row the shared reducer rejected.
+        self._admission_state = PMState()
+        self._admission_event_id = 0
         self._accepting = False
         self._closed = False
         self._pool: Optional[ThreadPoolExecutor] = None
@@ -132,7 +138,9 @@ class WorkerRuntime:
         """Register and consume events until stopped.
 
         Passing a finite event iterable is useful for embedding and tests; a
-        normally exhausted iterable drains accepted work before shutdown.
+        normally exhausted iterable drains accepted work before shutdown. The
+        bus must still supply query_all() over the persisted coordination
+        history so admission can verify those deliveries.
         """
         registered = self.bus.publish(
             "agent.registered",
@@ -174,6 +182,10 @@ class WorkerRuntime:
                 if self.stop_event.is_set():
                     break
                 self.process_event(event)
+                if self.stop_event.is_set():
+                    # Do not request another blocking SSE item after an
+                    # admission/dependency error has already stopped us.
+                    break
             completed_normally = not self.stop_event.is_set()
         finally:
             self.shutdown(drain=completed_normally)
@@ -267,22 +279,6 @@ class WorkerRuntime:
                 self._revoke(assignment_id)
             return
 
-        if topic == "workflow.policy_set":
-            correlation_id = event.get("correlation_id")
-            event_id = event.get("id")
-            if (
-                isinstance(correlation_id, str)
-                and isinstance(event_id, int)
-                and not isinstance(event_id, bool)
-                and event_id > 0
-            ):
-                with self._lock:
-                    current = self._workflow_policy_event_ids.get(correlation_id, 0)
-                    if event_id > current:
-                        self._workflow_policy_event_ids[correlation_id] = event_id
-            return
-
-
         if topic == "workflow.resumed":
             correlation_id = event.get("correlation_id")
             if isinstance(correlation_id, str):
@@ -302,42 +298,22 @@ class WorkerRuntime:
         correlation_id = event.get("correlation_id")
         if isinstance(raw_assignment_id, str):
             with self._lock:
-                current_policy_event_id = (
-                    self._workflow_policy_event_ids.get(correlation_id)
-                    if isinstance(correlation_id, str)
-                    else None
-                )
-                raw_policy_event_id = payload.get("workflow_policy_event_id")
-                assignment_policy_event_id = (
-                    raw_policy_event_id
-                    if isinstance(raw_policy_event_id, int)
-                    and not isinstance(raw_policy_event_id, bool)
-                    and raw_policy_event_id > 0
-                    else None
-                )
                 if (
                     raw_assignment_id in self._seen_assignment_ids
                     or task_id in self._paused_task_ids
                     or correlation_id in self._paused_correlations
-                    or (
-                        current_policy_event_id is not None
-                        and assignment_policy_event_id != current_policy_event_id
-                    )
                 ):
                     self._seen_assignment_ids.add(raw_assignment_id)
                     return
-                if (
-                    isinstance(correlation_id, str)
-                    and current_policy_event_id is None
-                    and assignment_policy_event_id is not None
-                ):
-                    # A policy may predate this worker's registration and
-                    # therefore its stream offset. The first assignment safely
-                    # bootstraps that identity; later policy events advance it.
-                    self._workflow_policy_event_ids[
-                        correlation_id
-                    ] = assignment_policy_event_id
         try:
+            if not self._assignment_is_accepted(event):
+                with self._lock:
+                    if isinstance(raw_assignment_id, str):
+                        self._seen_assignment_ids.add(raw_assignment_id)
+                self.log(
+                    f"[{self.name}] ignoring rejected assignment: {raw_assignment_id}"
+                )
+                return
             resolved_event = self._resolve_dependency_refs_with_retry(event)
             if resolved_event is None:
                 return
@@ -388,6 +364,58 @@ class WorkerRuntime:
             self._futures[assignment_id] = future
         if deadline_timer is not None:
             deadline_timer.start()
+
+    def _assignment_is_accepted(self, event: dict) -> bool:
+        """Replay through this delivery, never past it, before executing it.
+
+        The SSE subscription begins at registration, but the first admission
+        must include older policies, tasks, and accounting. Later admissions
+        fetch only the unseen coordination suffix. A missing/truncated prefix
+        is an error: stopping heartbeats allows the PM to recover ownership.
+        Later policy changes do not retroactively revoke accepted assignments;
+        cancellation and deadlines retain their separate runtime fences.
+        """
+        target_id = event.get("id")
+        if (
+            not isinstance(target_id, int)
+            or isinstance(target_id, bool)
+            or target_id <= 0
+        ):
+            raise ValueError("assignment event id must be positive")
+        if target_id <= self._admission_event_id:
+            return False
+        history = self.bus.query_all(
+            after_id=self._admission_event_id, topics=list(PROJECTION_TOPICS)
+        )
+        for recorded in history:
+            if not isinstance(recorded, dict):
+                raise ValueError("coordination history contains a non-event")
+            recorded_id = recorded.get("id")
+            if (
+                not isinstance(recorded_id, int)
+                or isinstance(recorded_id, bool)
+                or recorded_id <= self._admission_event_id
+            ):
+                raise ValueError("coordination history is not strictly ordered")
+            if recorded_id > target_id:
+                break
+            if recorded_id == target_id and recorded != event:
+                raise ValueError("assignment differs from persisted history")
+            apply_event(self._admission_state, recorded)
+            self._admission_event_id = recorded_id
+            if recorded_id == target_id:
+                task = self._admission_state.tasks.get(
+                    event["payload"].get("task_id")
+                )
+                return (
+                    task is not None
+                    and task.status == "assigned"
+                    and task.assignment_event_id == target_id
+                    and task.assignment_id == event["payload"].get("assignment_id")
+                    and task.assignee == self.name
+                    and task.worker_instance_id == self.instance_id
+                )
+        raise ValueError("coordination history does not contain the assignment")
 
     def _resolve_dependency_refs_with_retry(self, event: dict) -> Optional[dict]:
         for attempt in range(1, self.dependency_fetch_attempts + 1):
@@ -472,6 +500,7 @@ class WorkerRuntime:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._heartbeat_stop.set()
         with self._lock:
             assignment_ids = tuple(self._owned)
             self._accepting = False

@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -17,6 +18,7 @@ def assigned_event(
     dependency_refs=(),
     deadline_at=None,
     workflow_policy_event_id=None,
+    agent_policy_event_id=None,
 ):
     event = {
         "id": event_id,
@@ -45,6 +47,8 @@ def assigned_event(
         event["payload"][
             "workflow_policy_event_id"
         ] = workflow_policy_event_id
+    if agent_policy_event_id is not None:
+        event["payload"]["agent_policy_event_id"] = agent_policy_event_id
     return event
 
 
@@ -81,6 +85,12 @@ class FakeBus:
     def get_event(self, event_id):
         return self.stored_events[event_id]
 
+    def query_all(self, *, after_id=0, topics=None):
+        return [
+            event for event in sorted(self.stored_events.values(), key=lambda row: row["id"])
+            if event["id"] > after_id and (topics is None or event["topic"] in topics)
+        ]
+
 
 class StaticExecutor:
     def __init__(self, outcome):
@@ -90,7 +100,18 @@ class StaticExecutor:
         return self.outcome
 
 
-class RuntimeOutcomeTests(unittest.TestCase):
+class RuntimeTestCase(unittest.TestCase):
+    def setUp(self):
+        # These unit fixtures deliberately omit the full task/PM history.
+        # Admission is tested separately against persisted, validated events.
+        self.admission_patch = patch.object(
+            WorkerRuntime, "_assignment_is_accepted", return_value=True
+        )
+        self.admission_patch.start()
+        self.addCleanup(self.admission_patch.stop)
+
+
+class RuntimeOutcomeTests(RuntimeTestCase):
     def run_outcome(self, outcome, **runtime_options):
         fake_bus = FakeBus([assigned_event()])
         runtime = WorkerRuntime(
@@ -431,7 +452,67 @@ class RuntimeOutcomeTests(unittest.TestCase):
         self.assertFalse(failure["payload"]["retryable"])
 
 
-class RuntimeOwnershipTests(unittest.TestCase):
+class RuntimeOwnershipTests(RuntimeTestCase):
+    def enable_real_admission(self, fake_bus):
+        self.admission_patch.stop()
+        history = [
+            {"id": 1, "ts": 100.0, "topic": "task.created", "actor": "human",
+             "correlation_id": "workflow-one", "payload": {"task_id": 1, "title": "task 1"}},
+            {"id": 2, "ts": 100.0, "topic": "agent.registered", "actor": "alice",
+             "payload": {"name": "alice", "instance_id": "alice-1", "capacity": 1}},
+        ]
+        for event in fake_bus.events:
+            event.setdefault("ts", 100.0)
+            event.setdefault("actor", "human")
+            history.append(event)
+        fake_bus.stored_events = {event["id"]: event for event in history}
+
+    def test_agent_policy_change_fences_stale_assignment_before_executor(self):
+        class RecordingExecutor:
+            def __init__(self):
+                self.assignments = []
+
+            def execute(self, assignment):
+                self.assignments.append(
+                    (assignment.assignment_id, assignment.agent_policy_event_id)
+                )
+                return Completed("done")
+
+        policy = {
+            "id": 21,
+            "topic": "agent.policy_set",
+            "payload": {
+                "agent_name": "alice",
+                "source": "operator",
+                "reason": "one slot",
+                "max_active_assignments": 1,
+            },
+        }
+        executor = RecordingExecutor()
+        fake_bus = FakeBus(
+            [
+                policy,
+                assigned_event(
+                    event_id=22, attempt=1, agent_policy_event_id=20
+                ),
+                assigned_event(
+                    event_id=23, attempt=2, agent_policy_event_id=21
+                ),
+            ]
+        )
+        self.enable_real_admission(fake_bus)
+        WorkerRuntime(
+            fake_bus,
+            name="alice",
+            instance_id="alice-1",
+            executor=executor,
+            heartbeat_seconds=100,
+            log=lambda message: None,
+        ).run()
+
+        self.assertIn("agent.policy_set", RUNTIME_TOPICS)
+        self.assertEqual([("task:1:attempt:2", 21)], executor.assignments)
+
     def test_policy_change_fences_stale_assignment_before_executor(self):
         class RecordingExecutor:
             def __init__(self):
@@ -465,6 +546,7 @@ class RuntimeOwnershipTests(unittest.TestCase):
         )
         executor = RecordingExecutor()
         fake_bus = FakeBus([policy, stale, current])
+        self.enable_real_admission(fake_bus)
         WorkerRuntime(
             fake_bus,
             name="alice",
