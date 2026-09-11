@@ -626,6 +626,53 @@ Roadmap evidence:
 - phase 2's live criteria are satisfied. v0.10 still requires phase 3 fairness
   and budget work plus its own live evidence before the release is complete.
 
+## 2026-09-10 — v0.10 phase 2 ordered-cursor hardening repeat
+
+A credential-free live worker trial used a temporary SQLite database and an
+isolated loopback bus. It targeted the concurrency window found during the
+post-phase-2 review rather than spending another Hermes invocation.
+
+- `task.created#1` established workflow `hardening-flow`;
+- `task.pause_requested#2` and `task.resume_requested#3` were both persisted
+  before the PM started, deliberately placing resume ahead of pause
+  acknowledgement;
+- ordered PM replay queued the resume and emitted `task.paused#4` followed by
+  `task.resumed#5`, preserving the ownership fence and operator intent;
+- a real `WorkerRuntime` registered at `#6`, received only the post-resume
+  `task.assigned#7`, started it at `#8`, and completed it at `#9`;
+- the accepted assignment remained attempt 1 because no stale assignment was
+  delivered in this scenario, and retryable failure count remained zero;
+- the temporary server, PM, and worker were stopped after inspection. No real
+  project database or external provider was used.
+
+Together with the isolated interleaving regressions, this confirms that
+concurrent commands and PM effects now converge to the same state as fresh
+ordered replay, resume-before-ack is queued, paused workflow deliveries are
+fenced in both projection and runtime, and stale delivery identities cannot be
+reused after resume.
+
+## 2026-09-11 — workflow-pause acknowledgement race regression
+
+Post-trial review found a narrower crash-recovery hazard in the workflow pause
+protocol. The PM originally recalculated `interrupted_assignments` when it
+retried a pause acknowledgement. If cancellation won after the first plan but
+before publication, the first acknowledgement became stale; the revised
+payload then collided with that acknowledgement's already-persisted
+idempotency key on every restart.
+
+The acknowledgement now derives from the immutable assignment snapshot seen at
+`workflow.pause_requested`. It records that stable snapshot while applying the
+pause only to assignments that are still active and still match. Stronger
+intervening task controls are never overwritten, and only tasks actually
+interrupted by the acknowledgement are eligible for workflow resume.
+
+Deterministic temporary-database regressions now cover cancellation, individual
+task pause, supersession, and deadline transitions in the acknowledgement
+publication window. In each case reconciliation converged without an
+idempotency conflict, fresh replay matched live state, and a restarted PM had no
+remaining effect to publish. This is automated crash-window evidence rather
+than a new paid Hermes trial.
+
 ## Trial-note template
 
 - Date and task category:

@@ -14,8 +14,9 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from client import BusClient
 from projection import (
@@ -33,6 +34,36 @@ from projection import (
 
 BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
 PM_TOPICS = PROJECTION_TOPICS
+
+
+@dataclass
+class OrderedProjectionCursor:
+    """Consume each persisted coordination event once in event-ID order."""
+
+    state: PMState
+    last_event_id: int = 0
+
+    def consume(self, events: Iterable[dict]) -> list[tuple[dict, bool]]:
+        consumed: list[tuple[dict, bool]] = []
+        for event in events:
+            event_id = event.get("id")
+            if (
+                not isinstance(event_id, int)
+                or isinstance(event_id, bool)
+                or event_id <= self.last_event_id
+            ):
+                continue
+            applied = apply_event(self.state, event)
+            self.last_event_id = event_id
+            consumed.append((event, applied))
+        return consumed
+
+    def catch_up(self, bus: BusClient) -> list[tuple[dict, bool]]:
+        events = bus.query_all(
+            after_id=self.last_event_id,
+            topics=list(PM_TOPICS),
+        )
+        return self.consume(events)
 
 
 def _lock_path() -> Path:
@@ -223,11 +254,8 @@ def plan_next_emission(
         control = state.workflows[correlation_id]
         if control.status == "pause_requested" and control.pause_request_event_id is not None:
             interrupted = [
-                {"task_id": task.task_id, "assignment_id": task.assignment_id}
-                for task in sorted(state.tasks.values(), key=lambda item: item.task_id)
-                if task.correlation_id == correlation_id
-                and task.status in ACTIVE_TASK_STATUSES
-                and task.assignment_id is not None
+                {"task_id": task_id, "assignment_id": assignment_id}
+                for task_id, assignment_id in control.pause_assignment_snapshot
             ]
             return {
                 "topic": "workflow.paused",
@@ -400,7 +428,7 @@ def plan_next_emission(
 
     if assignment_candidates:
         _, task, worker = min(assignment_candidates, key=lambda item: item[0])
-        attempt = task.attempt + 1
+        attempt = task.last_assignment_attempt + 1
         assignment_id = f"task:{task.task_id}:attempt:{attempt}"
         return {
             "topic": "task.assigned",
@@ -461,8 +489,9 @@ def reconcile(
     now: Optional[float] = None,
     lease_seconds: float = WORKER_LEASE_SECONDS,
     clock: Callable[[], float] = time.time,
+    cursor: Optional[OrderedProjectionCursor] = None,
 ) -> list[dict]:
-    """Publish and optimistically apply effects until state is stable."""
+    """Publish effects until stable, consuming persisted order when available."""
     emitted: list[dict] = []
     for _ in range(10_000):
         current_time = now if now is not None else clock()
@@ -480,13 +509,30 @@ def reconcile(
             planned["payload"],
             **publish_options,
         )
-        if not apply_event(state, sent):
-            raise RuntimeError(
-                f"PM emitted {sent.get('topic')}#{sent.get('id')} but could not apply it"
+        if cursor is None:
+            if not apply_event(state, sent):
+                raise RuntimeError(
+                    f"PM emitted {sent.get('topic')}#{sent.get('id')} but could not apply it"
+                )
+            applied = True
+        else:
+            consumed = cursor.catch_up(bus)
+            sent_id = sent.get("id")
+            if not isinstance(sent_id, int) or cursor.last_event_id < sent_id:
+                raise RuntimeError(
+                    f"PM could not catch up through emitted event #{sent_id}"
+                )
+            applied = any(
+                event.get("id") == sent_id and event_applied
+                for event, event_applied in consumed
             )
         emitted.append(sent)
         print(
-            f"[pm] reconciled -> {sent['topic']}#{sent['id']} {sent['payload']}",
+            (
+                f"[pm] reconciled -> {sent['topic']}#{sent['id']} {sent['payload']}"
+                if applied
+                else f"[pm] stale plan -> {sent['topic']}#{sent['id']}"
+            ),
             flush=True,
         )
     raise RuntimeError("reconciliation did not converge")
@@ -496,24 +542,24 @@ def main():
     with single_pm_lock():
         bus = BusClient(BUS_URL, actor="pm")
         state = PMState()
+        cursor = OrderedProjectionCursor(state)
 
         history = bus.query_all(after_id=0, topics=list(PM_TOPICS))
         head = max((event["id"] for event in history), default=0)
         print(f"[pm] replaying log up to #{head}, then reconciling...", flush=True)
-        for event in history:
-            apply_event(state, event)
+        cursor.consume(history)
 
         # This closes the prototype's crash window: state replay is followed by
         # deterministic effect reconciliation before waiting for another event.
-        reconcile(state, bus)
+        reconcile(state, bus, cursor=cursor)
 
         for event in bus.subscribe(
-            from_id=head,
+            from_id=cursor.last_event_id,
             topics=list(PM_TOPICS),
-            on_idle=lambda: reconcile(state, bus),
+            on_idle=lambda: reconcile(state, bus, cursor=cursor),
         ):
-            apply_event(state, event)
-            reconcile(state, bus)
+            cursor.consume([event])
+            reconcile(state, bus, cursor=cursor)
 
 
 if __name__ == "__main__":

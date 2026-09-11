@@ -46,6 +46,12 @@ class TaskRecord:
     correlation_id: Optional[str] = None
     status: str = "open"
     attempt: int = 0
+    # Highest delivery sequence observed in any PM assignment event. A stale
+    # assignment fenced by workflow control still consumes its immutable
+    # identity, while `attempt` continues to describe the latest accepted
+    # assignment. This prevents a rejected effect from trapping reconciliation
+    # behind an already-used idempotency key after resume.
+    last_assignment_attempt: int = 0
     max_retries: Optional[int] = None
     retryable_failures: int = 0
     assignee: Optional[str] = None
@@ -112,6 +118,10 @@ class WorkflowControlRecord:
     resume_request_event_id: Optional[int] = None
     resume_reason: Optional[str] = None
     resumed_event_id: Optional[int] = None
+    # Immutable assignment ownership observed when the pause request entered
+    # the ordered log. The acknowledgement names this snapshot even if a
+    # stronger task control wins before the PM publishes it.
+    pause_assignment_snapshot: tuple[tuple[int, str], ...] = ()
     interrupted_task_ids: tuple[int, ...] = ()
     last_event_id: Optional[int] = None
 
@@ -325,6 +335,8 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 correlation_id,
                 WorkflowControlRecord(correlation_id=correlation_id),
             )
+            if control.last_event_id is not None and event_id <= control.last_event_id:
+                return False
             reason = payload.get("reason")
             if topic == "workflow.pause_requested":
                 if (
@@ -340,6 +352,15 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 control.resume_request_event_id = None
                 control.resume_reason = None
                 control.resumed_event_id = None
+                control.pause_assignment_snapshot = tuple(
+                    (task.task_id, task.assignment_id)
+                    for task in sorted(
+                        state.tasks.values(), key=lambda item: item.task_id
+                    )
+                    if task.correlation_id == correlation_id
+                    and task.status in ACTIVE_TASK_STATUSES
+                    and task.assignment_id is not None
+                )
                 control.interrupted_task_ids = ()
                 control.last_event_id = event_id
                 return True
@@ -349,13 +370,10 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     return False
                 expected = [
                     {
-                        "task_id": task.task_id,
-                        "assignment_id": task.assignment_id,
+                        "task_id": task_id,
+                        "assignment_id": assignment_id,
                     }
-                    for task in sorted(state.tasks.values(), key=lambda item: item.task_id)
-                    if task.correlation_id == correlation_id
-                    and task.status in ACTIVE_TASK_STATUSES
-                    and task.assignment_id is not None
+                    for task_id, assignment_id in control.pause_assignment_snapshot
                 ]
                 if (
                     ev.get("actor") != "pm"
@@ -370,26 +388,44 @@ def apply_event(state: PMState, ev: dict) -> bool:
                     return False
                 interrupted = []
                 for item in expected:
-                    task = state.tasks[item["task_id"]]
+                    task = state.tasks.get(item["task_id"])
+                    if (
+                        task is None
+                        or task.status not in ACTIVE_TASK_STATUSES
+                        or task.assignment_id != item["assignment_id"]
+                    ):
+                        # Cancellation, deadline, task pause, or supersession
+                        # has stronger authority. The workflow acknowledgement
+                        # remains valid but must not reopen or overwrite it.
+                        continue
                     task.last_assignment_id = task.assignment_id
                     task.status = "open"
                     task.status_event_id = event_id
                     task.open_event_id = event_id
                     _clear_active_assignment(task)
                     interrupted.append(task.task_id)
-                control.status = "paused"
+                control.status = (
+                    "resume_requested"
+                    if control.resume_request_event_id is not None
+                    else "paused"
+                )
                 control.paused_event_id = event_id
                 control.interrupted_task_ids = tuple(interrupted)
                 control.last_event_id = event_id
                 return True
             if topic == "workflow.resume_requested":
                 if (
-                    control.status != "paused"
+                    control.status not in {"pause_requested", "paused"}
+                    or control.resume_request_event_id is not None
                     or not isinstance(reason, str)
                     or not reason.strip()
                 ):
                     return False
-                control.status = "resume_requested"
+                # A resume that races the PM's pause acknowledgement is queued.
+                # The pause is still acknowledged first so active ownership is
+                # fenced before workflow.resumed reopens scheduling.
+                if control.status == "paused":
+                    control.status = "resume_requested"
                 control.resume_request_event_id = event_id
                 control.resume_reason = reason
                 control.last_event_id = event_id
@@ -414,6 +450,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
                         task.open_event_id = event_id
                         task.status_event_id = event_id
                 control.interrupted_task_ids = ()
+                control.pause_assignment_snapshot = ()
                 return True
             return False
 
@@ -570,6 +607,8 @@ def apply_event(state: PMState, ev: dict) -> bool:
         task = state.tasks.get(task_id)
         if task is None:
             return False
+        if task.status_event_id is not None and event_id <= task.status_event_id:
+            return False
 
         if topic == "task.cancel_requested":
             reason = payload.get("reason")
@@ -643,7 +682,11 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 or attempts != task.attempt
             ):
                 return False
-            task.status = "paused"
+            task.status = (
+                "resume_requested"
+                if task.resume_request_event_id is not None
+                else "paused"
+            )
             task.status_event_id = event_id
             task.paused_event_id = event_id
             task.open_event_id = None
@@ -656,12 +699,16 @@ def apply_event(state: PMState, ev: dict) -> bool:
         if topic == "task.resume_requested":
             reason = payload.get("reason")
             if (
-                task.status != "paused"
+                task.status not in {"pause_requested", "paused"}
+                or task.resume_request_event_id is not None
                 or not isinstance(reason, str)
                 or not reason.strip()
             ):
                 return False
-            task.status = "resume_requested"
+            # Preserve the pause acknowledgement as the ownership fence, then
+            # let reconciliation immediately acknowledge this queued resume.
+            if task.status == "paused":
+                task.status = "resume_requested"
             task.status_event_id = event_id
             task.resume_request_event_id = event_id
             task.resume_reason = reason
@@ -786,12 +833,19 @@ def apply_event(state: PMState, ev: dict) -> bool:
             assignee = payload.get("assignee")
             if not isinstance(assignment_id, str) or not isinstance(assignee, str):
                 return False
-            if task.assignment_id == assignment_id:
+            if task.assignment_id is not None:
                 return False
-            if task.status != "open" or task.assignment_id is not None:
+            attempt = (
+                _positive_int(payload.get("attempt"))
+                or task.last_assignment_attempt + 1
+            )
+            if attempt != task.last_assignment_attempt + 1:
                 return False
-            attempt = _positive_int(payload.get("attempt")) or task.attempt + 1
-            if attempt != task.attempt + 1:
+            fenced_by_control = (
+                task.status in {"pause_requested", "paused", "resume_requested"}
+                or state.workflow_is_paused(task.correlation_id)
+            )
+            if task.status != "open" and not fenced_by_control:
                 return False
             payload_deadline_at = payload.get("deadline_at")
             if payload_deadline_at is not None:
@@ -821,6 +875,13 @@ def apply_event(state: PMState, ev: dict) -> bool:
                 worker_instance_id = worker.instance_id if worker else f"legacy:{assignee}"
             if not isinstance(worker_instance_id, str) or not worker_instance_id:
                 return False
+            task.last_assignment_attempt = attempt
+            if fenced_by_control:
+                # The event remains immutable evidence of a stale PM plan, but
+                # never becomes executable ownership. Advancing the delivery
+                # sequence gives the next post-resume assignment a fresh key.
+                task.status_event_id = event_id
+                return True
             task.status = "assigned"
             task.status_event_id = event_id
             task.attempt = attempt
@@ -904,7 +965,11 @@ def apply_event(state: PMState, ev: dict) -> bool:
             return True
 
         if topic == "task.assignment_expired":
-            if ev.get("actor") != "pm" or task.status not in ACTIVE_TASK_STATUSES:
+            if (
+                ev.get("actor") != "pm"
+                or state.workflow_is_paused(task.correlation_id)
+                or task.status not in ACTIVE_TASK_STATUSES
+            ):
                 return False
             if (
                 payload.get("assignment_id") != task.assignment_id
@@ -1002,6 +1067,7 @@ def apply_event(state: PMState, ev: dict) -> bool:
             if (
                 task.status != "failed"
                 or task.failed_event_id is None
+                or task.superseded_by_task_id is not None
                 or ev.get("caused_by") != task.failed_event_id
                 or additional_retries is None
                 or not isinstance(reason, str)

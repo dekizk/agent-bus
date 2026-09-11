@@ -136,8 +136,31 @@ def explain_task(
             "Cancellation is recorded and is waiting for PM reconciliation.",
             evidence,
         )
+    if task.deadline_at is not None and now >= task.deadline_at:
+        evidence.append(task.created_event_id)
+        control_detail = None
+        if task.status in {"pause_requested", "paused", "resume_requested"}:
+            control_detail = task.status
+        else:
+            workflow_control = state.workflow_control(task.correlation_id)
+            if workflow_control is not None and workflow_control.status != "active":
+                control_detail = f"workflow_{workflow_control.status}"
+                evidence.append(workflow_control.last_event_id)
+        return _explanation(
+            "deadline_reconciliation_pending",
+            "The task deadline has passed and the PM has not yet recorded task.deadline_exceeded.",
+            evidence,
+            control_status=control_detail,
+        )
     if task.status == "pause_requested":
         evidence.append(task.pause_request_event_id)
+        if task.resume_request_event_id is not None:
+            evidence.append(task.resume_request_event_id)
+            return _explanation(
+                "resume_queued",
+                "Resume is queued while the PM finishes recording the pause ownership fence.",
+                evidence,
+            )
         return _explanation(
             "pause_pending",
             "Pause is recorded and is waiting for PM acknowledgement.",
@@ -162,6 +185,16 @@ def explain_task(
     workflow_control = state.workflow_control(task.correlation_id)
     if workflow_control is not None and workflow_control.status != "active":
         evidence.append(workflow_control.last_event_id)
+        if (
+            workflow_control.status == "pause_requested"
+            and workflow_control.resume_request_event_id is not None
+        ):
+            return _explanation(
+                "workflow_resume_queued",
+                f"Workflow {task.correlation_id} will resume after the PM records its pause ownership fence.",
+                evidence,
+                workflow_status=workflow_control.status,
+            )
         return _explanation(
             f"workflow_{workflow_control.status}",
             f"Workflow {task.correlation_id} is {workflow_control.status.replace('_', ' ')}; this task cannot advance.",
@@ -222,13 +255,6 @@ def explain_task(
             evidence,
         )
 
-    if task.deadline_at is not None and now >= task.deadline_at:
-        evidence.append(task.created_event_id)
-        return _explanation(
-            "deadline_reconciliation_pending",
-            "The task deadline has passed and the PM has not yet recorded task.deadline_exceeded.",
-            evidence,
-        )
     if task.last_failure_event_id is not None and task.permanent_failure_pending:
         evidence.append(task.last_failure_event_id)
         return _explanation(

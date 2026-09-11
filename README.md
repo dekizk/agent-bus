@@ -363,7 +363,11 @@ attempt, then `task.paused` records the stable paused state. Resuming records a
 new command and acknowledgement; if execution had been interrupted, the next
 assignment uses the next attempt number without charging a retryable failure.
 A blocked task resumes to its existing human-decision state rather than losing
-the question it was waiting on.
+the question it was waiting on. If resume races the pause acknowledgement, the
+request is queued: the PM records the ownership fence first, then immediately
+acknowledges the resume. The PM consumes its own effects through the same
+ordered event cursor as every other command, so live state and fresh replay
+cannot observe those events in different orders.
 
 ```sh
 agent-bus pause task 12 --reason "hold during maintenance"
@@ -375,9 +379,17 @@ agent-bus resume workflow 01abc... --reason "continue rollout"
 A workflow pause is a correlation-scoped gate. It revokes active assignments,
 prevents new assignments and ordinary PM effects, and also gates tasks created
 while the workflow is paused. Cancellation and persisted task deadlines remain
-authoritative during a pause. Resuming the workflow reopens interrupted tasks
-with monotonic attempt identities while leaving individually paused tasks
-paused.
+authoritative during a pause. The pause request captures an immutable snapshot
+of assignment ownership. Its acknowledgement always names that request-time
+snapshot, but revokes only assignments that are still active and still match;
+an intervening cancellation, task pause, supersession, or deadline keeps its
+stronger state. Resuming the workflow reopens only the tasks actually
+interrupted by that acknowledgement, with monotonic attempt identities, while
+leaving individually paused or terminal tasks untouched. A stale assignment
+that crosses a pause boundary is retained as audit evidence but never becomes
+executable ownership; its delivery number is not reused after resume. Workers
+also remember task and workflow pause gates so such a delivery cannot reach the
+adapter before the PM rejects it.
 
 Supersession records changed intent by creating a replacement task. It never
 edits the old task or its dependency edges:
@@ -397,6 +409,11 @@ normal dependency-failure path, so changed downstream intent must also be
 represented by new tasks. Each old task may have only one direct replacement,
 while a later revision can supersede that replacement to form an auditable
 chain.
+
+Once a task has a replacement, the old intent cannot be revived with
+`task.retry_requested`, even when its original terminal outcome was failure.
+Retry or supersede the replacement instead. This prevents both the obsolete
+and replacement intents from becoming executable at the same time.
 
 The command helpers accept optional idempotency keys. Supply the same key when
 retrying an operator command after an uncertain HTTP response. Without one,
@@ -1078,7 +1095,7 @@ Core v2 topics:
 | `task.assignment_expired` | PM | Records loss or replacement of the assigned worker |
 | `task.failed` | PM | Terminates a task after policy exhaustion or permanent failure |
 | `task.dependency_failed` | PM | Terminates downstream work whose prerequisite failed |
-| `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task |
+| `task.retry_requested` | human/agent | Extends policy and reopens the latest failed task when its intent has not been superseded |
 | `task.cancel_requested` | human/agent | Requests terminal cancellation of an existing task |
 | `task.cancelled` | PM | Records crash-safe terminal cancellation and its last attempt |
 | `task.deadline_exceeded` | PM | Terminates a task after its persisted absolute deadline |
@@ -1088,7 +1105,7 @@ Core v2 topics:
 | `task.resumed` | PM | Restores the task's pre-pause open or blocked state |
 | `task.superseded` | PM | Terminates old intent after a replacement task is created |
 | `workflow.pause_requested` | human/agent | Requests a correlation-scoped orchestration pause |
-| `workflow.paused` | PM | Records the active assignments interrupted by the workflow pause |
+| `workflow.paused` | PM | Acknowledges the request-time assignment snapshot; replay interrupts only assignments that still match |
 | `workflow.resume_requested` | human/agent | Requests that a paused workflow continue |
 | `workflow.resumed` | PM | Re-enables ordinary reconciliation for the workflow |
 | `decision.needed` | PM | Requests one human decision for a blocked attempt |

@@ -11,7 +11,7 @@ from pathlib import Path
 import bus
 from artifacts import ArtifactStore
 from examples.hermes.hermes_executor import HermesExecutor
-from pm_agent import PMState, PM_TOPICS, apply_event, reconcile
+from pm_agent import OrderedProjectionCursor, PMState, PM_TOPICS, reconcile
 from runtime import WorkerRuntime
 from telemetry import BusTelemetrySink, ProducerIdentity
 
@@ -22,6 +22,9 @@ class DirectClient:
 
     def publish(self, topic: str, payload: dict, **kwargs) -> dict:
         return bus.append_event(topic, self.actor, payload, **kwargs)
+
+    def query_all(self, *, after_id=0, topics=None) -> list[dict]:
+        return bus.fetch_after(after_id, topics)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -114,9 +117,15 @@ def main(argv: list[str] | None = None) -> None:
             )
 
             state = PMState()
-            for event in bus.fetch_after(0, list(PM_TOPICS)):
-                apply_event(state, event)
-            assignment = reconcile(state, DirectClient("pm"), now=time.time())[0]
+            cursor = OrderedProjectionCursor(state)
+            cursor.consume(bus.fetch_after(0, list(PM_TOPICS)))
+            pm_bus = DirectClient("pm")
+            assignment = reconcile(
+                state,
+                pm_bus,
+                now=time.time(),
+                cursor=cursor,
+            )[0]
 
             usages: list[dict[str, object]] = []
             artifact_store = None
@@ -159,13 +168,11 @@ def main(argv: list[str] | None = None) -> None:
             )
             runtime.run([assignment])
 
+            cursor.catch_up(pm_bus)
+            reconcile(state, pm_bus, now=time.time(), cursor=cursor)
             replayed = PMState()
-            for event in bus.fetch_after(0, list(PM_TOPICS)):
-                apply_event(replayed, event)
-            reconcile(replayed, DirectClient("pm"), now=time.time())
-            replayed = PMState()
-            for event in bus.fetch_after(0, list(PM_TOPICS)):
-                apply_event(replayed, event)
+            replay_cursor = OrderedProjectionCursor(replayed)
+            replay_cursor.consume(bus.fetch_after(0, list(PM_TOPICS)))
             task = next(iter(replayed.tasks.values()))
             completed = bus.fetch_after(0, ["task.completed"])
             attempt_failures = bus.fetch_after(0, ["task.attempt_failed"])

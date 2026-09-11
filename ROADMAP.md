@@ -290,14 +290,30 @@ Phase 2 — operator controls:
 - [x] fence late output from paused or superseded attempts;
 - [x] explain every control transition from event evidence.
 
+Phase 2 correctness hardening:
+
+- [x] consume concurrent commands and PM effects through one ordered cursor;
+- [x] queue resume commands that arrive before pause acknowledgement;
+- [x] make workflow-pause acknowledgements stable from the request-time
+  assignment snapshot while preserving stronger intervening task controls;
+- [x] fence stale assignments and expiries at workflow pause boundaries;
+- [x] recover identical concurrent supersession and adoption requests by
+  idempotency key;
+- [x] prevent retry from reviving intent that already has a replacement;
+- [x] align deadline explanations with PM transition precedence;
+- [x] cover live-versus-replay equality and control interleavings with isolated
+  regressions;
+- [x] repeat the live executor pause/resume trial against the hardened runtime.
+
 Phase 2 keeps control state in the log. Task pause/resume uses request and PM
 acknowledgement events; workflow pause is a correlation-scoped scheduling and
 ownership gate. Supersession creates a replacement `task.created` event and a
 PM-derived terminal event for the old task rather than editing old intent.
-Unit evidence covers replay, duplicate acknowledgements, crash windows,
-blocked-task preservation, tasks created under a workflow pause, hard
-deadlines, dependency propagation, and late worker output. Live executor
-evidence remains required before v0.10 is complete.
+Unit evidence covers replay, duplicate acknowledgements, concurrent commands,
+crash windows, blocked-task preservation, tasks created under a workflow pause,
+hard deadlines, dependency propagation, stale PM effects, and late worker
+output. The original Hermes phase 2 trials and an isolated ordered-cursor live
+worker repeat passed; Phase 3 remains required before v0.10 is complete.
 
 Phase 3 — fairness and budgets:
 

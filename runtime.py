@@ -37,10 +37,12 @@ RUNTIME_TOPICS = (
     "task.deadline_exceeded",
     "task.pause_requested",
     "task.paused",
+    "task.resumed",
     "task.superseded",
     "task.created",
     "workflow.pause_requested",
     "workflow.paused",
+    "workflow.resumed",
 )
 
 _PHASE_ACCEPTED = "accepted"
@@ -112,6 +114,8 @@ class WorkerRuntime:
         self._task_by_assignment: dict[str, int] = {}
         self._correlation_by_assignment: dict[str, str] = {}
         self._deadline_timers: dict[str, threading.Timer] = {}
+        self._paused_task_ids: set[int] = set()
+        self._paused_correlations: set[str] = set()
         self._accepting = False
         self._closed = False
         self._pool: Optional[ThreadPoolExecutor] = None
@@ -195,12 +199,20 @@ class WorkerRuntime:
             return
 
         if topic == "task.failed":
+            task_id = payload.get("task_id")
+            if isinstance(task_id, int):
+                with self._lock:
+                    self._paused_task_ids.discard(task_id)
             self._revoke(payload.get("last_assignment_id"))
             return
 
         if topic in {"task.cancel_requested", "task.pause_requested"}:
             task_id = payload.get("task_id")
             with self._lock:
+                if topic == "task.pause_requested" and isinstance(task_id, int):
+                    self._paused_task_ids.add(task_id)
+                elif topic == "task.cancel_requested" and isinstance(task_id, int):
+                    self._paused_task_ids.discard(task_id)
                 assignment_ids = tuple(
                     assignment_id
                     for assignment_id, owned_task_id in self._task_by_assignment.items()
@@ -210,13 +222,25 @@ class WorkerRuntime:
                 self._revoke(assignment_id)
             return
 
+        if topic == "task.resumed":
+            task_id = payload.get("task_id")
+            if isinstance(task_id, int):
+                with self._lock:
+                    self._paused_task_ids.discard(task_id)
+            return
+
         if topic in {"task.cancelled", "task.deadline_exceeded", "task.paused", "task.superseded"}:
+            task_id = payload.get("task_id")
+            if topic != "task.paused" and isinstance(task_id, int):
+                with self._lock:
+                    self._paused_task_ids.discard(task_id)
             self._revoke(payload.get("last_assignment_id"))
             return
 
         if topic == "task.created" and isinstance(payload.get("supersedes_task_id"), int):
             superseded_task_id = payload["supersedes_task_id"]
             with self._lock:
+                self._paused_task_ids.discard(superseded_task_id)
                 assignment_ids = tuple(
                     assignment_id
                     for assignment_id, owned_task_id in self._task_by_assignment.items()
@@ -229,6 +253,8 @@ class WorkerRuntime:
         if topic in {"workflow.pause_requested", "workflow.paused"}:
             correlation_id = event.get("correlation_id")
             with self._lock:
+                if isinstance(correlation_id, str):
+                    self._paused_correlations.add(correlation_id)
                 assignment_ids = tuple(
                     assignment_id
                     for assignment_id, owned_correlation_id
@@ -239,6 +265,14 @@ class WorkerRuntime:
                 self._revoke(assignment_id)
             return
 
+
+        if topic == "workflow.resumed":
+            correlation_id = event.get("correlation_id")
+            if isinstance(correlation_id, str):
+                with self._lock:
+                    self._paused_correlations.discard(correlation_id)
+            return
+
         if topic != "task.assigned":
             return
         if (
@@ -247,9 +281,16 @@ class WorkerRuntime:
         ):
             return
         raw_assignment_id = payload.get("assignment_id")
+        task_id = payload.get("task_id")
+        correlation_id = event.get("correlation_id")
         if isinstance(raw_assignment_id, str):
             with self._lock:
-                if raw_assignment_id in self._seen_assignment_ids:
+                if (
+                    raw_assignment_id in self._seen_assignment_ids
+                    or task_id in self._paused_task_ids
+                    or correlation_id in self._paused_correlations
+                ):
+                    self._seen_assignment_ids.add(raw_assignment_id)
                     return
         try:
             resolved_event = self._resolve_dependency_refs_with_retry(event)
@@ -288,7 +329,6 @@ class WorkerRuntime:
             self._owned.add(assignment_id)
             self._assignment_phases[assignment_id] = _PHASE_ACCEPTED
             self._task_by_assignment[assignment_id] = assignment.task_id
-            correlation_id = event.get("correlation_id")
             if isinstance(correlation_id, str):
                 self._correlation_by_assignment[assignment_id] = correlation_id
             if assignment.deadline_at is not None:

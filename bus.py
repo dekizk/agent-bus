@@ -1233,6 +1233,41 @@ def _assert_idempotent_match(
         )
 
 
+def _recover_concurrent_idempotent_claim(
+    conn: sqlite3.Connection,
+    *,
+    topic: str,
+    actor: str,
+    payload: dict,
+    caused_by: Optional[int],
+    idempotency_key: Optional[str],
+    schema_version: int,
+    correlation_id: Optional[str],
+    producer: Optional[dict],
+) -> Optional[dict]:
+    """Recover when a claim race lost to the same logical request."""
+    if idempotency_key is None:
+        return None
+    # Release the failed write transaction before reading the winning event.
+    conn.rollback()
+    row = conn.execute(
+        "SELECT * FROM events WHERE actor = ? AND idempotency_key = ?",
+        (actor, idempotency_key),
+    ).fetchone()
+    if row is None:
+        return None
+    _assert_idempotent_match(
+        row,
+        topic=topic,
+        payload=payload,
+        caused_by=caused_by,
+        schema_version=schema_version,
+        correlation_id=correlation_id,
+        producer=producer,
+    )
+    return row_to_dict(row)
+
+
 def append_event(
     topic: str,
     actor: str,
@@ -1296,6 +1331,19 @@ def append_event(
                         origin_claim,
                     )
                 except sqlite3.IntegrityError as exc:
+                    recovered = _recover_concurrent_idempotent_claim(
+                        conn,
+                        topic=topic,
+                        actor=actor,
+                        payload=requested_payload,
+                        caused_by=caused_by,
+                        idempotency_key=idempotency_key,
+                        schema_version=schema_version,
+                        correlation_id=correlation_id,
+                        producer=producer,
+                    )
+                    if recovered is not None:
+                        return recovered
                     existing = conn.execute(
                         """
                         SELECT event_id FROM external_origin_claims
@@ -1326,6 +1374,19 @@ def append_event(
                         (supersession_claim,),
                     )
                 except sqlite3.IntegrityError as exc:
+                    recovered = _recover_concurrent_idempotent_claim(
+                        conn,
+                        topic=topic,
+                        actor=actor,
+                        payload=requested_payload,
+                        caused_by=caused_by,
+                        idempotency_key=idempotency_key,
+                        schema_version=schema_version,
+                        correlation_id=correlation_id,
+                        producer=producer,
+                    )
+                    if recovered is not None:
+                        return recovered
                     existing = conn.execute(
                         """
                         SELECT event_id FROM task_supersession_claims
@@ -1362,6 +1423,22 @@ def append_event(
                 conn.execute(
                     "UPDATE counters SET value = max(value, ?) WHERE name = 'task_id'",
                     (payload["task_id"],),
+                )
+        if topic == "task.retry_requested":
+            task_id = payload["task_id"]
+            replacement = conn.execute(
+                "SELECT event_id FROM task_supersession_claims WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if replacement is not None:
+                event_label = (
+                    f" at event #{replacement['event_id']}"
+                    if replacement["event_id"] is not None
+                    else ""
+                )
+                raise EventValidationError(
+                    f"task {task_id} has already been superseded{event_label} "
+                    "and cannot be retried"
                 )
 
         try:
