@@ -32,6 +32,63 @@ def retries_remaining(task: TaskRecord) -> Optional[int]:
     return max(0, task.max_retries - task.retryable_failures)
 
 
+def operator_next_action(task: TaskRecord, *, now=None) -> list[str]:
+    """Copyable command templates, never automatically executed."""
+    base = ['agent-bus']
+    if (now is not None and task.deadline_at is not None and now >= task.deadline_at
+            and task.status not in TASK_TERMINAL_STATUSES):
+        return base + ['explain', str(task.task_id)]
+    if task.status == 'failed' and task.failed_event_id:
+        return base + ['retry', str(task.task_id), '--failed-event', str(task.failed_event_id),
+                       '--additional-retries', '1', '--reason', 'REPLACE_WITH_REASON']
+    if task.status == 'blocked' and task.decision_needed and task.decision_event_id:
+        return base + ['decide', str(task.task_id), '--decision-event', str(task.decision_event_id),
+                       '--value', '"REPLACE_WITH_ANSWER"']
+    if task.status == 'paused':
+        return base + ['resume', 'task', str(task.task_id), '--reason', 'REPLACE_WITH_REASON']
+    return base + ['explain' if task.status not in TASK_TERMINAL_STATUSES else 'task', str(task.task_id)]
+
+
+def discovery_view(state, *, kind, now, lease_seconds, limit=50, after_task_id=0,
+                   after_workflow='', status=None, correlation_id=None):
+    """Paginate current projected state; pagination does not mutate history."""
+    if not 1 <= limit <= 200:
+        raise ValueError('listing limit must be between 1 and 200')
+    if kind == 'workflows':
+        identities = sorted({task.correlation_id for task in state.tasks.values()
+                             if task.correlation_id is not None})
+        rows = []
+        for identity in identities:
+            if identity <= after_workflow:
+                continue
+            view = workflow_view(state, identity, now=now, lease_seconds=lease_seconds)
+            if status and view['status'] != status:
+                continue
+            rows.append({key: view[key] for key in ('correlation_id', 'status', 'task_count', 'status_counts')})
+            if len(rows) > limit:
+                break
+        return {'workflows': rows[:limit], 'next_after_workflow': rows[limit-1]['correlation_id'] if len(rows) > limit else None,
+                'uncorrelated_task_count': sum(t.correlation_id is None for t in state.tasks.values())}
+    candidates = [task for task in sorted(state.tasks.values(), key=lambda task: task.task_id)
+                  if task.task_id > after_task_id
+                  and (not status or task.status == status)
+                  and (correlation_id is None or task.correlation_id == correlation_id)
+                  and (kind != 'decisions' or (task.status == 'blocked' and task.decision_needed))]
+    rows = []
+    for task in candidates[:limit]:
+        view = task_view(state, task.task_id, now=now, lease_seconds=lease_seconds)
+        row = {key: view[key] for key in ('task_id', 'title', 'correlation_id', 'status', 'effective_status', 'status_event_id')}
+        row.update(explanation=view['explanation'], next_action=operator_next_action(task, now=now))
+        if kind == 'decisions':
+            row.update(decision_id=task.decision_id, decision_event_id=task.decision_event_id,
+                       assignment_id=task.assignment_id, reason=task.block_reason,
+                       response_allowed=task.deadline_at is None or now < task.deadline_at)
+            if not row['response_allowed']:
+                row['next_action'] = ['agent-bus', 'explain', str(task.task_id)]
+        rows.append(row)
+    return {kind: rows, 'next_after_task_id': rows[-1]['task_id'] if len(candidates) > limit else None}
+
+
 def worker_views(
     state: CoordinationProjection,
     *,
@@ -536,6 +593,7 @@ def task_view(
     return {
         "task_id": task.task_id,
         "title": task.title,
+        "next_action": operator_next_action(task, now=now),
         "correlation_id": task.correlation_id,
         "status": task.status,
         "effective_status": effective_status,

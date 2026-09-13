@@ -1,0 +1,6 @@
+# Direct runtime dependency floors. Transitive requirements still resolve normally.
+# Run on CPython 3.10, where wheels for the original minimums are available.
+fastapi==0.115.0
+httpx==0.27.0
+pydantic==2.8.0
+uvicorn==0.30.0

@@ -1,0 +1,121 @@
+{
+  "source_release": "v0.11.0",
+  "source_commit": "c06f33ac68873140ec5eca98ef9e84dc2d3bf63b",
+  "exports": {
+    "agent_bus": [
+      "AdoptionBridge",
+      "AdoptionMode",
+      "ArtifactError",
+      "ArtifactIntegrityError",
+      "ArtifactStore",
+      "AssignmentContext",
+      "Blocked",
+      "BusClient",
+      "BusProtocolError",
+      "BusTelemetrySink",
+      "CURRENT_PROTOCOL_VERSION",
+      "CanarySelector",
+      "CliAgentAdapter",
+      "CliAgentConfig",
+      "Completed",
+      "ConformanceCheck",
+      "ConformanceReport",
+      "DEFAULT_TASK_PRIORITY",
+      "ExecutionOwner",
+      "Executor",
+      "ExternalOrigin",
+      "HttpAgentAdapter",
+      "HttpAgentConfig",
+      "IntegrationConfig",
+      "Outcome",
+      "OwnershipDecision",
+      "PROTOCOL_NAME",
+      "PermanentFailure",
+      "ProducerIdentity",
+      "PythonAgentAdapter",
+      "RetryableFailure",
+      "SUPPORTED_PROTOCOL_VERSIONS",
+      "TASK_PRIORITY_CLASSES",
+      "TelemetrySink",
+      "WorkerRuntime",
+      "assignment_message",
+      "cancellation_message",
+      "check_executor",
+      "decide_ownership",
+      "load_python_target",
+      "outcome_message",
+      "parse_assignment_message",
+      "parse_outcome_message",
+      "probe_assignment",
+      "validate_artifact_ref",
+      "validate_task_priority"
+    ],
+    "agent_bus.adapters": [
+      "CliAgentAdapter",
+      "CliAgentConfig",
+      "HttpAgentAdapter",
+      "HttpAgentConfig",
+      "IntegrationConfig",
+      "PythonAgentAdapter",
+      "load_python_target"
+    ],
+    "agent_bus.protocol": [
+      "CURRENT_PROTOCOL_VERSION",
+      "PROTOCOL_NAME",
+      "SUPPORTED_PROTOCOL_VERSIONS",
+      "assignment_message",
+      "cancellation_message",
+      "outcome_message",
+      "parse_assignment_message",
+      "parse_outcome_message"
+    ]
+  },
+  "assignment_v1": {
+    "protocol": {
+      "name": "agent-bus.executor",
+      "version": 1,
+      "supported_versions": [
+        1
+      ]
+    },
+    "assignment": {
+      "correlation_id": "compat-flow",
+      "task_id": 1,
+      "assignment_id": "task:1:attempt:1",
+      "assignment_event_id": 2,
+      "effect_scope": "effect-scope:f7947a02785df9bc8725df7a975bd3ecfe93a3806db1324420f63df9997310e8",
+      "attempt": 1,
+      "goal": "Compatibility probe",
+      "context": {},
+      "decisions": [],
+      "dependencies": [],
+      "required_capabilities": [],
+      "retry_policy": {
+        "max_retries": null
+      },
+      "retryable_failures": 0,
+      "deadline_at": null,
+      "workflow_policy_event_id": null,
+      "agent_policy_event_id": null,
+      "assignee": "example",
+      "worker_instance_id": "instance-1",
+      "ownership": {
+        "mode": "controlled",
+        "owner": "agent-bus"
+      }
+    }
+  },
+  "outcome_v1": {
+    "protocol": {
+      "name": "agent-bus.executor",
+      "version": 1
+    },
+    "outcome": {
+      "status": "completed",
+      "summary": "done",
+      "result": {
+        "value": 42
+      }
+    }
+  }
+}

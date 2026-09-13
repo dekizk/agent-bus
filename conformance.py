@@ -53,7 +53,7 @@ class ConformanceReport:
 
 
 def probe_assignment() -> AssignmentContext:
-    """A side-effect-free assignment adapters can recognize during checks."""
+    """A probe requesting no external effects; adapters must honor that request."""
     return AssignmentContext(
         correlation_id="agent-bus-conformance",
         task_id=1,
@@ -74,7 +74,11 @@ def probe_assignment() -> AssignmentContext:
 
 
 def check_executor(executor, *, close: bool = True) -> ConformanceReport:
-    """Execute one bounded probe and validate the public outcome contract."""
+    """Synchronously validate one probe; no timeout or sandbox is provided.
+
+    The CLI loads targets in a separate, timed process. Library callers own
+    their executor's execution/cleanup bounds and side-effect protections.
+    """
     checks = []
     execute = getattr(executor, "execute", None)
     checks.append(

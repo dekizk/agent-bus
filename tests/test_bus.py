@@ -691,6 +691,20 @@ class BusApiTests(unittest.TestCase):
         bus.API_TOKEN = self.original_api_token
         self.temp_dir.cleanup()
 
+    def test_health_cursor_tracks_persisted_event_head(self):
+        before = self.client.get("/health").json()
+        self.assertEqual(0, before["last_event_id"])
+        published = self.client.post(
+            "/events",
+            json={"topic": "task.created", "actor": "human",
+                  "payload": {"title": "Cursor test"},
+                  "idempotency_key": "cursor-test"},
+        )
+        self.assertEqual(200, published.status_code)
+        after = self.client.get("/health").json()
+        self.assertEqual(published.json()["id"], after["last_event_id"])
+        self.assertEqual(before["database_id"], after["database_id"])
+
     def test_publish_query_and_contract_errors(self):
         self.assertEqual(VERSION, bus.app.version)
         created = self.client.post(

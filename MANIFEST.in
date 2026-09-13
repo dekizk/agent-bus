@@ -1,0 +1,7 @@
+include COMPATIBILITY.md RECOVERY.md RELEASE_NOTES.md ROADMAP.md
+include requirements.txt requirements-dev.txt
+recursive-include benchmarks *.py *.md
+recursive-include scripts *.py
+recursive-include ci *.txt
+recursive-include tests *.py *.json
+recursive-include examples *.py *.json *.md

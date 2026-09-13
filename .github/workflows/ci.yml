@@ -1,0 +1,72 @@
+name: Local release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.dependencies }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: '3.10', dependencies: latest}
+          - {os: ubuntu-latest, python: '3.10', dependencies: minimum}
+          - {os: ubuntu-latest, python: '3.13', dependencies: latest}
+          - {os: ubuntu-latest, python: '3.14', dependencies: latest}
+          - {os: macos-latest, python: '3.13', dependencies: latest}
+          - {os: macos-latest, python: '3.14', dependencies: latest}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install development tools and runtime dependencies
+        env:
+          DEPENDENCY_SET: ${{ matrix.dependencies }}
+        run: |
+          mkdir -p .ci-results
+          if [ "$DEPENDENCY_SET" = minimum ]; then
+            python -m pip install -c ci/constraints-min.txt -r requirements-dev.txt
+          else
+            python -m pip install -r requirements-dev.txt
+          fi
+      - name: Preserve resolved dependencies
+        if: always()
+        run: python -m pip freeze > .ci-results/dependencies.txt
+      - name: Regression suite
+        run: python -m pytest -q --junitxml=.ci-results/tests.xml
+      - name: Build sdist and wheel from sdist
+        run: python -m build
+      - name: Fresh wheel installation and live CLI workflow
+        env:
+          DEPENDENCY_SET: ${{ matrix.dependencies }}
+        run: |
+          if [ "$DEPENDENCY_SET" = minimum ]; then
+            python scripts/check_release.py --wheel dist/*.whl --output .ci-results/package --constraints ci/constraints-min.txt
+          else
+            python scripts/check_release.py --wheel dist/*.whl --output .ci-results/package
+          fi
+      - name: Retain diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checks-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.dependencies }}
+          path: |
+            .ci-results/*.txt
+            .ci-results/*.xml
+            .ci-results/package/*.json
+            .ci-results/package/*.txt
+            .ci-results/package/*.log
+          include-hidden-files: true
+          retention-days: 14

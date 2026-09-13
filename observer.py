@@ -89,6 +89,35 @@ class ObserverClient:
             if len(page) < page_size:
                 return events
 
+    def iter_events(self, *, through_id: int, after_id: int = 0,
+                    topics: Optional[list[str]] = None, page_size: int = 1000):
+        """Stream a fixed prefix in bounded pages, without offsets or writes."""
+        if type(through_id) is not int or type(after_id) is not int or not 0 <= after_id <= through_id:
+            raise ValueError("history bounds must be ordered nonnegative integers")
+        if type(page_size) is not int or not 1 <= page_size <= 10000:
+            raise ValueError("invalid history page size")
+        cursor = after_id
+        while cursor < through_id:
+            page = self.query(after_id=cursor, topics=topics, limit=page_size)
+            if not isinstance(page, list) or len(page) > page_size:
+                raise ValueError("history response exceeds its page limit")
+            if not page:
+                return
+            for event in page:
+                if not isinstance(event, dict):
+                    raise ValueError("history contains a non-event")
+                event_id = event.get("id")
+                if type(event_id) is not int or event_id <= cursor:
+                    raise ValueError("history is not strictly ordered")
+                if event_id > through_id:
+                    return
+                if not isinstance(event.get("payload"), dict) or (topics and event.get("topic") not in topics):
+                    raise ValueError("history contains a malformed or incorrectly filtered event")
+                cursor = event_id
+                yield event
+            if len(page) < page_size:
+                return
+
     def subscribe(
         self,
         *,

@@ -9,6 +9,9 @@ and remaining path from the current local control plane to v1.0.
 
 Current release: **v0.11.0** — local scale and recovery hardening.
 See [release notes](RELEASE_NOTES.md) for changes, validation, and known limits.
+New here? Start with [setup](#setup) and the [first task](#quick-start-one-verifiable-task).
+See [compatibility and support](COMPATIBILITY.md) for platform targets, upgrades,
+public contracts, and automated release checks.
 
 The bus does not store a mutable kanban card as truth. Every action is an
 immutable SQLite event. The project manager (PM) derives current state by
@@ -102,7 +105,8 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 | `agent_bus/` | Stable public integration imports for application and adapter authors |
 | `executor_protocol.py` | Strict, versioned CLI and HTTP assignment/outcome envelopes |
 | `integration.py` | Python, configured CLI, and guarded HTTP adapter wrappers |
-| `conformance.py` | Standalone side-effect-free adapter contract probe |
+| `conformance.py` | Synchronous library adapter contract probe |
+| `adapter_check.py` | Internal timed process boundary for CLI adapter probes |
 | `local_config.py` | Validated loopback-only local onboarding configuration |
 | `runtime.py` | Leased, concurrent worker runtime with ownership-loss cancellation |
 | `adoption.py` | Controlled, shadow, and deterministic canary integration helpers |
@@ -138,8 +142,10 @@ The design depends on these invariants:
   New intent means new tasks, not edited edges or mutable board state.
 - **Bounded coordination data.** Context, results, decisions, and resolved
   dependencies remain compact. Large content belongs in external artifacts.
-- **Telemetry is observational.** Model and tool events can explain execution
-  but never decide task ownership, readiness, retries, or terminal state.
+- **Raw telemetry is separate from coordination.** The PM does not replay model
+  or tool topics. Compact `workflow.usage_recorded` coordination events derived
+  from model usage do affect budget admission; telemetry cannot directly grant
+  ownership or complete a task.
 - **Local trust boundary.** The current bus assumes one trusted PM on one host;
   actor strings are self-reported even when perimeter authentication is on.
 - **External effects remain the adapter's responsibility.** File writes,
@@ -147,6 +153,18 @@ The design depends on these invariants:
   such as `assignment.effect_id("deploy")`, across retry attempts.
 
 ## Setup
+
+Use macOS or Linux with Python 3.10+; native Windows is not supported.
+See the [tested-platform policy](COMPATIBILITY.md#supported-deployment-target).
+For a new installation, obtain the released source first:
+
+```sh
+git clone --branch v0.11.0 https://github.com/dekizk/agent-bus.git
+cd agent-bus
+```
+
+If you already have a development checkout, use that directory instead; do not
+clone over it or replace its uncommitted work. Then install from that directory:
 
 ```sh
 python3 --version              # must be Python 3.10+
@@ -186,6 +204,7 @@ TASK_ID=$(printf '%s' "$RESPONSE" | python -c \
   'import json,sys; print(json.load(sys.stdin)["payload"]["task_id"])')
 CORRELATION_ID=$(printf '%s' "$RESPONSE" | python -c \
   'import json,sys; print(json.load(sys.stdin)["correlation_id"])')
+printf 'Task: %s\nWorkflow: %s\n' "$TASK_ID" "$CORRELATION_ID"
 ```
 
 The server assigns `task_id` atomically. The PM assigns a live worker and emits
@@ -222,7 +241,7 @@ import json, sys
 task = json.load(sys.stdin)
 assert task["status"] == "completed", task
 assert task["assignment_active"] is False, task
-print("PASS: task completed exactly once")
+print("PASS: task is completed with no active assignment")
 '
 
 agent-bus workflow "$CORRELATION_ID" --json | python -c '
@@ -230,7 +249,7 @@ import json, sys
 workflow = json.load(sys.stdin)
 assert workflow["status"] == "completed", workflow
 assert workflow["task_count"] == 1, workflow
-print("PASS: workflow is replayable and complete")
+print("PASS: workflow reports one completed task")
 '
 ```
 
@@ -242,10 +261,88 @@ worker, or bus is not using the same URL. Read-only commands use an explicit
 environment disagree, the CLI stops with both values instead of silently
 connecting to the wrong bus; unset `AGENT_BUS_URL` or pass `--url` deliberately.
 
+These checks inspect projected state; they do not prove exactly-once execution
+or external effects. Keep the task/workflow IDs printed by submission so you
+can inspect them again. To stop this demo, press Ctrl-C in the worker terminal,
+then the PM terminal, then the server terminal. This preserves local history.
+Each new terminal needs `cd` into the same checkout and `. .venv/bin/activate`;
+if `agent-bus` is not found, check those two steps before reinstalling. Examples
+under `examples/` come from this source checkout (or the source distribution),
+not from installing the wheel alone. If you lose the IDs, run `agent-bus tasks`
+or `agent-bus workflows` to find them again.
+
 `agent-bus workflow "$CORRELATION_ID" --mermaid` prints a read-only Mermaid
 flowchart. It is another projection over the log, never an editable board.
 
-## Read-only operations CLI
+## Operations CLI
+
+### Find work and respond without composing events
+
+```sh
+agent-bus tasks
+agent-bus tasks --status failed --limit 20
+agent-bus tasks --workflow YOUR_CORRELATION_ID
+agent-bus workflows
+agent-bus decisions
+```
+
+Lists show IDs, projected state, and a next-command template. Replace any
+`REPLACE_WITH_...` placeholders before executing it. `--json` returns structured
+rows plus `observed_through_id`; follow `next_after_task_id` with
+`--after-task-id`, or `next_after_workflow` with `--after-workflow`, preserving
+your filters. The default is 50 rows, maximum 200. Task `--status` filters raw
+task state; `effective_status` additionally exposes workflow pauses. Workflows
+are ordered by correlation ID; tasks/decisions by task ID. Legacy uncorrelated
+tasks remain in `tasks` and are counted separately by `workflows`.
+
+Each command replays a fixed event prefix in bounded HTTP pages. No consumer
+offsets or mutable task database are created. The retained projection still
+grows with history; a small output limit does not make replay constant-cost.
+Separate listing calls may observe newer state, so pagination is not a frozen
+multi-command snapshot. These commands require the matching bus version's
+`/health.last_event_id`; upgrade bus and CLI together.
+
+Use the real IDs returned by the views in these templates:
+
+```sh
+agent-bus cancel TASK_ID --reason 'No longer needed'
+agent-bus retry TASK_ID --failed-event FAILURE_EVENT_ID --additional-retries 1 --reason 'Underlying issue fixed'
+agent-bus decide TASK_ID --decision-event DECISION_EVENT_ID --value '"staging"'
+# A decision can also be an object:
+agent-bus decide TASK_ID --decision-event DECISION_EVENT_ID --value '{"release_target":"staging"}'
+```
+
+Retry targets the exact `task.failed` event; it grants the specified number of
+new assignment opportunities, not an unlimited reset. Decide targets the exact
+`decision.needed` event shown by `decisions`; the CLI carries its assignment and
+decision identity automatically. This prevents stale commands from responding
+to a newer failure/question. Cancellation targets the logical task, not just one
+attempt. `task` and `explain` also display next-action templates.
+
+All three commands publish existing intent topics as `human`. They precheck
+current replayed state, then verify acceptance by replaying through the recorded
+event. A concurrent state change can still make an appended claim inapplicable:
+it remains in immutable history and is reported as `accepted: false` (exit 4),
+not successful control. An accepted cancel is initially a cancellation request;
+PM acknowledgement and eventual execution results must be checked separately.
+An accepted retry/decision reopens work; it does not mean the worker completed it.
+
+Commands derive stable idempotency keys from action/task and, for retry/decide,
+the explicit source event. Repeating the **identical** command returns the old
+event without reapplying it, even after the task moves on. Changed intent with
+the same key is refused. `--idempotency-key` is available for deliberately new
+intent; do not change it merely to bypass a stale-target warning. A rejected
+cancel that later becomes relevant again needs an explicitly new key after
+inspection. On a transport error, retry the same command/key because the first
+publication may already be recorded. Task/workflow lookup absence returns 3; invalid
+or stale prechecks return 2. JSON output includes the event, acceptance,
+duplicate status, observed cursor, task state, and follow-up command.
+
+URL/token resolution matches the read-only tools, with optional `--config` for
+these interventions and explicit `--url` taking precedence. No command provides
+per-user authorization or exactly-once external side effects.
+
+### Inspect an individual task or workflow
 
 The v0.8 commands read the public HTTP/SSE API only. They never publish events,
 create consumer offsets, cache a mutable projection, or participate in
@@ -736,6 +833,8 @@ Before connecting it to a live bus, run the contract probe:
 
 ```sh
 agent-bus adapter check --python-target my_package.agent:ExistingAgent
+# For a deliberately slower trusted probe:
+agent-bus adapter check --python-target my_package.agent:ExistingAgent --timeout 60
 ```
 
 The target may be a zero-argument class, an object with `run(assignment)`, or a
@@ -745,6 +844,29 @@ working directory. It must recognize
 and return a typed outcome without performing external side effects. The check
 does not require a running bus or PM. A complete copyable implementation lives
 in `examples/python_agent/`.
+
+The CLI runs each check in a fresh process with a **30-second total timeout**
+by default. `--timeout` must be positive and finite and covers target import,
+construction, execution, cleanup, and interpreter exit. A timeout produces a
+failed probe (exit 4); invalid configuration or an unimportable target remains
+exit 2. Ctrl-C or SIGTERM stops the check group and returns 130. Group termination
+may add up to roughly 1.25 seconds of cleanup after the deadline under normal OS
+conditions. Normal results retain the existing human/JSON format; adapter
+stdout/stderr is discarded, and the result channel is limited to 64 KiB so
+chatter cannot corrupt `--json` or fill a capture buffer.
+
+On success, failure, or handled interruption, the CLI stops remaining processes
+in its check's process group. **This is not a sandbox or a side-effect guarantee.**
+The adapter retains the user's file/network permissions. Detached processes,
+remote requests, and effects already performed may survive. Killing the CLI
+with SIGKILL or losing the host bypasses its cleanup. Use trusted targets that
+recognize the probe flag; use an OS sandbox when stronger containment is needed.
+No cancellation protocol is sent to remote agents by this timeout.
+
+The public library helper `agent_bus.check_executor(executor)` remains
+synchronous and untimed for already-created objects. Library callers must own
+execution/cleanup bounds themselves; arbitrary live objects are not transferred
+to the CLI subprocess.
 
 `capacity` is enforced by a bounded execution pool, so the worker never runs
 more assignments concurrently than it advertises. Unexpected Python

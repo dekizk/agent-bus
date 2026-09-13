@@ -2018,6 +2018,8 @@ async def get_event(event_id: int) -> dict:
 async def health() -> dict:
     def identity():
         with db() as conn:
-            return conn.execute("SELECT value FROM bus_metadata WHERE name='database_id'").fetchone()[0]
+            row = conn.execute("SELECT value, (SELECT COALESCE(MAX(id), 0) FROM events) "
+                               "FROM bus_metadata WHERE name='database_id'").fetchone()
+            return {"database_id": row[0], "last_event_id": row[1]}
     return {"ok": True, "schema_version": CURRENT_SCHEMA_VERSION,
-            "database_id": await run_in_threadpool(identity)}
+            **await run_in_threadpool(identity)}

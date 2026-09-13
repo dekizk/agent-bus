@@ -20,6 +20,7 @@ agent-bus = "agent_bus_cli:main"
 
 [tool.setuptools]
 py-modules = [
+    "adapter_check",
     "adoption",
     "agent_bus_cli",
     "artifacts",
@@ -33,6 +34,7 @@ py-modules = [
     "local_config",
     "observer",
     "operations",
+    "operator_controls",
     "pm_agent",
     "projection",
     "projection_store",

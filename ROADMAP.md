@@ -560,6 +560,109 @@ Automatic artifact deletion and archival log segments are consciously deferred:
 they require additional ownership/publication guarantees, not just an age flag.
 The current retention promise is safe reachability reporting, not automatic GC.
 
+## Pre-v1.0 readiness — implementation checkpoints
+
+These checkpoints close the audit's support and usability gaps without adding
+new scheduling semantics. No new release number is assigned by this checklist.
+The released v0.11.0 scope remains unchanged; this work is not a v1.0 declaration.
+
+### Checkpoint 1 — compatibility and reproducible release gates
+
+- [x] Define public SDK/event/adapter/config/CLI boundaries, upgrade/rollback
+  guidance, deprecation intent, and explicit platform limitations in
+  [COMPATIBILITY.md](COMPATIBILITY.md).
+- [x] Capture public exports and representative executor messages from the
+  released v0.11.0 wheel; test continued imports, fields/effect identity,
+  message parsing, and representative CLI JSON/exit statuses.
+- [x] Configure read-only CI for macOS/Linux, Python 3.10/3.13/3.14, a separate
+  direct-dependency-floor lane, regressions, sdist-to-wheel builds, and isolated
+  installed-CLI smoke checks. Retain resolved dependencies and diagnostics.
+- [x] Add a reusable credential-free installed-wheel check with import-origin
+  validation, bounded waits, owned-process cleanup, and live demo execution.
+- [x] Correct telemetry/accounting and quick-start verification overclaims;
+  add source acquisition, supported-platform, and terminal/shutdown guidance.
+- [x] Complete local sdist/wheel and fresh-install validation; recheck the list.
+- [ ] Observe the GitHub matrix passing after an approved commit/push. Workflow
+  configuration and local success are not evidence of remote platform results.
+
+Locally rechecked 2026-09-13: 284 tests passed (one existing dependency warning).
+The source archive contains the runner, fixtures, development requirements,
+and examples; the wheel built from that archive passed a fresh-venv live demo
+on macOS ARM64 / CPython 3.13.5. Installed-module origins were all inside the
+new venv. Doctor reported one healthy worker, no pending reconciliation, and
+no warnings. Trial-owned processes and the disposable environment were cleaned
+up; diagnostics remain in
+`outputs/agent-bus-trials/readiness-checkpoint1-final` in the Codex task workspace.
+No source runtime semantics, version, release tag, or live user state changed.
+Linux, other Python versions, and the direct-dependency-floor lane await CI.
+
+### Checkpoint 2 — bounded adapter checks
+
+- [x] Bound CLI target import/construction, probe execution, and cleanup with
+  actionable timeout errors; document the synchronous library helper separately.
+- [x] Test hangs and child-process cleanup. Do not describe timeout isolation
+  as a security sandbox or a proof of side-effect safety.
+- [x] Recheck the full suite and installed-wheel success/timeout/live-workflow
+  probes; record the validation evidence before closing this checkpoint.
+
+The implemented CLI default is 30 seconds, configurable with `--timeout`.
+Target loading and probing occur in a fresh process group; handled interruption
+and normal completion also clean up same-group children. Library
+`check_executor()` remains synchronous/untimed. Detached processes, remote
+effects, and parent SIGKILL/host loss are explicitly outside this cleanup
+guarantee. No new Windows support or sandbox claim is introduced.
+
+Locally rechecked 2026-09-13: 298 tests passed, with the same existing dependency
+warning. Regressions cover blocking config reads, import/constructor/execute/
+close/exit hangs, abrupt process exit, large/noisy/malformed results, same-group
+child cleanup, SIGINT/SIGTERM, and normal Python/CLI/loopback-HTTP adapters.
+The sdist-built wheel passed an isolated installation, normal and timed-out CLI
+probes, and a live demo task. Evidence:
+`outputs/agent-bus-trials/readiness-checkpoint2-verified` in the Codex task
+workspace. Temporary runtime processes/environments were cleaned up. These
+are macOS/CPython 3.13 local results; the remote platform matrix remains pending.
+
+### Checkpoint 3 — everyday operator actions
+
+- [x] Add read-only task/workflow discovery and pending human-decision views.
+- [x] Add cancel/retry/decision commands over existing intent events, preserving
+  validation, causal links, idempotency, and pending-versus-acknowledged status.
+- [x] Test stale targets and control races, then trial the packaged intervention
+  workflow and give waiting/failed states a concrete next action.
+
+`tasks`, `workflows`, and `decisions` replay a fixed event prefix in bounded
+pages; the resulting projection still grows with history. `cancel`, `retry`,
+and `decide` publish existing events, not mutable board state. Retry and human
+response require the exact failure/question event ID. Identical command retries
+reuse stable intent keys, and ordered replay verifies acceptance after publish;
+a recorded request is not a promise of completion or a PM acknowledgement.
+
+Locally rechecked 2026-09-13: 314 tests passed, with one existing dependency
+deprecation warning. Regressions cover pagination, changed intent, stale replies,
+newer questions, and completion/cancellation/supersession/deadline publication
+races. The sdist-built wheel passed a fresh-install live trial: discover a
+blocked task, answer it and verify the answer reaches execution, revive a
+failed task, and cancel unassigned work. All three repeated commands returned
+their original events without appending another intent; stale replies/retries
+with new keys were refused. Evidence:
+`outputs/agent-bus-trials/readiness-checkpoint3-final` in the Codex task workspace.
+This was a credential-free reference-executor trial, not a new Hermes trial or
+an unaided newcomer trial. Temporary processes/environments were cleaned up.
+The remote platform matrix, commit/push, and remaining release gates are pending;
+no version bump or release claim is implied.
+
+### Remaining v1.0 gates
+
+- [ ] Expand actual released-database upgrade fixtures and CLI/adapter contract
+  baselines to the support window selected for v1.0; representative tests alone
+  do not freeze every public output or certify all historical state transitions.
+- [ ] Obtain the owner's license/distribution decisions; do not infer a license.
+- [ ] Record an unaided newcomer install/connect/inspect/intervene trial.
+- [ ] Verify another genuine agent integration through the public contract.
+- [ ] Gather longer genuine-agent evidence with an agreed workload, authority,
+  duration, and spend cap; keep missing usage and external effects explicit.
+- [ ] Recheck the release requirements below before promoting to v1.0.
+
 ## v1.0 — stable local agent control plane
 
 v1.0 should make a clear, supportable promise: one local event-driven control

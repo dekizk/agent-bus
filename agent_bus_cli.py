@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -20,6 +21,8 @@ from operations import (
     ProjectionLookupError,
     build_projection,
     explain_task,
+    discovery_view,
+    operator_next_action,
     task_view,
     worker_views,
     workflow_mermaid,
@@ -43,6 +46,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     _add_common_options(parser, defaults=True)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    for name in ('tasks', 'workflows', 'decisions'):
+        listing = commands.add_parser(name, help=f'list projected {name} without needing an ID')
+        listing.add_argument('--limit', type=_positive_int, default=50, help='maximum rows (1–200)')
+        if name == 'workflows':
+            listing.add_argument('--after-workflow', default='', help='continue after this workflow ID')
+        else:
+            listing.add_argument('--after-task-id', type=_nonnegative_int, default=0)
+            listing.add_argument('--workflow', help='filter by correlation ID')
+        if name != 'decisions':
+            listing.add_argument('--status', help='filter by exact projected status (tasks use raw status)')
+        _add_common_options(listing)
+
+    for name in ('cancel', 'retry', 'decide'):
+        control = commands.add_parser(name, help=f'record a {name} intent and verify replay acceptance')
+        control.add_argument('task_id', type=_positive_int)
+        control.add_argument('--config', help='local config path; otherwise use normal URL resolution')
+        control.add_argument('--idempotency-key', help='reuse unchanged when retrying this command')
+        if name in ('cancel', 'retry'):
+            control.add_argument('--reason', required=True)
+        if name == 'retry':
+            control.add_argument('--failed-event', required=True, type=_positive_int)
+            control.add_argument('--additional-retries', required=True, type=_positive_int,
+                                 help='grant this many new assignment opportunities')
+        if name == 'decide':
+            control.add_argument('--decision-event', required=True, type=_positive_int)
+            control.add_argument('--value', required=True, help='JSON decision value (quote text as a JSON string)')
+        _add_common_options(control)
 
     doctor = commands.add_parser(
         "doctor", help="check the bus and local coordination view"
@@ -269,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
     target = adapter_check.add_mutually_exclusive_group(required=True)
     target.add_argument("--config", dest="integration_config")
     target.add_argument("--python-target", metavar="MODULE:ATTRIBUTE")
+    adapter_check.add_argument(
+        "--timeout", type=_positive_number, default=30.0,
+        help="total check timeout in seconds, including loading and cleanup (default: 30)",
+    )
     _add_output_option(adapter_check)
     adapter_run = adapter_commands.add_parser(
         "run", help="run a configuration-driven agent worker"
@@ -347,7 +382,7 @@ def main(
     try:
         args.url = _resolve_observer_url(
             args.url,
-            local_config_path=local_config_path,
+            local_config_path=getattr(args, 'config', None) or local_config_path,
         )
     except ValueError as exc:
         print(f"agent-bus: {exc}", file=stderr)
@@ -355,7 +390,36 @@ def main(
 
     client = client_factory(args.url, token=args.token)
     try:
-        if args.command == "doctor":
+        if args.command in {'tasks', 'workflows', 'decisions'}:
+            from operator_controls import read_snapshot
+            state, head, _, _, _ = read_snapshot(client)
+            value = discovery_view(state, kind=args.command, now=clock(), lease_seconds=args.lease_seconds,
+                                   limit=args.limit, after_task_id=getattr(args, 'after_task_id', 0),
+                                   after_workflow=getattr(args, 'after_workflow', ''),
+                                   status=getattr(args, 'status', None), correlation_id=getattr(args, 'workflow', None))
+            value['observed_through_id'] = head
+            _render_simple(value, args, stdout, _format_discovery(value, args.command))
+        elif args.command in {'cancel', 'retry', 'decide'}:
+            from operator_controls import intervene
+
+            def publish(intent):
+                headers = {'Authorization': f'Bearer {args.token}'} if args.token else {}
+                response = httpx.post(f'{args.url}/events', json=intent, headers=headers, timeout=10)
+                response.raise_for_status()
+                return response.json()
+
+            value = intervene(client, publish, command=args.command, task_id=args.task_id,
+                              reason=getattr(args, 'reason', None),
+                              anchor=getattr(args, 'failed_event', getattr(args, 'decision_event', None)),
+                              additional_retries=getattr(args, 'additional_retries', None),
+                              decision=json.loads(args.value) if args.command == 'decide' else None,
+                              idempotency_key=args.idempotency_key, now=clock())
+            _render_simple(value, args, stdout,
+                           f"Recorded {value['event']['topic']} · event #{value['event']['id']}\n"
+                           f"{value['message']}\nTask state at event #{value['observed_through_id']}: {value['task_status']}\n"
+                           f"Next: {shlex.join(value['next_action'])}")
+            return 0 if value['accepted'] else 4
+        elif args.command == "doctor":
             value = _doctor(client, now=clock(), lease_seconds=args.lease_seconds)
             _render(value, args, stdout, _format_doctor)
         elif args.command == "workers":
@@ -387,6 +451,7 @@ def main(
                     now=clock(),
                     lease_seconds=args.lease_seconds,
                 ),
+                "next_action": operator_next_action(state.tasks[args.task_id], now=clock()),
             }
             _render(value, args, stdout, _format_explanation)
         elif args.command == "workflow":
@@ -420,7 +485,11 @@ def main(
         print(f"agent-bus: {exc}", file=stderr)
         return 3
     except (httpx.HTTPError, BusProtocolError, json.JSONDecodeError, ValueError) as exc:
-        print(f"agent-bus: could not read {args.url}: {_friendly_error(exc)}", file=stderr)
+        if args.command in {'cancel', 'retry', 'decide'}:
+            print(f"agent-bus: intervention failed: {_friendly_error(exc)}. If publication was interrupted, "
+                  "retry the identical command/key; do not assume it was not recorded.", file=stderr)
+        else:
+            print(f"agent-bus: could not read {args.url}: {_friendly_error(exc)}", file=stderr)
         return 2
     except KeyboardInterrupt:
         return 130
@@ -499,15 +568,11 @@ def _run_local_command(
         return 0
 
     if args.command == "adapter" and args.adapter_command == "check":
-        from conformance import check_executor
-        from integration import IntegrationConfig, PythonAgentAdapter, load_python_target
+        from adapter_check import run_adapter_check
 
-        if args.integration_config:
-            executor = IntegrationConfig.from_file(args.integration_config).build_executor()
-        else:
-            target = load_python_target(args.python_target)
-            executor = target if callable(getattr(target, "execute", None)) else PythonAgentAdapter(target)
-        report = check_executor(executor)
+        report = run_adapter_check(python_target=args.python_target,
+                                   integration_config=args.integration_config,
+                                   timeout=args.timeout)
         value = report.to_dict()
         lines = [f"Adapter: {'PASS' if report.ok else 'FAIL'}"]
         lines.extend(
@@ -765,6 +830,29 @@ def _coordination_snapshot(client: ObserverClient):
     return build_projection(events), events
 
 
+def _format_discovery(value, kind):
+    rows = value[kind]
+    lines = [f"{kind.capitalize()} · {len(rows)} shown · through event #{value['observed_through_id']}"]
+    if not rows:
+        lines.append('No matching entries.')
+    for row in rows:
+        if kind == 'workflows':
+            lines.append(f"{row['correlation_id']} · {row['status']} · {row['task_count']} tasks")
+        else:
+            lines.append(f"Task {row['task_id']} · {row['effective_status']} · {row['title']}")
+            lines.append(f"  Workflow: {row['correlation_id'] or '(uncorrelated legacy task)'}")
+            if kind == 'decisions':
+                lines.append(f"  Decision event #{row['decision_event_id']} · {row['reason']}")
+            else:
+                lines.append(f"  {row['explanation']['summary']}")
+            lines.append(f"  Next: {shlex.join(row['next_action'])}")
+    cursor = value.get('next_after_task_id', value.get('next_after_workflow'))
+    if cursor is not None:
+        flag = '--after-workflow' if kind == 'workflows' else '--after-task-id'
+        lines.append(f'More entries: repeat with {flag} {shlex.quote(str(cursor))}, preserving your filters.')
+    return '\n'.join(lines)
+
+
 def _doctor(client: ObserverClient, *, now: float, lease_seconds: float) -> dict:
     health = client.health()
     state, events = _coordination_snapshot(client)
@@ -978,12 +1066,17 @@ def _format_task(value: dict) -> str:
         lines.append(f"Result: {value['completion_summary']}")
     trace = ", ".join(f"#{event_id}" for event_id in value["explanation"]["event_ids"])
     lines.append(f"Trace: {trace}")
+    if value.get('next_action'):
+        lines.append(f"Next: {shlex.join(value['next_action'])}")
     return "\n".join(lines)
 
 
 def _format_explanation(value: dict) -> str:
     trace = ", ".join(f"#{event_id}" for event_id in value["event_ids"])
-    return f"Task {value['task_id']}: {value['summary']}\nReason: {value['code']}\nTrace: {trace}"
+    result = f"Task {value['task_id']}: {value['summary']}\nReason: {value['code']}\nTrace: {trace}"
+    if value.get('next_action'):
+        result += f"\nNext: {shlex.join(value['next_action'])}"
+    return result
 
 
 def _format_workflow(value: dict) -> str:
