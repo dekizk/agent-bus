@@ -134,6 +134,11 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
             if version != f"agent-bus {imports['version']}":
                 raise AssertionError(f'CLI and wheel version differ: {version}')
             report['version'] = version
+            # Exercise the captured released database against installed modules,
+            # outside the checkout. -I keeps the test's directory off sys.path.
+            upgrade_test = Path(__file__).resolve().parents[1] / 'tests/test_released_upgrade.py'
+            run('released database upgrade', [python, '-I', str(upgrade_test), '-v'])
+            report['released_upgrade_verified'] = True
             (work / 'check_example.py').write_text(
                 "from agent_bus import Completed\nclass Agent:\n"
                 " def execute(self, assignment):\n"

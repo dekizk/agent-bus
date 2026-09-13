@@ -1,0 +1,2732 @@
+{
+  "assignments": [
+    {
+      "effect_id": "effect:66af5edb6f5021e0b4db1ed8c8aa33eb7a0b8f11b991eedcd8df64ebed1574cc",
+      "event_id": 11,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 11,
+          "assignment_id": "task:1:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:489c23c25dabc59ed8da6ee0caf2393a5f1fc188a9bae01e524df0f33f503f49",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": null
+          },
+          "goal": "parent",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 1,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:c7686f077e14e6ac19ed044aa609e26a99ec9d6eacf88df754e506526d031d6d",
+      "event_id": 12,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 12,
+          "assignment_id": "task:3:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:73e79fca95a9c3604f1f27c52e52134c43d9031eb21394f85960c1668d8da608",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 11
+          },
+          "goal": "question",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 3,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:35c425a3968c04210193983c0b08e77a43b52b74bb98d606a2e41262eb2daf3d",
+      "event_id": 13,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 13,
+          "assignment_id": "task:4:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:03b46edc19241a28803a56d3c2f83a202753c83f9d1822198ccdec4a885c01dd",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 12
+          },
+          "goal": "failure",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 4,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:b1bc8083e8bd6ba52f416c491bd77278dba21c296f3e9ac267226689a8df87c9",
+      "event_id": 14,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 14,
+          "assignment_id": "task:5:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:ea3e7bc0d0f5f28823b83e9c553a1987f04fdae348a1bda30f039702a65f9016",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 13
+          },
+          "goal": "paused",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 5,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:22215989edff79578a90b6a535b8a303eb03c75437ddc4d64336c15a106e93ce",
+      "event_id": 15,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 15,
+          "assignment_id": "task:6:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:6717f50fb2b863d468be87fe0f0d0ac34da10706de02877994cb170ea233fc5f",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 14
+          },
+          "goal": "cancel",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 6,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:55c301c4ca2360d753b40c72d6b99b77ba6d91455452a7eb29f5fa5053effc05",
+      "event_id": 16,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 16,
+          "assignment_id": "task:7:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": null,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:74e326b6905ad4fe2f62caae552a7069280163eb130fd2b20828cfa33dbd345a",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 15
+          },
+          "goal": "active",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 7,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    },
+    {
+      "effect_id": "effect:6b1341bf8fda25cde377553467de7ecd089a06ac5a81e2bf70b56ce88a4a3dad",
+      "event_id": 17,
+      "message": {
+        "assignment": {
+          "agent_policy_event_id": null,
+          "assignee": "fixture-worker",
+          "assignment_event_id": 17,
+          "assignment_id": "task:8:attempt:1",
+          "attempt": 1,
+          "budget_reservation": {
+            "cost_usd": 0.0,
+            "policy_event_id": 10,
+            "tokens": 1000
+          },
+          "context": {},
+          "correlation_id": "upgrade-flow",
+          "deadline_at": 1002.0,
+          "decisions": [],
+          "dependencies": [],
+          "effect_scope": "effect-scope:9d3a47450955090091d4aca5b05c52d97e7957cc589366c3cfa355293e40f5f0",
+          "fairness": {
+            "policy": "workflow_round_robin_v1",
+            "previous_assignment_event_id": 16
+          },
+          "goal": "deadline",
+          "ownership": {
+            "mode": "controlled",
+            "owner": "agent-bus"
+          },
+          "required_capabilities": [],
+          "retry_policy": {
+            "max_retries": 2
+          },
+          "retryable_failures": 0,
+          "task_id": 8,
+          "worker_instance_id": "release-instance",
+          "workflow_policy_event_id": 10
+        },
+        "protocol": {
+          "name": "agent-bus.executor",
+          "supported_versions": [
+            1
+          ],
+          "version": 1
+        }
+      }
+    }
+  ],
+  "cancellation_v1": {
+    "cancellation": {
+      "assignment_id": "task:7:attempt:1"
+    },
+    "protocol": {
+      "name": "agent-bus.executor",
+      "version": 1
+    }
+  },
+  "cli": [
+    {
+      "argv": [
+        "task",
+        "1",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": "fixture-worker",
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": 11,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": null
+        },
+        "assignment_id": "task:1:attempt:1",
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": "parent result",
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 2,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "completed",
+        "explanation": {
+          "code": "completed",
+          "details": {},
+          "event_ids": [
+            24
+          ],
+          "summary": "Task completed successfully at event #24."
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "completed",
+        "status_event_id": 24,
+        "task_id": 1,
+        "title": "parent",
+        "worker_instance_id": "release-instance",
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "2",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": null,
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": null,
+        "assignment_fairness": {
+          "policy": null,
+          "previous_assignment_event_id": null
+        },
+        "assignment_id": null,
+        "assignment_policy_event_id": null,
+        "attempt": 0,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 0
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 3,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [
+          {
+            "satisfied": true,
+            "status": "completed",
+            "status_event_id": 24,
+            "task_id": 1,
+            "title": "parent"
+          }
+        ],
+        "effective_status": "open",
+        "explanation": {
+          "code": "ready_for_assignment",
+          "details": {
+            "priority": "normal"
+          },
+          "event_ids": [
+            1,
+            3,
+            24
+          ],
+          "summary": "All dependencies and policies are satisfied; the task is waiting for PM assignment reconciliation."
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "open",
+        "status_event_id": 3,
+        "task_id": 2,
+        "title": "dependent",
+        "worker_instance_id": null,
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "3",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": "fixture-worker",
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": 12,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 11
+        },
+        "assignment_id": "task:3:attempt:1",
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 4,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": "decision:task:3:attempt:1",
+          "event_id": 23,
+          "needed": true,
+          "reason": "Which environment?"
+        },
+        "dependencies": [],
+        "effective_status": "blocked",
+        "explanation": {
+          "code": "human_decision_required",
+          "details": {
+            "decision_id": "decision:task:3:attempt:1"
+          },
+          "event_ids": [
+            18,
+            23
+          ],
+          "summary": "Which environment?"
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "blocked",
+        "status_event_id": 18,
+        "task_id": 3,
+        "title": "question",
+        "worker_instance_id": "release-instance",
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "4",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": null,
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": null,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 12
+        },
+        "assignment_id": null,
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 5,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "failed",
+        "explanation": {
+          "code": "failed",
+          "details": {},
+          "event_ids": [
+            19,
+            22
+          ],
+          "summary": "Task is terminal after repair_required: Repair me"
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "failed",
+        "status_event_id": 22,
+        "task_id": 4,
+        "title": "failure",
+        "worker_instance_id": null,
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "5",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": null,
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": null,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 13
+        },
+        "assignment_id": null,
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": "operator inspection",
+          "pause_request_event_id": 20,
+          "paused_event_id": 21,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 6,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "paused",
+        "explanation": {
+          "code": "paused",
+          "details": {
+            "resume_status": "open"
+          },
+          "event_ids": [
+            20,
+            21
+          ],
+          "summary": "Task is paused: operator inspection"
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "paused",
+        "status_event_id": 21,
+        "task_id": 5,
+        "title": "paused",
+        "worker_instance_id": null,
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "6",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": "fixture-worker",
+        "assignment_active": false,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": 15,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 14
+        },
+        "assignment_id": "task:6:attempt:1",
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 7,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "cancellation_requested",
+        "explanation": {
+          "code": "cancellation_pending",
+          "details": {},
+          "event_ids": [
+            25
+          ],
+          "summary": "Cancellation is recorded and is waiting for PM reconciliation."
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "cancellation_requested",
+        "status_event_id": 25,
+        "task_id": 6,
+        "title": "cancel",
+        "worker_instance_id": "release-instance",
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "7",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": "fixture-worker",
+        "assignment_active": true,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": 16,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 15
+        },
+        "assignment_id": "task:7:attempt:1",
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 8,
+        "deadline_at": null,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "assigned",
+        "explanation": {
+          "code": "active_lease_healthy",
+          "details": {
+            "agent_policy_event_id": null,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "fairness_policy": "workflow_round_robin_v1",
+            "lease_age_seconds": 1.0,
+            "previous_assignment_event_id": 15,
+            "workflow_policy_event_id": 10
+          },
+          "event_ids": [
+            1,
+            10,
+            15,
+            16
+          ],
+          "summary": "Attempt task:7:attempt:1 is assigned to fixture-worker with a healthy lease."
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "assigned",
+        "status_event_id": 16,
+        "task_id": 7,
+        "title": "active",
+        "worker_instance_id": "release-instance",
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "8",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "assignee": "fixture-worker",
+        "assignment_active": true,
+        "assignment_agent_policy_event_id": null,
+        "assignment_event_id": 17,
+        "assignment_fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 16
+        },
+        "assignment_id": "task:8:attempt:1",
+        "assignment_policy_event_id": 10,
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "tokens": 1000
+        },
+        "completion_summary": null,
+        "control": {
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "superseded_by_task_id": null,
+          "superseded_event_id": null,
+          "supersedes_task_id": null,
+          "supersession_reason": null
+        },
+        "correlation_id": "upgrade-flow",
+        "created_event_id": 9,
+        "deadline_at": 1002.0,
+        "decision": {
+          "decision_id": null,
+          "event_id": null,
+          "needed": false,
+          "reason": null
+        },
+        "dependencies": [],
+        "effective_status": "assigned",
+        "explanation": {
+          "code": "active_lease_healthy",
+          "details": {
+            "agent_policy_event_id": null,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "fairness_policy": "workflow_round_robin_v1",
+            "lease_age_seconds": 1.0,
+            "previous_assignment_event_id": 16,
+            "workflow_policy_event_id": 10
+          },
+          "event_ids": [
+            1,
+            10,
+            16,
+            17
+          ],
+          "summary": "Attempt task:8:attempt:1 is assigned to fixture-worker with a healthy lease."
+        },
+        "not_before": null,
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2,
+          "remaining": 2,
+          "retryable_failures": 0
+        },
+        "status": "assigned",
+        "status_event_id": 17,
+        "task_id": 8,
+        "title": "deadline",
+        "worker_instance_id": "release-instance",
+        "workflow_policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        }
+      }
+    },
+    {
+      "argv": [
+        "workflow",
+        "upgrade-flow",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "budget": {
+          "active_reservations": 2,
+          "attempts": 7,
+          "blocked": null,
+          "cost_usd": 0.0,
+          "missing_cost_reports": 5,
+          "missing_token_reports": 5,
+          "policy_event_id": 10,
+          "tokens": 7000
+        },
+        "control": {
+          "last_event_id": null,
+          "pause_reason": null,
+          "pause_request_event_id": null,
+          "paused_event_id": null,
+          "resume_reason": null,
+          "resume_request_event_id": null,
+          "resumed_event_id": null,
+          "status": "active"
+        },
+        "correlation_id": "upgrade-flow",
+        "edges": [
+          {
+            "from_task_id": 1,
+            "to_task_id": 2
+          }
+        ],
+        "event_ids": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          16,
+          17,
+          18,
+          21,
+          22,
+          24,
+          25
+        ],
+        "policy": {
+          "actor": "human",
+          "event_id": 10,
+          "max_active_assignments": 10,
+          "max_attempts": null,
+          "max_total_cost_usd": null,
+          "max_total_tokens": 10000,
+          "max_wall_clock_seconds": null,
+          "reason": "pinned release policy",
+          "reserve_cost_usd_per_assignment": 0.0,
+          "reserve_tokens_per_assignment": 1000,
+          "source": "operator",
+          "status": "active"
+        },
+        "scheduling": {
+          "last_assignment_event_id": 17,
+          "policy": "workflow_round_robin_v1"
+        },
+        "status": "needs_attention",
+        "status_counts": {
+          "assigned": 2,
+          "blocked": 1,
+          "cancellation_requested": 1,
+          "completed": 1,
+          "failed": 1,
+          "open": 1,
+          "paused": 1
+        },
+        "supersessions": [],
+        "task_count": 8,
+        "tasks": [
+          {
+            "assignee": "fixture-worker",
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": 11,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": null
+            },
+            "assignment_id": "task:1:attempt:1",
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": "parent result",
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 2,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "completed",
+            "explanation": {
+              "code": "completed",
+              "details": {},
+              "event_ids": [
+                24
+              ],
+              "summary": "Task completed successfully at event #24."
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "completed",
+            "status_event_id": 24,
+            "task_id": 1,
+            "title": "parent",
+            "worker_instance_id": "release-instance",
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": null,
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": null,
+            "assignment_fairness": {
+              "policy": null,
+              "previous_assignment_event_id": null
+            },
+            "assignment_id": null,
+            "assignment_policy_event_id": null,
+            "attempt": 0,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 0
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 3,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [
+              {
+                "satisfied": true,
+                "status": "completed",
+                "status_event_id": 24,
+                "task_id": 1,
+                "title": "parent"
+              }
+            ],
+            "effective_status": "open",
+            "explanation": {
+              "code": "ready_for_assignment",
+              "details": {
+                "priority": "normal"
+              },
+              "event_ids": [
+                1,
+                3,
+                24
+              ],
+              "summary": "All dependencies and policies are satisfied; the task is waiting for PM assignment reconciliation."
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "open",
+            "status_event_id": 3,
+            "task_id": 2,
+            "title": "dependent",
+            "worker_instance_id": null,
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": "fixture-worker",
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": 12,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 11
+            },
+            "assignment_id": "task:3:attempt:1",
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 4,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": "decision:task:3:attempt:1",
+              "event_id": 23,
+              "needed": true,
+              "reason": "Which environment?"
+            },
+            "dependencies": [],
+            "effective_status": "blocked",
+            "explanation": {
+              "code": "human_decision_required",
+              "details": {
+                "decision_id": "decision:task:3:attempt:1"
+              },
+              "event_ids": [
+                18,
+                23
+              ],
+              "summary": "Which environment?"
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "blocked",
+            "status_event_id": 18,
+            "task_id": 3,
+            "title": "question",
+            "worker_instance_id": "release-instance",
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": null,
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": null,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 12
+            },
+            "assignment_id": null,
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 5,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "failed",
+            "explanation": {
+              "code": "failed",
+              "details": {},
+              "event_ids": [
+                19,
+                22
+              ],
+              "summary": "Task is terminal after repair_required: Repair me"
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "failed",
+            "status_event_id": 22,
+            "task_id": 4,
+            "title": "failure",
+            "worker_instance_id": null,
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": null,
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": null,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 13
+            },
+            "assignment_id": null,
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": "operator inspection",
+              "pause_request_event_id": 20,
+              "paused_event_id": 21,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 6,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "paused",
+            "explanation": {
+              "code": "paused",
+              "details": {
+                "resume_status": "open"
+              },
+              "event_ids": [
+                20,
+                21
+              ],
+              "summary": "Task is paused: operator inspection"
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "paused",
+            "status_event_id": 21,
+            "task_id": 5,
+            "title": "paused",
+            "worker_instance_id": null,
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": "fixture-worker",
+            "assignment_active": false,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": 15,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 14
+            },
+            "assignment_id": "task:6:attempt:1",
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 7,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "cancellation_requested",
+            "explanation": {
+              "code": "cancellation_pending",
+              "details": {},
+              "event_ids": [
+                25
+              ],
+              "summary": "Cancellation is recorded and is waiting for PM reconciliation."
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "cancellation_requested",
+            "status_event_id": 25,
+            "task_id": 6,
+            "title": "cancel",
+            "worker_instance_id": "release-instance",
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": "fixture-worker",
+            "assignment_active": true,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": 16,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 15
+            },
+            "assignment_id": "task:7:attempt:1",
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 8,
+            "deadline_at": null,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "assigned",
+            "explanation": {
+              "code": "active_lease_healthy",
+              "details": {
+                "agent_policy_event_id": null,
+                "budget_reservation": {
+                  "cost_usd": 0.0,
+                  "tokens": 1000
+                },
+                "fairness_policy": "workflow_round_robin_v1",
+                "lease_age_seconds": 1.0,
+                "previous_assignment_event_id": 15,
+                "workflow_policy_event_id": 10
+              },
+              "event_ids": [
+                1,
+                10,
+                15,
+                16
+              ],
+              "summary": "Attempt task:7:attempt:1 is assigned to fixture-worker with a healthy lease."
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "assigned",
+            "status_event_id": 16,
+            "task_id": 7,
+            "title": "active",
+            "worker_instance_id": "release-instance",
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          },
+          {
+            "assignee": "fixture-worker",
+            "assignment_active": true,
+            "assignment_agent_policy_event_id": null,
+            "assignment_event_id": 17,
+            "assignment_fairness": {
+              "policy": "workflow_round_robin_v1",
+              "previous_assignment_event_id": 16
+            },
+            "assignment_id": "task:8:attempt:1",
+            "assignment_policy_event_id": 10,
+            "attempt": 1,
+            "budget_reservation": {
+              "cost_usd": 0.0,
+              "tokens": 1000
+            },
+            "completion_summary": null,
+            "control": {
+              "pause_reason": null,
+              "pause_request_event_id": null,
+              "paused_event_id": null,
+              "resume_reason": null,
+              "resume_request_event_id": null,
+              "resumed_event_id": null,
+              "superseded_by_task_id": null,
+              "superseded_event_id": null,
+              "supersedes_task_id": null,
+              "supersession_reason": null
+            },
+            "correlation_id": "upgrade-flow",
+            "created_event_id": 9,
+            "deadline_at": 1002.0,
+            "decision": {
+              "decision_id": null,
+              "event_id": null,
+              "needed": false,
+              "reason": null
+            },
+            "dependencies": [],
+            "effective_status": "assigned",
+            "explanation": {
+              "code": "active_lease_healthy",
+              "details": {
+                "agent_policy_event_id": null,
+                "budget_reservation": {
+                  "cost_usd": 0.0,
+                  "tokens": 1000
+                },
+                "fairness_policy": "workflow_round_robin_v1",
+                "lease_age_seconds": 1.0,
+                "previous_assignment_event_id": 16,
+                "workflow_policy_event_id": 10
+              },
+              "event_ids": [
+                1,
+                10,
+                16,
+                17
+              ],
+              "summary": "Attempt task:8:attempt:1 is assigned to fixture-worker with a healthy lease."
+            },
+            "not_before": null,
+            "ownership": {
+              "mode": "controlled",
+              "owner": "agent-bus"
+            },
+            "priority": "normal",
+            "required_capabilities": [],
+            "retry_policy": {
+              "max_retries": 2,
+              "remaining": 2,
+              "retryable_failures": 0
+            },
+            "status": "assigned",
+            "status_event_id": 17,
+            "task_id": 8,
+            "title": "deadline",
+            "worker_instance_id": "release-instance",
+            "workflow_policy": {
+              "actor": "human",
+              "event_id": 10,
+              "max_active_assignments": 10,
+              "max_attempts": null,
+              "max_total_cost_usd": null,
+              "max_total_tokens": 10000,
+              "max_wall_clock_seconds": null,
+              "reason": "pinned release policy",
+              "reserve_cost_usd_per_assignment": 0.0,
+              "reserve_tokens_per_assignment": 1000,
+              "source": "operator",
+              "status": "active"
+            }
+          }
+        ],
+        "telemetry": {
+          "by_model": [],
+          "cost_samples": 0,
+          "event_ids": [],
+          "model": {
+            "completed": 0,
+            "failed": 0,
+            "open": 0,
+            "started": 0
+          },
+          "tool": {
+            "completed": 0,
+            "failed": 0,
+            "open": 0,
+            "started": 0
+          },
+          "usage": {
+            "cost_usd": 0,
+            "duration_ms": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+          },
+          "usage_samples": 0
+        }
+      }
+    },
+    {
+      "argv": [
+        "workers",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "workers": [
+          {
+            "available_slots": 8,
+            "capabilities": [],
+            "capacity": 10,
+            "effective_capacity": 10,
+            "instance_id": "release-instance",
+            "last_event_id": 1,
+            "lease_age_seconds": 1.0,
+            "lease_seconds": 20.0,
+            "load": 2,
+            "name": "fixture-worker",
+            "policy": {
+              "status": "unmaterialized"
+            },
+            "status": "healthy"
+          }
+        ]
+      }
+    },
+    {
+      "argv": [
+        "explain",
+        "3",
+        "--json"
+      ],
+      "exit": 0,
+      "json": {
+        "code": "human_decision_required",
+        "details": {
+          "decision_id": "decision:task:3:attempt:1"
+        },
+        "event_ids": [
+          18,
+          23
+        ],
+        "summary": "Which environment?",
+        "task_id": 3
+      }
+    },
+    {
+      "argv": [
+        "task",
+        "999",
+        "--json"
+      ],
+      "exit": 3,
+      "json": null
+    }
+  ],
+  "events": [
+    {
+      "actor": "fixture-worker",
+      "caused_by": null,
+      "correlation_id": null,
+      "id": 1,
+      "idempotency_key": "fixture:registered",
+      "payload": {
+        "capabilities": [],
+        "capacity": 10,
+        "instance_id": "release-instance",
+        "name": "fixture-worker"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "agent.registered",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 2,
+      "idempotency_key": "fixture:create:1",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 1,
+        "title": "parent"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 3,
+      "idempotency_key": "fixture:create:2",
+      "payload": {
+        "depends_on": [
+          1
+        ],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 2,
+        "title": "dependent"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 4,
+      "idempotency_key": "fixture:create:3",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 3,
+        "title": "question"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 5,
+      "idempotency_key": "fixture:create:4",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 4,
+        "title": "failure"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 6,
+      "idempotency_key": "fixture:create:5",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 5,
+        "title": "paused"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 7,
+      "idempotency_key": "fixture:create:6",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 6,
+        "title": "cancel"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 8,
+      "idempotency_key": "fixture:create:7",
+      "payload": {
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 7,
+        "title": "active"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 9,
+      "idempotency_key": "fixture:create:8",
+      "payload": {
+        "deadline_at": 1002.0,
+        "depends_on": [],
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "priority": "normal",
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "task_id": 8,
+        "title": "deadline"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.created",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 10,
+      "idempotency_key": "fixture:policy",
+      "payload": {
+        "max_active_assignments": 10,
+        "max_total_tokens": 10000,
+        "reason": "pinned release policy",
+        "reserve_tokens_per_assignment": 1000,
+        "source": "operator"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "workflow.policy_set",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 2,
+      "correlation_id": "upgrade-flow",
+      "id": 11,
+      "idempotency_key": "assign:task:1:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:1:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": null
+        },
+        "goal": "parent",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 1,
+        "title": "parent",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 4,
+      "correlation_id": "upgrade-flow",
+      "id": 12,
+      "idempotency_key": "assign:task:3:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:3:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 11
+        },
+        "goal": "question",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 3,
+        "title": "question",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 5,
+      "correlation_id": "upgrade-flow",
+      "id": 13,
+      "idempotency_key": "assign:task:4:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:4:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 12
+        },
+        "goal": "failure",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 4,
+        "title": "failure",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 6,
+      "correlation_id": "upgrade-flow",
+      "id": 14,
+      "idempotency_key": "assign:task:5:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:5:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 13
+        },
+        "goal": "paused",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 5,
+        "title": "paused",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 7,
+      "correlation_id": "upgrade-flow",
+      "id": 15,
+      "idempotency_key": "assign:task:6:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:6:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 14
+        },
+        "goal": "cancel",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 6,
+        "title": "cancel",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 8,
+      "correlation_id": "upgrade-flow",
+      "id": 16,
+      "idempotency_key": "assign:task:7:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:7:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 15
+        },
+        "goal": "active",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 7,
+        "title": "active",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 9,
+      "correlation_id": "upgrade-flow",
+      "id": 17,
+      "idempotency_key": "assign:task:8:attempt:1",
+      "payload": {
+        "assignee": "fixture-worker",
+        "assignment_id": "task:8:attempt:1",
+        "attempt": 1,
+        "budget_reservation": {
+          "cost_usd": 0.0,
+          "policy_event_id": 10,
+          "tokens": 1000
+        },
+        "context": {},
+        "deadline_at": 1002.0,
+        "decisions": [],
+        "dependency_refs": [],
+        "fairness": {
+          "policy": "workflow_round_robin_v1",
+          "previous_assignment_event_id": 16
+        },
+        "goal": "deadline",
+        "ownership": {
+          "mode": "controlled",
+          "owner": "agent-bus"
+        },
+        "required_capabilities": [],
+        "retry_policy": {
+          "max_retries": 2
+        },
+        "retryable_failures": 0,
+        "task_id": 8,
+        "title": "deadline",
+        "worker_instance_id": "release-instance",
+        "workflow_policy_event_id": 10
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.assigned",
+      "ts": 1000.0
+    },
+    {
+      "actor": "fixture-worker",
+      "caused_by": 12,
+      "correlation_id": "upgrade-flow",
+      "id": 18,
+      "idempotency_key": "fixture:outcome:3",
+      "payload": {
+        "assignment_id": "task:3:attempt:1",
+        "reason": "Which environment?",
+        "task_id": 3,
+        "worker_instance_id": "release-instance"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.blocked",
+      "ts": 1000.0
+    },
+    {
+      "actor": "fixture-worker",
+      "caused_by": 13,
+      "correlation_id": "upgrade-flow",
+      "id": 19,
+      "idempotency_key": "fixture:outcome:4",
+      "payload": {
+        "assignment_id": "task:4:attempt:1",
+        "failure_code": "repair_required",
+        "reason": "Repair me",
+        "retryable": false,
+        "task_id": 4,
+        "worker_instance_id": "release-instance"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.attempt_failed",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 20,
+      "idempotency_key": null,
+      "payload": {
+        "reason": "operator inspection",
+        "task_id": 5
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.pause_requested",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 20,
+      "correlation_id": "upgrade-flow",
+      "id": 21,
+      "idempotency_key": "paused:task:5:request:20",
+      "payload": {
+        "attempts": 1,
+        "last_assignment_id": "task:5:attempt:1",
+        "pause_request_event_id": 20,
+        "reason": "operator inspection",
+        "resume_status": "open",
+        "task_id": 5
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.paused",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 19,
+      "correlation_id": "upgrade-flow",
+      "id": 22,
+      "idempotency_key": "failed:task:4:failure:19",
+      "payload": {
+        "attempts": 1,
+        "last_assignment_id": "task:4:attempt:1",
+        "max_retries": 2,
+        "reason": "Repair me",
+        "reason_code": "repair_required",
+        "retryable_failures": 0,
+        "task_id": 4
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.failed",
+      "ts": 1000.0
+    },
+    {
+      "actor": "pm",
+      "caused_by": 18,
+      "correlation_id": "upgrade-flow",
+      "id": 23,
+      "idempotency_key": "decision-needed:task:3:attempt:1",
+      "payload": {
+        "assignment_id": "task:3:attempt:1",
+        "decision_id": "decision:task:3:attempt:1",
+        "reason": "Which environment?",
+        "task_id": 3
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "decision.needed",
+      "ts": 1000.0
+    },
+    {
+      "actor": "fixture-worker",
+      "caused_by": 11,
+      "correlation_id": "upgrade-flow",
+      "id": 24,
+      "idempotency_key": "fixture:outcome:1",
+      "payload": {
+        "assignment_id": "task:1:attempt:1",
+        "result": {
+          "value": 42
+        },
+        "summary": "parent result",
+        "task_id": 1,
+        "worker_instance_id": "release-instance"
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.completed",
+      "ts": 1000.0
+    },
+    {
+      "actor": "human",
+      "caused_by": null,
+      "correlation_id": "upgrade-flow",
+      "id": 25,
+      "idempotency_key": "fixture:cancel:6",
+      "payload": {
+        "reason": "no longer needed",
+        "task_id": 6
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "task.cancel_requested",
+      "ts": 1000.0
+    },
+    {
+      "actor": "fixture-worker",
+      "caused_by": null,
+      "correlation_id": null,
+      "id": 26,
+      "idempotency_key": null,
+      "payload": {
+        "opaque": [
+          "keep",
+          {
+            "exact": true
+          }
+        ]
+      },
+      "producer": null,
+      "schema_version": 2,
+      "topic": "custom.upgrade_probe",
+      "ts": 1000.0
+    }
+  ],
+  "next_plan": {
+    "caused_by": 25,
+    "idempotency_key": "cancelled:task:6:request:25",
+    "payload": {
+      "attempts": 1,
+      "cancel_request_event_id": 25,
+      "last_assignment_id": "task:6:attempt:1",
+      "reason": "no longer needed",
+      "task_id": 6
+    },
+    "topic": "task.cancelled"
+  },
+  "outcome_types": [
+    "Completed",
+    "Blocked",
+    "RetryableFailure",
+    "PermanentFailure"
+  ],
+  "outcomes_v1": [
+    {
+      "outcome": {
+        "result": {
+          "value": 42
+        },
+        "status": "completed",
+        "summary": "done"
+      },
+      "protocol": {
+        "name": "agent-bus.executor",
+        "version": 1
+      }
+    },
+    {
+      "outcome": {
+        "reason": "Question",
+        "status": "blocked"
+      },
+      "protocol": {
+        "name": "agent-bus.executor",
+        "version": 1
+      }
+    },
+    {
+      "outcome": {
+        "code": "temporary",
+        "reason": "temporary",
+        "status": "retryable_failure"
+      },
+      "protocol": {
+        "name": "agent-bus.executor",
+        "version": 1
+      }
+    },
+    {
+      "outcome": {
+        "code": "permanent",
+        "reason": "permanent",
+        "status": "permanent_failure"
+      },
+      "protocol": {
+        "name": "agent-bus.executor",
+        "version": 1
+      }
+    }
+  ],
+  "source_commit": "c06f33ac68873140ec5eca98ef9e84dc2d3bf63b",
+  "source_release": "v0.11.0",
+  "source_sha256": {
+    "adoption.py": "d776a2e04d3d9863118e0f72b7cb1372a4737fb984c071fb372911d341057d26",
+    "agent_bus/__init__.py": "38b9180da8c1e8a4c1e3295af43c05d8321ede50f8ec89817adc969ce096a73e",
+    "agent_bus_cli.py": "58d9183e87ecaa0aad2bb12a6ab76f9a151a41961bc9dc72f84506b1978615f9",
+    "artifacts.py": "d88725d0e3a6ee9988f133cd3b2a2c8a550ecf06c5da7b495dfc46c0895d460f",
+    "bus.py": "5ffd1d370c7de223a0f5de1290bf7ca8203936a3c00a7d20db32c7dfd72bda22",
+    "client.py": "b55ed2e20814a39430ee27890065969c77d8e491bab4828602913e7fae1caa3a",
+    "conformance.py": "c8baa2096e212279106b26cb53407b75ab444d5df10d9e57e7be3bdd8d7dba40",
+    "executor_protocol.py": "a7820ef3cf85a2092d9def634179ca2c2bcf36295080f1969b9e08b37137b4b4",
+    "executors.py": "dd14843777dd5c2a902e183f7894c1497e01ef1582a4cb9dc3bdcd302a81e046",
+    "integration.py": "456abba387b390531ee68f079419e2a45454e035fe31900f65b83b3a46250ebc",
+    "limits.py": "4b8a7901a3082296194da55346fdf26636db8dd17df8987e3cfef99f11ec210e",
+    "observer.py": "9d27a984ce0ca7fb9fb5be6250daee323396f90dbb44ee3bb80c60413bc6b043",
+    "operations.py": "4ccc2b244ab8639da50992d9e581a8d253681f0d2b6f5f540dd12d283d4cec8a",
+    "pm_agent.py": "b7222b82981716bfd6719df11e24ce89a37a02e46c6e4e6086027db15f819bc4",
+    "projection.py": "2bbe168ec858321b587446b371b43baf27aca4015e837b005201622635e92865",
+    "projection_store.py": "595729e5568bf83b49512b388ee5190e34538cc457f94409da5d1d8c033b11a5",
+    "runtime.py": "b17593e00b398cb6ab23fd93cca988c45ca7e7b65e9950b3729aa36a9ed84b2a",
+    "scheduling.py": "fb8c72c68f8591a9e0caedd1868d03ec12d5f787fe1f95685e103e41f186d873",
+    "telemetry.py": "fafff2012e1a826412f4da49811efccf93a3e7839c091fce8ae680f1f22c4a95",
+    "topics.py": "d94f5e8283192c609733f8993b617408174dc01c9b1c2b1fbbb4c205973ddbe7",
+    "version.py": "52ac544dbed77a3a44fa00effefa661efdc58aac36e459f913b6c070b3c4f004"
+  },
+  "sql_sha256": "a684ebfae19d5e94f395923e0d1730061461bc6b038514e9b4f6a4a598b97221"
+}

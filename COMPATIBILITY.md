@@ -105,6 +105,20 @@ provide tests/upgrade guidance. The readiness baseline protects v0.11.0 public
 exports and representative adapter messages; it is not exhaustive coverage of
 all old releases, CLI outputs, or historical database semantics.
 
+The released-database baseline now also captures v0.11.0's actual SQLite
+schema/history/snapshot as SQL, plus release-produced CLI and adapter outputs.
+Tests reconstruct disposable databases, run current initialization repeatedly,
+and verify raw event values/identity, idempotency, counters, snapshot fallback,
+index reconstruction, and continued reconciliation. Cases include DAG result
+propagation, human decisions, retry, pause/resume, cancellation, lease/deadline
+expiry, and persisted policy with missing usage. Public JSON comparisons permit
+additional fields but preserve existing field types and values.
+
+This demonstrates **v0.11.0 → current development** for the captured cases.
+It adds no schema migration and does not certify physical WAL recovery, every
+historical release, or downgrades. The v1.0 support window still needs an explicit
+release decision. See the [fixture provenance](tests/fixtures/compatibility/v0.11.0-upgrade/README.md).
+
 For v1.x, patches are intended for compatible fixes; minor releases may add
 compatible capabilities. Removing supported APIs or changing existing wire/
 event semantics requires a major version, except urgent security corrections
@@ -134,7 +148,8 @@ creates an sdist and builds the wheel from it. The check creates a fresh venv,
 installs the wheel/dependencies, verifies import origins, and exercises a
 successful and timed-out CLI adapter check plus a credential-free live task
 outside the checkout. It also checks discovery, human response, retry, and
-cancellation through a small live worker, including duplicate commands. It downloads dependencies and
+cancellation through a small live worker, including duplicate commands, and
+runs released-database upgrade tests against the installed package. It downloads dependencies and
 uses only a disposable loopback server; it makes no model calls. It reports the
 retained evidence directory and stops its own processes on success or failure.
 Pass `--constraints ci/constraints-min.txt` to exercise direct dependency floors.

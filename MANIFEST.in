@@ -3,5 +3,5 @@ include requirements.txt requirements-dev.txt
 recursive-include benchmarks *.py *.md
 recursive-include scripts *.py
 recursive-include ci *.txt
-recursive-include tests *.py *.json
+recursive-include tests *.py *.json *.sql *.md
 recursive-include examples *.py *.json *.md

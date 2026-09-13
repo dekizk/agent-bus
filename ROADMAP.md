@@ -687,11 +687,41 @@ This closes the remote matrix gate for these checkpoints. Earlier pending
 statements above are historical checkpoint observations; this result supersedes
 them. No new version, native Windows support, or v1.0 completion is claimed.
 
+### Checkpoint 4 — released upgrade baseline
+
+- [x] Capture an actual v0.11.0 database using the pinned released bus/PM,
+  with source hashes and repeatable, synthetic fixture generation.
+- [x] Preserve raw event values, database identity, idempotency and task IDs
+  through initialization; verify snapshot fallback and index reconstruction.
+- [x] Continue the released DAG, human decision, retry, pause/resume,
+  pending cancellation, lease-expiry and deadline paths under current code.
+- [x] Verify persisted policy/missing-usage reservations survive changed process
+  defaults, and explicit new policy events can admit more work.
+- [x] Compare twelve released CLI cases, all four outcome forms, assignment
+  messages/effect IDs and cancellation messages without freezing human wording.
+- [x] Verify the source archive and fresh-installed wheel, then record results.
+
+Scope is v0.11.0 to current development; this checkpoint introduces no migration
+or new release. Fixtures contain eight tasks and 26 events, plus an older
+snapshot with a replay suffix. The SQL dump comes from SQLite, not hand-written
+schema guesses; raw database/WAL file compatibility is not implied. Old snapshots
+may be discarded safely instead of preserving private implementation formats.
+
+Locally rechecked 2026-09-13: 324 tests passed (one existing dependency warning).
+A second capture from the pinned release reproduced the SQL and expected JSON
+byte-for-byte. The source archive included the fixtures and standalone tests;
+its runner verified a fresh-installed wheel outside the checkout, including all
+seven released-upgrade tests, bounded adapter probes, and the live operator
+workflow. Evidence: `outputs/agent-bus-trials/readiness-released-upgrade` in the
+Codex task workspace. Disposable test databases/processes were cleaned up; no
+live user bus data was touched. These are local macOS/CPython 3.13 results;
+this checkpoint still awaits review, commit/push and its own remote CI run.
+
 ### Remaining v1.0 gates
 
-- [ ] Expand actual released-database upgrade fixtures and CLI/adapter contract
-  baselines to the support window selected for v1.0; representative tests alone
-  do not freeze every public output or certify all historical state transitions.
+- [ ] Select the v1.0 upgrade-support window explicitly. The v0.11.0 baseline
+  above is now covered; add released fixtures for any other promised source
+  versions. These cases do not certify all historical state transitions.
 - [ ] Obtain the owner's license/distribution decisions; do not infer a license.
 - [ ] Record an unaided newcomer install/connect/inspect/intervene trial.
 - [ ] Verify another genuine agent integration through the public contract.
