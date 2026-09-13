@@ -435,8 +435,8 @@ Rechecked 2026-09-13: 258 tests passed (one existing dependency deprecation
 warning). Wheel build/import checks include the new snapshot module. Package
 metadata now identifies this unfinished iteration as `0.11.0.dev0`; v0.11 as a
 whole is not yet complete. See [replay evidence](benchmarks/REPLAY_RESULTS.md).
-Next measured performance target: streaming initial worker admission history
-without changing independent validation; its incremental read path is already
+The subsequent phase 3 completed streaming initial worker admission history
+without changing independent validation; its incremental read path remains
 small. The live local PM restart/snapshot smoke check passed on 2026-09-13:
 five demo-worker tasks, valid/deleted/corrupted cache recovery, pending workflow
 pause/resume, and zero duplicate assignments/completions. Evidence is recorded
@@ -530,6 +530,26 @@ stalled cycle, or process exceeding 512 MiB RSS stops the run with diagnostics.
 - gather longer-running soak, crash-injection, and repeated race evidence;
 - review practical scale limits with genuine multi-worker/DAG workloads;
 - review the completed checklist and operational documentation before promotion.
+
+### Release review checkpoint — 2026-09-13
+
+- [x] Commit the bounded soak evidence (`c839cbb`).
+- [x] Re-run the full suite: 276 passed, one existing dependency warning.
+- [x] Run a real Hermes two-task DAG with worker loss, lease-expiry recovery,
+  downstream result propagation, usage inspection, and artifact verification.
+- [x] Review phases 1–4 and document validation limits; correct stale phase-2
+  wording that still described the implemented phase 3 as future work.
+- [ ] Make the final release decision and promote development package metadata.
+
+The focused Hermes trial passed; see
+[trial evidence](examples/hermes/TRIAL_NOTES.md#v011-live-hermes-dag-recovery--2026-09-13).
+It confirms two real completions after one interrupted attempt, not sustained
+real-agent operation. No implementation blocker was found in this checkpoint's
+tests and focused trial; this is not a new exhaustive code/security audit.
+Week-long genuine-agent operation, broader live race/scale evidence, and the
+cross-cutting trials below remain unclaimed. The package remains a development
+version pending an explicit release decision; automatic deletion and archival
+segments remain deliberately out of scope.
 
 Automatic artifact deletion and archival log segments are consciously deferred:
 they require additional ownership/publication guarantees, not just an age flag.

@@ -911,6 +911,47 @@ These results add real Hermes DAG/budget evidence and repeatable operator-contro
 evidence for v0.10. They do not replace sustained real-agent soak testing or
 the separate publication-race regressions recorded on 2026-09-12.
 
+## v0.11 live Hermes DAG recovery — 2026-09-13
+
+**PASS.** An isolated local bus and snapshot-enabled PM coordinated a two-task
+Hermes DAG using `nous` / `openai/gpt-5.5`, safe mode, `clarify` only, a disposable
+working directory, and a 120-second per-invocation timeout. No file/terminal
+tools or existing user workflows were involved. Content capture was enabled
+for these non-sensitive trial prompts/results.
+
+The original worker and its observed child processes were killed after the
+first `telemetry.model.started` event (#8), before any task completion. This
+proves interruption after adapter invocation began, not that the provider had
+already accepted or billed that first request. A replacement worker started
+after the three-second lease elapsed. `task.assignment_expired` #11 recorded
+`worker lease expired`; task 1 was reassigned at #13 as attempt 2 and completed
+at #32. Task 2 was assigned at #33 with a dependency reference to #32 and
+completed at #48, correctly carrying the upstream principle into its result.
+Both tasks completed exactly once across three assignments.
+
+The workflow inspector reported completed, three started model spans, two
+completed spans, and one open span. Successful calls reported 8,086 tokens and
+an estimated $0.042905 combined. Accounting explicitly reported one missing
+token report and one missing cost report for the killed attempt. That attempt's
+usage/cost is unknown; the displayed estimate is not a complete billing total.
+No terminal telemetry event was fabricated for the killed process.
+
+All five referenced artifacts verified, with no audit issues or orphan
+candidates. Full replay matched the independently accumulated event-derived
+state. All trial-owned processes were stopped. The full regression suite also
+passed: 276 tests, one existing Starlette/httpx deprecation warning.
+
+Evidence: `outputs/agent-bus-trials/v011-hermes-recovery-20260913-191055-c44006`
+in the Codex task workspace, containing `summary.json`, `events.json`,
+`workflow.json`, process logs, the isolated database, and artifacts.
+Correlation: `v011-hermes-recovery-ae382efd`.
+Runner: `outputs/v011_hermes_recovery.py`.
+
+This is a focused real-adapter recovery check, not a real-agent soak, a
+post-backup restore trial, a provider-side cancellation guarantee, or proof of
+exactly-once external effects. It complements the separate demo recovery/soak
+evidence in `RECOVERY.md`.
+
 ## Trial-note template
 
 - Date and task category:
