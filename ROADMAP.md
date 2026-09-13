@@ -714,8 +714,17 @@ its runner verified a fresh-installed wheel outside the checkout, including all
 seven released-upgrade tests, bounded adapter probes, and the live operator
 workflow. Evidence: `outputs/agent-bus-trials/readiness-released-upgrade` in the
 Codex task workspace. Disposable test databases/processes were cleaned up; no
-live user bus data was touched. These are local macOS/CPython 3.13 results;
-this checkpoint still awaits review, commit/push and its own remote CI run.
+live user bus data was touched.
+
+Remote recheck: checkpoint `74603fe` was reviewed, committed and pushed;
+[GitHub run 34754905683](https://github.com/dekizk/agent-bus/actions/runs/34754905683)
+passed all six configurations: Ubuntu Python 3.10 (latest and direct dependency
+floors), 3.13 and 3.14; macOS Python 3.13 and 3.14. Every lane passed the full
+regression suite, source/wheel build, and clean-installed upgrade plus live
+operator checks. Reports are retained in
+`outputs/agent-bus-trials/readiness-ci-34754905683` in the Codex task workspace.
+Checkpoint 4 is complete for its stated v0.11.0 baseline; the support-window
+decision and remaining v1.0 gates below are not implied complete.
 
 ### Remaining v1.0 gates
 
