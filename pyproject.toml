@@ -36,6 +36,7 @@ py-modules = [
     "pm_agent",
     "projection",
     "projection_store",
+    "recovery",
     "runtime",
     "scheduling",
     "telemetry",

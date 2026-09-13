@@ -93,6 +93,22 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--config", default="agent-bus.local.json")
     pm.add_argument("--snapshot", action="store_true", help="use a disposable local replay snapshot")
 
+    for name in ("storage-audit", "backup"):
+        command = commands.add_parser(name, help="audit local artifacts without deleting" if name == "storage-audit" else "create a verified database/artifact recovery bundle")
+        command.add_argument("--config", default="agent-bus.local.json")
+        command.add_argument("--artifact-root", action="append", default=[])
+        if name == "backup":
+            command.add_argument("destination")
+        else:
+            command.add_argument("--min-age-days", type=_nonnegative_int, default=7)
+        _add_output_option(command)
+    for name in ("verify-backup", "restore"):
+        command = commands.add_parser(name, help="verify a backup bundle" if name == "verify-backup" else "restore a bundle into a NEW directory")
+        command.add_argument("bundle")
+        if name == "restore":
+            command.add_argument("destination")
+        _add_output_option(command)
+
     snapshot = commands.add_parser("snapshot", help="build or clear the local coordination replay cache")
     snapshot.add_argument("action", choices=["build", "clear"])
     snapshot.add_argument("--config", default="agent-bus.local.json")
@@ -315,6 +331,7 @@ def main(
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
         "supersede", "policy", "agent-policy", "adapter", "rebuild-task-index", "snapshot",
+        "storage-audit", "backup", "verify-backup", "restore",
     }:
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
@@ -451,6 +468,28 @@ def _run_local_command(
     stderr: TextIO,
 ) -> int:
     """Run onboarding and integration commands before creating an observer."""
+    if args.command in {"storage-audit", "backup", "verify-backup", "restore"}:
+        import sqlite3
+        from recovery import audit, backup, verify_bundle, restore
+        from local_config import LocalConfig
+
+        try:
+            if args.command == "verify-backup":
+                value, _ = verify_bundle(args.bundle)
+                value = {"ok": True, **value}
+            elif args.command == "restore":
+                value = {"ok": True, **restore(args.bundle, args.destination)}
+            else:
+                local = LocalConfig.from_file(args.config)
+                if args.command == "backup":
+                    value = {"ok": True, **backup(local.database_path, args.destination, args.artifact_root)}
+                else:
+                    value = audit(local.database_path, args.artifact_root, min_age_days=args.min_age_days)
+        except sqlite3.Error as exc:
+            raise ValueError(f"storage operation failed: {exc}; preserve the source and inspect any .incomplete output") from exc
+        _render_simple(value, args, stdout, json.dumps(value, indent=2, sort_keys=True))
+        return 0 if value.get("ok") else 4
+
     if args.command == "init":
         from local_config import initialize_local_config
 

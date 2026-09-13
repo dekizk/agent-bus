@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -166,18 +167,20 @@ class ArtifactStore:
         normalized = validate_artifact_ref(reference)
         digest = str(normalized["sha256"])
         path = self.root / "sha256" / digest[:2] / digest
-        if path.parent.is_symlink() or path.is_symlink():
+        if (self.root / "sha256").is_symlink() or path.parent.is_symlink() or path.is_symlink():
             raise ArtifactIntegrityError("artifact path must not contain a symlink")
         return path
 
     @staticmethod
     def _verify_path(path: Path, reference: Mapping[str, object]) -> None:
         try:
-            stat = path.stat()
+            information = path.stat()
         except FileNotFoundError as exc:
             raise ArtifactIntegrityError("referenced artifact is missing") from exc
         expected_size = int(reference["size_bytes"])
-        if stat.st_size != expected_size:
+        if not stat.S_ISREG(information.st_mode):
+            raise ArtifactIntegrityError("artifact must be a regular file")
+        if information.st_size != expected_size:
             raise ArtifactIntegrityError("artifact size does not match its reference")
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != reference["sha256"]:

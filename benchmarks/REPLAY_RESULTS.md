@@ -118,3 +118,51 @@ Runner: `outputs/v011_snapshot_trial.py` in the same workspace.
 Scope: this closes the local PM restart/snapshot smoke check. It is not evidence
 of live model usage accounting, active-work interruption, many-worker load,
 long-running soak reliability, or completion of the remaining v0.11 roadmap.
+
+## Phase 3 — bounded worker admission (2026-09-13)
+
+The standard runtime now uses lazy `BusClient.iter_events`, bounded to the
+assignment event ID. It retains independent reducer validation, not PM cache
+trust. The earlier Phase 2 admission measurements above remain the baseline.
+
+Repeated the 1,000-task / 201,020-event benchmark with 100 heartbeats per task:
+
+| Shape | Initial admission peak bytes, before → after | Initial ms after, with tracing | Incremental rows / ms after |
+| --- | ---: | ---: | ---: |
+| Wide | 115,500,847 → 4,463,012 | 1,644.303 | 2 / 0.876 |
+| Deep | 115,523,477 → 4,525,164 | 1,698.548 | 2 / 1.501 |
+
+Both initial reads consumed 101,022 coordination rows and accepted the same
+assignments. Temporary peak allocations fell approximately 96%; execution time
+is not claimed materially improved. The retained projection still grows with
+task/accounting history. These remain SQLite-shim measurements, excluding real
+network transport costs; the live check below separately exercises HTTP.
+
+Live local restart trial: **PASS**, evidence directory
+`outputs/agent-bus-trials/v011-snapshot-20260913-165931-b128e4` in the Codex task
+workspace. Runner: `outputs/v011_snapshot_trial.py --restart-worker`.
+
+- Task 1 completed at event 7 using the original worker.
+- With PM and worker stopped, the isolated fixture was extended with 1,005
+  historical coordination heartbeats (no task/index rows changed).
+- A replacement worker registered with a new instance, then independently
+  traversed history exceeding the 1,000-event page size over the live HTTP bus.
+- Tasks 3, 2, 4, and 5 completed at events 1022, 1027, 1032, and 1037;
+  all four assignments named the replacement instance. Each of all five tasks
+  had exactly one assignment and completion.
+- Workflow pause/resume and PM valid/missing/corrupt snapshot restart checks
+  also passed. Final snapshot and full replay agreed; rebuilding changed no events.
+- All trial processes were stopped. No existing workflows or model services used.
+
+The evidence bundle contains process logs, config/database, `summary.json`, and
+`events.json` (SHA-256
+`7a5ab89c2c5d164ef9877f72b9450030ec62f6f20c524b5e3f93014dd0de8289`).
+Regressions: 264 passed, one existing dependency deprecation warning. Tests cover
+lazy page requests, page-size boundaries, later publication beyond the target,
+malformed/duplicate/out-of-order records, wrong topic filters, missing/changed
+assignments, full-replay equivalence, and later-page failure stopping heartbeats
+without executor invocation.
+
+This trial is not a lease-expiry or mid-execution worker-kill test. Remaining
+v0.11 work includes artifact retention, backup/restore/corruption recovery and
+long-running reliability evidence.

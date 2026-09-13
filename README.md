@@ -1090,6 +1090,10 @@ and causal history are explicit.
 
 ## Crash recovery guarantees
 
+For artifact reachability reports and verified database/artifact backup and
+restore commands, see [Local recovery operations](RECOVERY.md). Retention auditing
+is read-only; restore always uses a fresh directory.
+
 ### Rebuilding task lookup
 
 The v0.11 phase-1 task identity index is a disposable lookup from task ID to
@@ -1162,6 +1166,16 @@ prefix and then reads only incremental history; it does not trust PM snapshots.
 See [replay/admission measurements](benchmarks/REPLAY_RESULTS.md).
 
 ### Lifecycle recovery behavior
+
+Standard worker admission reads coordination history lazily in pages of at most
+1,000 events, stopping at the delivered assignment's exact event ID. It validates
+ordering, event shape, filtering, and the persisted assignment before executing.
+Transport errors or an unavailable target stop the worker so lease recovery can
+proceed. Filtered ID gaps are normal and are not treated as missing events.
+This bounds temporary history memory, not retained task/accounting state.
+Embedded clients exposing only `query_all` remain supported but retain their
+previous full-list memory use; implement the `BusClient.iter_events` contract
+to receive bounded paging. No snapshot trust or orchestration rules change.
 
 ### PM
 

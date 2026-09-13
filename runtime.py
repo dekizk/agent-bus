@@ -384,9 +384,16 @@ class WorkerRuntime:
             raise ValueError("assignment event id must be positive")
         if target_id <= self._admission_event_id:
             return False
-        history = self.bus.query_all(
-            after_id=self._admission_event_id, topics=list(PROJECTION_TOPICS)
-        )
+        iterator = getattr(self.bus, "iter_events", None)
+        if callable(iterator):
+            history = iterator(after_id=self._admission_event_id, through_id=target_id,
+                               topics=list(PROJECTION_TOPICS))
+        else:
+            # Compatibility with existing embedded/custom clients. The standard
+            # HTTP client uses bounded pages rather than materializing history.
+            history = self.bus.query_all(
+                after_id=self._admission_event_id, topics=list(PROJECTION_TOPICS)
+            )
         for recorded in history:
             if not isinstance(recorded, dict):
                 raise ValueError("coordination history contains a non-event")

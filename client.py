@@ -492,6 +492,46 @@ class BusClient:
             if len(page) < page_size:
                 return events
 
+    def iter_events(
+        self, *, after_id: int = 0, through_id: int,
+        topics: Optional[list[str]] = None, page_size: int = 1000,
+    ) -> Iterator[dict]:
+        """Yield an immutable prefix in bounded pages, never chase a moving head.
+
+        Gaps between IDs are normal with topic filtering. The caller must check
+        that its required terminal event was present; an empty page is EOF, not
+        proof that an arbitrary requested event exists.
+        """
+        if type(after_id) is not int or type(through_id) is not int or not 0 <= after_id <= through_id:
+            raise ValueError("history bounds must be ordered nonnegative integers")
+        if type(page_size) is not int or not 1 <= page_size <= 10000:
+            raise ValueError("page_size must be between 1 and 10000")
+        cursor = after_id
+        while cursor < through_id:
+            page = self.query(after_id=cursor, topics=topics, limit=page_size)
+            if not isinstance(page, list) or len(page) > page_size:
+                raise BusProtocolError("history response is not a bounded event page")
+            if not page:
+                return
+            for event in page:
+                if not isinstance(event, dict):
+                    raise BusProtocolError("history page contains a non-event")
+                event_id = event.get("id")
+                if type(event_id) is not int or event_id <= cursor:
+                    raise BusProtocolError("history is not strictly ordered")
+                if event_id > through_id:
+                    return
+                if not isinstance(event.get("payload"), dict) or not isinstance(event.get("topic"), str):
+                    raise BusProtocolError("history contains a malformed event")
+                if topics and event["topic"] not in topics:
+                    raise BusProtocolError("history contains an event outside the requested topics")
+                cursor = event_id
+                yield event
+                if cursor == through_id:
+                    return
+            if len(page) < page_size:
+                return
+
     def load_offset(self) -> int:
         try:
             return int(self.offset_file.read_text())

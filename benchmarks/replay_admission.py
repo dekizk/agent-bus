@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bus
+from client import BusClient
 from runtime import WorkerRuntime
 from projection_store import load_projection, save_projection
 
@@ -71,6 +72,12 @@ def run(size, shape, workers, heartbeats):
                 actor = "worker-0"
                 returned = 0
                 calls = 0
+                iter_events = BusClient.iter_events
+                def query(self, *, after_id=0, topics=None, limit=1000):
+                    events = bus.fetch_after(after_id, topics, limit=limit)
+                    self.returned += len(events)
+                    self.calls += 1
+                    return events
                 def query_all(self, *, after_id=0, topics=None):
                     # BusClient.query_all materializes history too. This shim
                     # excludes network cost while retaining row/JSON cost.

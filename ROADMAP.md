@@ -450,19 +450,68 @@ for the PM; worker admission keeps its independent exact-prefix replay. Worker
 snapshot transport is deferred until measurements justify extending that trust
 surface. No automatic retention, event deletion, or distributed checkpointing.
 
-Address remaining local-scale boundaries while preserving the event log as truth:
+### Phase 3 — bounded worker admission (implemented and verified)
 
-- replace full-log task identity scans with a transactionally maintained task
-  index;
-- add disposable materialized projections and replay snapshots;
-- verify that every projection can be deleted and rebuilt;
-- benchmark large logs, many workers, and wide/deep DAGs;
-- include worker admission replay, memory use, and incremental history reads
-  in those benchmarks and snapshot designs;
-- add safe artifact reachability analysis and retention tools;
-- test backup, restore, corruption detection, and recovery procedures;
-- consider archival log segments without silently rewriting history;
-- add long-running soak, crash-injection, and race tests.
+- [x] Add a lazy, bounded-page client history iterator with an exact upper cursor.
+- [x] Use it for standard worker admission without changing independent validation.
+- [x] Reject malformed, unordered, oversized, and incorrectly filtered pages;
+  preserve fail-closed behavior when the target assignment is unavailable.
+- [x] Test page boundaries, concurrent publication, transport failure, and
+  acceptance equivalence with full replay.
+- [x] Repeat the memory benchmark and a live worker-restart trial; record evidence.
+- [x] Run regressions and recheck this checklist.
+
+Rechecked 2026-09-13: 264 tests passed (one existing dependency warning).
+Initial admission peak traced allocations fell from about 115.5 MB to 4.5 MB
+on the 201,020-event fixture. A replacement demo worker traversed more than
+one page of history and completed four further tasks without duplicates.
+See [Phase 3 evidence](benchmarks/REPLAY_RESULTS.md#phase-3--bounded-worker-admission-2026-09-13).
+
+Retained reducer state still grows with tasks/accounting; only the temporary
+history list is bounded. Legacy duck-typed clients exposing only `query_all`
+remain compatible but cannot receive the memory improvement.
+
+### Phase 4 — conservative retention audit and recovery bundles (implemented and verified)
+
+- [x] Audit artifact reachability across all event payloads, including nested
+  custom-event references; verify referenced bytes and report aged orphans.
+- [x] Keep retention read-only: no safe cross-process artifact publication fence
+  exists yet, so an unreferenced blob is a candidate, not permission to delete.
+- [x] Back up SQLite with its backup API, validate database integrity, and include
+  every referenced artifact from explicitly selected stores.
+- [x] Produce private, checksummed bundles with a completion marker; incomplete
+  or corrupted bundles must never be accepted for restore.
+- [x] Restore only into a new directory; verify database/artifact bytes and
+  rebuild disposable projections without editing original history.
+- [x] Test missing/corrupt artifacts, malformed history, symlinks, destination
+  collisions, incomplete bundles, and restored replay equivalence.
+- [x] Run a disposable recovery drill, document limitations, and recheck tests.
+
+Rechecked 2026-09-13: 276 tests passed (one existing dependency warning), plus
+wheel build/import checks. The CLI recovery drill preserved event-derived state
+and referenced bytes, rejected corrupt backups and existing destinations, and
+never deleted the reported orphan. SQLite bundles are standalone; unexpected
+WAL/journal sidecars are rejected. See [recovery operations and evidence](RECOVERY.md).
+
+No automatic deletion, event archival, secure erasure, or repair of corrupted
+authoritative history is included. Stop artifact publishers for a full backup;
+SQLite copying is transactionally consistent but filesystem blobs cannot be
+snapshotted atomically with the log. Long-running soak evidence remains separate.
+
+The focused post-restore live trial passed on 2026-09-13: completed work was not
+rerun, interrupted work recovered via lease expiry on a fresh worker, and its
+dependent task completed afterward. Original events/artifact bytes were preserved.
+See [live recovery evidence](RECOVERY.md#post-restore-live-execution--2026-09-13).
+
+Remaining v0.11 validation, without widening the release into new platform features:
+
+- gather longer-running soak, crash-injection, and repeated race evidence;
+- review practical scale limits with genuine multi-worker/DAG workloads;
+- review the completed checklist and operational documentation before promotion.
+
+Automatic artifact deletion and archival log segments are consciously deferred:
+they require additional ownership/publication guarantees, not just an age flag.
+The current retention promise is safe reachability reporting, not automatic GC.
 
 ## v1.0 — stable local agent control plane
 
