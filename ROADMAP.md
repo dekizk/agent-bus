@@ -651,6 +651,31 @@ an unaided newcomer trial. Temporary processes/environments were cleaned up.
 The remote platform matrix, commit/push, and remaining release gates are pending;
 no version bump or release claim is implied.
 
+### First remote readiness run — 2026-09-13
+
+Checkpoint commit `644c043` was pushed and tested by
+[GitHub run 34752538760](https://github.com/dekizk/agent-bus/actions/runs/34752538760).
+Five lanes passed their regressions, sdist/wheel build, and installed live
+operator trial: Ubuntu Python 3.10 (latest and direct dependency floors),
+3.13, and 3.14; macOS Python 3.14. macOS Python 3.13 failed the configured CLI
+timeout cleanup test when the second group signal raised `PermissionError`.
+The matrix gate remains open until a subsequent complete run passes.
+
+The follow-up handles Darwin's zombie-only process-group race with a bounded
+process-state check, rather than ignoring permission errors. The leader must
+have exited and all remaining group members must be zombies (or absent).
+Live members, failed/timed-out inspection, and malformed output remain errors.
+This does not expand the process-group or external-side-effect guarantees.
+Apple's [kernel implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c)
+filters zombie group members before computing the signal result; the initial
+CI traceback is consistent with that race, but did not capture process states.
+Local validation: 317 tests passed (one existing dependency warning), including
+deterministic denial cases at both TERM and KILL, zombie/absent groups, live
+members, and unavailable/malformed/timed-out inspection. A fresh sdist-built
+wheel passed the adapter success/timeout probes and live operator workflow.
+Evidence: `outputs/agent-bus-trials/readiness-darwin-cleanup-fix` in the Codex
+task workspace. A full remote rerun is still required.
+
 ### Remaining v1.0 gates
 
 - [ ] Expand actual released-database upgrade fixtures and CLI/adapter contract

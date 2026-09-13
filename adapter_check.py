@@ -18,25 +18,63 @@ import time
 DEFAULT_CHECK_TIMEOUT = 30.0
 MAX_REPORT_BYTES = 64 * 1024
 CLEANUP_GRACE_SECONDS = 0.25
+GROUP_INSPECTION_SECONDS = 1.0
+
+
+def _darwin_group_exited(process: subprocess.Popen) -> bool:
+    """Prove a denied Darwin group signal has no executing target left.
+
+    XNU killpg1 filters SZOMB members before counting signalable processes, so
+    a zombie-only group can return EPERM rather than ESRCH. Never interpret
+    EPERM alone (or just the leader's exit) as successful descendant cleanup.
+    """
+    if sys.platform != 'darwin' or process.poll() is None:
+        return False
+    try:
+        result = subprocess.run(
+            ['/bin/ps', '-A', '-o', 'pgid=,stat='], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=GROUP_INSPECTION_SECONDS,
+            env={'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'})
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) != 2 or not fields[0].isdigit():
+                return False
+            if int(fields[0]) == process.pid and not fields[1].startswith('Z'):
+                return False
+        return True
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        return False
+
+
+def _signal_group(process: subprocess.Popen, sig: int) -> bool:
+    """Return false for an absent/exited group; fail closed on denied cleanup."""
+    try:
+        os.killpg(process.pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError as exc:
+        if _darwin_group_exited(process):
+            return False
+        raise PermissionError(
+            f'adapter cleanup could not signal process group {process.pid}; '
+            'no-live-members verification failed; child processes may remain') from exc
 
 
 def _stop_group(process: subprocess.Popen) -> None:
     # Do not skip group cleanup when its leader has already exited: an adapter
     # may have left a child alive. Only our newly-created process group is used.
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        process.wait()
+    if not _signal_group(process, signal.SIGTERM):
+        process.wait(timeout=1)
         return
     try:
         process.wait(timeout=CLEANUP_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         pass
     # A child can ignore TERM even if the leader exits promptly.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    _signal_group(process, signal.SIGKILL)
     process.wait(timeout=1)
 
 

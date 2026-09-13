@@ -851,7 +851,11 @@ construction, execution, cleanup, and interpreter exit. A timeout produces a
 failed probe (exit 4); invalid configuration or an unimportable target remains
 exit 2. Ctrl-C or SIGTERM stops the check group and returns 130. Group termination
 may add up to roughly 1.25 seconds of cleanup after the deadline under normal OS
-conditions. Normal results retain the existing human/JSON format; adapter
+conditions, plus at most a one-second process-state check on a macOS permission
+race. That check tolerates the error only after the leader has exited and no
+non-zombie group members remain. Live members or unavailable/invalid process
+inspection still produce a cleanup error, not a passing probe. Normal results
+retain the existing human/JSON format; adapter
 stdout/stderr is discarded, and the result channel is limited to 64 KiB so
 chatter cannot corrupt `--json` or fill a capture buffer.
 

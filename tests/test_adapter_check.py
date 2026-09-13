@@ -10,12 +10,64 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 import agent_bus_cli
-from adapter_check import run_adapter_check
+from adapter_check import run_adapter_check, _stop_group
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+class GroupCleanupTests(unittest.TestCase):
+    def test_darwin_zombie_or_absent_group_preserves_cleanup_result(self):
+        for denied_signal in (signal.SIGTERM, signal.SIGKILL):
+            for listing in ('123 Z\n456 S\n', '456 S\n'):
+                with self.subTest(signal=denied_signal, listing=listing):
+                    process = Mock(pid=123)
+                    process.poll.return_value = -15
+                    signals = ([PermissionError()] if denied_signal == signal.SIGTERM
+                               else [None, PermissionError()])
+                    with patch('adapter_check.sys.platform', 'darwin'), \
+                            patch('adapter_check.os.killpg', side_effect=signals) as kill, \
+                            patch('adapter_check.subprocess.run', return_value=
+                                  subprocess.CompletedProcess([], 0, listing, '')) as inspect:
+                        _stop_group(process)
+                    self.assertEqual(denied_signal, kill.call_args.args[1])
+                    self.assertEqual(1.0, inspect.call_args.kwargs['timeout'])
+                    process.wait.assert_called()
+
+    def test_permission_denial_does_not_hide_live_or_unverifiable_members(self):
+        cases = [
+            subprocess.CompletedProcess([], 0, '123 S\n', ''),
+            subprocess.CompletedProcess([], 0, '123 Z\n123 R\n', ''),
+            subprocess.CompletedProcess([], 0, 'malformed\n', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 1, '456 S\n', 'denied'),
+            subprocess.TimeoutExpired('ps', 1), OSError('ps unavailable'),
+        ]
+        for result in cases:
+            with self.subTest(result=result):
+                process = Mock(pid=123)
+                process.poll.return_value = 0
+                kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+                with patch('adapter_check.sys.platform', 'darwin'), \
+                        patch('adapter_check.os.killpg', side_effect=PermissionError()), \
+                        patch('adapter_check.subprocess.run', **kwargs):
+                    with self.assertRaisesRegex(PermissionError, 'child processes may remain'):
+                        _stop_group(process)
+
+    def test_live_leader_and_non_darwin_denials_are_not_suppressed(self):
+        for platform, returncode in [('darwin', None), ('linux', 0)]:
+            with self.subTest(platform=platform):
+                process = Mock(pid=123)
+                process.poll.return_value = returncode
+                with patch('adapter_check.sys.platform', platform), \
+                        patch('adapter_check.os.killpg', side_effect=PermissionError()), \
+                        patch('adapter_check.subprocess.run') as inspect:
+                    with self.assertRaises(PermissionError):
+                        _stop_group(process)
+                    inspect.assert_not_called()
 
 
 class AdapterCheckTests(unittest.TestCase):
