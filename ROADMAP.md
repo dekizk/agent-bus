@@ -582,8 +582,8 @@ The released v0.11.0 scope remains unchanged; this work is not a v1.0 declaratio
 - [x] Correct telemetry/accounting and quick-start verification overclaims;
   add source acquisition, supported-platform, and terminal/shutdown guidance.
 - [x] Complete local sdist/wheel and fresh-install validation; recheck the list.
-- [ ] Observe the GitHub matrix passing after an approved commit/push. Workflow
-  configuration and local success are not evidence of remote platform results.
+- [x] Observe the GitHub matrix passing after an approved commit/push. All six
+  lanes passed for `ac6a73d`; see the remote validation evidence below.
 
 Locally rechecked 2026-09-13: 284 tests passed (one existing dependency warning).
 The source archive contains the runner, fixtures, development requirements,
@@ -674,7 +674,18 @@ deterministic denial cases at both TERM and KILL, zombie/absent groups, live
 members, and unavailable/malformed/timed-out inspection. A fresh sdist-built
 wheel passed the adapter success/timeout probes and live operator workflow.
 Evidence: `outputs/agent-bus-trials/readiness-darwin-cleanup-fix` in the Codex
-task workspace. A full remote rerun is still required.
+task workspace.
+
+Remote recheck: fix commit `ac6a73d` passed all six lanes in
+[GitHub run 34753501956](https://github.com/dekizk/agent-bus/actions/runs/34753501956):
+Ubuntu Python 3.10 (latest and direct dependency floors), 3.13, and 3.14;
+macOS Python 3.13 and 3.14. Every lane passed regressions, the sdist/wheel
+build, and the fresh-installed adapter and live operator workflow checks.
+Downloaded reports are retained in
+`outputs/agent-bus-trials/readiness-ci-34753501956` in the Codex task workspace.
+This closes the remote matrix gate for these checkpoints. Earlier pending
+statements above are historical checkpoint observations; this result supersedes
+them. No new version, native Windows support, or v1.0 completion is claimed.
 
 ### Remaining v1.0 gates
 
