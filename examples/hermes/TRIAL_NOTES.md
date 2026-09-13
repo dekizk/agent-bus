@@ -801,6 +801,116 @@ tests with deliberately incomplete event fixtures mock the admission boundary;
 the admission regressions and existing integration tests use real persisted
 history and the shared reducer.
 
+## 2026-09-13 — user-run v0.10 DAG, budget, scheduling, and recovery trials
+
+Four isolated trials were run by the user after checkpoint `6db964e`. Review
+checked the saved event histories and replayed the coordination projection,
+in addition to checking each runner's `RESULT.json`. All four passed. Trial 1
+used real Hermes; trials 2–4 used the production server, PM, and worker runtime
+with a synthetic executor and explicitly synthetic telemetry.
+
+Each run used a separate database and loopback port. Services stopped after
+the run; databases, IDs, checkpoint views, events, and process logs remain in
+the evidence directories below. Event IDs in this entry are local to each run.
+
+### Trial 1 — real Hermes DAG and budget continuation
+
+Workflow: `trial-1-hermes-budget-dag`. Hermes used provider `nous`, model
+`openai/gpt-5.5`, safe mode, the `clarify` toolset, and a disposable working
+directory. Content capture was off. The workload analysed a supplied short
+integration note, drafted two dependent sections, then merged both sections.
+
+- Task 1 completed at `#46`; tasks 2 and 3 referenced that completion and
+  completed at `#67` and `#111`. Task 4's assignment `#112` referenced both
+  upstream completions and completed at `#134`. All four used attempt 1.
+- Initial policy `#5` allowed 10,000 tokens and $1.00, with per-assignment
+  reservations of 10,000 tokens and $1.00. After task 1 reported 4,216 tokens
+  and $0.025930, the next task correctly waited with `workflow_budget_limit`:
+  the remaining allowance could not cover another full reservation. This
+  was reservation-based admission blocking, not a claim that all 10,000
+  tokens had been consumed.
+- Operator policy `#47` increased the totals to 100,000 tokens and $5.00 while
+  retaining those reservations. The remaining DAG tasks then completed.
+- Four model invocations completed, with zero failed or open model spans,
+  zero missing token/cost reports, and no active reservations at completion.
+  The reported total-token fields summed to **17,968 tokens**, and reported
+  estimated cost totalled **$0.111853**.
+- The merge returned both requested sections as a structured result. This
+  verifies result propagation and completion; the generated prose remains a
+  draft for editorial review rather than an approved documentation change.
+
+### Trial 2 — workflow fairness, priority, and agent capacity
+
+Workflows: `trial-2-flow-a` and `trial-2-flow-b`. Both were queued before the PM
+started. The synthetic worker advertised capacity 2; the agent policy limited
+active ownership to 1.
+
+- Assignment order was task 2 (A urgent), task 4 (B normal), task 1 (A low),
+  task 3 (B low), at events `#9`, `#17`, `#25`, and `#33`.
+- Replay confirmed peak active ownership of exactly 1. Both workflows
+  completed, each task on its first attempt, at `#16`, `#24`, `#32`, and `#40`
+  in assignment order.
+- This demonstrates alternating workflow turns, priority within a workflow,
+  and enforcement of an agent limit below advertised capacity. Usage in this
+  trial was synthetic and incurred no model charges.
+
+### Trial 3 — pause/resume, worker loss, and missing usage
+
+Workflow: `trial-3-pause-and-crash`. A synthetic root task was paused during
+execution; its dependent task later lost its worker during execution.
+
+- Pause request `#10` was acknowledged at `#11`. Resume request `#12` was
+  acknowledged at `#13`; the root's second assignment `#15` completed at `#26`.
+- The dependent task began on assignment `#27`. The trial killed only its
+  synthetic worker; lease expiry was recorded at `#30`. Replacement assignment
+  `#32` used a new worker instance and completed at `#43`.
+- Exactly one completion per task was recorded, both on attempt 2. There was
+  no accepted completion from either interrupted first attempt.
+- Final accounting retained two 1,000-token reservations for missing usage,
+  plus 80 reported synthetic tokens from the successful attempts: **2,080
+  charged tokens**, two missing token/cost reports, and zero active
+  reservations. The two open telemetry spans identify interrupted invocations;
+  they do not indicate active task ownership.
+- This confirms runtime recovery and conservative accounting. It is not
+  evidence of a real Hermes process crash or provider billing under failure.
+
+### Trial 4 — policy defaults across PM restart
+
+Workflows: `trial-4-existing` and `trial-4-new`.
+
+- Before restart, existing-workflow policy `#2` recorded concurrency 1,
+  a 10,000-token budget, and a 1,000-token reservation. The same policy and
+  values remained after the PM restarted with different deployment defaults.
+- The newly created workflow received policy `#4`: concurrency 3, a
+  50,000-token budget, and a 5,000-token reservation.
+- Operator policy `#5` changed the existing workflow's concurrency to 2
+  without changing its 10,000-token budget. Assignment `#8` referenced `#5`;
+  the new workflow's assignment `#9` referenced `#4`. Both completed at `#19`
+  and `#21` respectively.
+- This confirms persisted defaults, prospective configuration changes, and
+  append-only operator patches. This trial also used synthetic execution.
+
+### Evidence and review notes
+
+Evidence base directory on the test machine:
+`/Users/deki/Documents/Codex/2026-07-10/can/outputs/agent-bus-trials/`
+
+- Trial 1: `trial-1-20260913-124547-c262fd`
+- Trial 2: `trial-2-20260913-124853-1a9f2a`
+- Trial 3: `trial-3-20260913-124902-972671`
+- Trial 4: `trial-4-20260913-124941-8189c4`
+
+The user initially supplied the trial-4 path twice; review located and verified
+the distinct trial-3 directory above. Worker logs end with `KeyboardInterrupt`
+from the runner's intentional shutdown. These traces did not represent task
+failures. Dependency completion references, completion counts, fairness order,
+capacity, and the conservative missing-usage charge were independently checked
+against the saved histories.
+
+These results add real Hermes DAG/budget evidence and repeatable operator-control
+evidence for v0.10. They do not replace sustained real-agent soak testing or
+the separate publication-race regressions recorded on 2026-09-12.
+
 ## Trial-note template
 
 - Date and task category:
