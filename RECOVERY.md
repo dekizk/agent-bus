@@ -155,3 +155,36 @@ Runner: `outputs/v011_post_restore_trial.py`.
 This closes the focused live recovery check. It does not claim exactly-once
 external side effects, real-agent/model recovery, power-loss durability, or
 long-running soak reliability.
+
+## Sustained local soak — 2026-09-13
+
+**PASS.** A 30-minute workload-generation run finished and drained in 1,807.58
+seconds. One isolated loopback bus, two demo workers, and a snapshot-enabled PM
+processed 179 five-task root/fan-out/fan-in DAGs. No model calls or existing user
+workflows were involved.
+
+- 939 tasks: 895 completed and 44 deliberately cancelled; 12,171 events.
+- 89 active-worker kills produced 89 `worker lease expired` events and recovery.
+- 59 PM restarts and 59 acknowledged workflow pause/resume cycles.
+- 180 full-replay comparisons passed, including the final drained state.
+- No duplicate task completions; assignment dependency references pointed to
+  earlier matching completion events.
+- 179 progress/memory samples; peak observed RSS was 56.75 MiB for the server,
+  75.02/66.02 MiB for the worker roles, and 84.23 MiB for the PM, below the
+  512 MiB per-process safety threshold. These sampled peaks do not prove absence
+  of leaks over longer durations.
+- Artifact audit verified 895 referenced artifacts with no issues or orphan
+  candidates. Backup verification and restored full-state equivalence passed.
+- Export checksum verified; process logs contained no traceback or idempotency
+  conflict. All trial-owned processes were stopped afterward.
+
+Evidence: `outputs/agent-bus-trials/v011-soak-20260913-174221-9f1e4b` in the
+Codex task workspace, including `summary.json`, `samples.jsonl`, `events.json`,
+process logs, the backup bundle, and restored database. Runner:
+`outputs/v011_soak.py`. Event-export SHA-256:
+`ea520005f6f17e12f8c0b43d29326a71c883614105481e560bf923324b08dde8`.
+
+This closes the first bounded local soak checklist, not all v0.11 validation.
+It does not establish week-long stability, genuine-agent/model behavior,
+power-loss durability, exactly-once external effects, or exhaustive concurrent
+completion/cancellation/deadline race coverage.

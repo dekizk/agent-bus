@@ -505,6 +505,28 @@ See [live recovery evidence](RECOVERY.md#post-restore-live-execution--2026-09-13
 
 Remaining v0.11 validation, without widening the release into new platform features:
 
+### First sustained local soak — 30-minute run
+
+- [x] Keep one local bus running with two demo workers and repeated five-task
+  root/fan-out/fan-in DAGs for at least 30 minutes of workload generation.
+- [x] Repeatedly kill an active worker and observe lease expiry and replacement;
+  restart the PM using snapshots during ongoing work.
+- [x] Exercise workflow pause/resume and cancellation across repeated cycles.
+- [x] Compare live state with full replay after each settled cycle; reject duplicate
+  completions or assignments whose dependency references are not earlier completions.
+- [x] Record events, failure counts, progress, and process RSS samples.
+- [x] Drain tasks, verify artifacts, and finish with backup/restore equivalence.
+- [x] Inspect the final evidence and mark pass/fail explicitly.
+
+**Passed 2026-09-13:** 179 DAG cycles over 1,807.58 seconds, 939 tasks,
+89 worker lease expiries, 59 PM restarts, and 180 replay comparisons.
+See [sustained soak evidence](RECOVERY.md#sustained-local-soak--2026-09-13).
+
+This is a bounded demo workload with no model calls. It is the first sustained
+soak, not week-long or genuine-agent production evidence. The runner owns and
+stops its isolated processes; an unexpected process exit, inconsistent state,
+stalled cycle, or process exceeding 512 MiB RSS stops the run with diagnostics.
+
 - gather longer-running soak, crash-injection, and repeated race evidence;
 - review practical scale limits with genuine multi-worker/DAG workloads;
 - review the completed checklist and operational documentation before promotion.
