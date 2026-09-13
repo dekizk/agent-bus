@@ -7,6 +7,9 @@ ownership, execution attempts, recovery, and human decisions.
 See [ROADMAP.md](ROADMAP.md) for the product direction, adoption principles,
 and remaining path from the current local control plane to v1.0.
 
+Current release: **v0.11.0** — local scale and recovery hardening.
+See [release notes](RELEASE_NOTES.md) for changes, validation, and known limits.
+
 The bus does not store a mutable kanban card as truth. Every action is an
 immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes

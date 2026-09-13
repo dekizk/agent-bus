@@ -1,6 +1,6 @@
 # Local artifact audit, backup, and restore
 
-These v0.11 development tools preserve immutable event history. They do not
+These v0.11 tools preserve immutable event history. They do not
 repair damaged events, delete history, or promise exactly-once external effects.
 Use bundles from trusted local sources: hashes detect corruption, not malicious
 replacement of both a file and its manifest.

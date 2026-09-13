@@ -388,6 +388,10 @@ remains useful release evidence beyond these correctness trials.
 
 ## v0.11 — local scale, retention, and recovery hardening
 
+**Complete for the bounded local scope — 2026-09-13.** Version `0.11.0`
+includes phases 1–4 below. Longer-term validation remains open as cross-cutting
+work, not a claim of production certification. See [release notes](RELEASE_NOTES.md).
+
 ### Phase 1 — measured, rebuildable task lookup (implemented and verified)
 
 - [x] Add an isolated, credential-free benchmark for late/missing task lookup,
@@ -539,7 +543,7 @@ stalled cycle, or process exceeding 512 MiB RSS stops the run with diagnostics.
   downstream result propagation, usage inspection, and artifact verification.
 - [x] Review phases 1–4 and document validation limits; correct stale phase-2
   wording that still described the implemented phase 3 as future work.
-- [ ] Make the final release decision and promote development package metadata.
+- [x] Make the final release decision and promote development package metadata.
 
 The focused Hermes trial passed; see
 [trial evidence](examples/hermes/TRIAL_NOTES.md#v011-live-hermes-dag-recovery--2026-09-13).
@@ -547,9 +551,10 @@ It confirms two real completions after one interrupted attempt, not sustained
 real-agent operation. No implementation blocker was found in this checkpoint's
 tests and focused trial; this is not a new exhaustive code/security audit.
 Week-long genuine-agent operation, broader live race/scale evidence, and the
-cross-cutting trials below remain unclaimed. The package remains a development
-version pending an explicit release decision; automatic deletion and archival
-segments remain deliberately out of scope.
+cross-cutting trials below remain unclaimed. The approved release is `0.11.0`
+for this bounded local scope; automatic deletion and archival segments remain
+deliberately out of scope. Historical phase checkpoints above describe their
+development-time status, not the final release status.
 
 Automatic artifact deletion and archival log segments are consciously deferred:
 they require additional ownership/publication guarantees, not just an age flag.
