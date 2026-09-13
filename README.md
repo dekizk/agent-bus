@@ -13,6 +13,9 @@ New here? Start with [setup](#setup) and the [first task](#quick-start-one-verif
 See [compatibility and support](COMPATIBILITY.md) for platform targets, upgrades,
 public contracts, and automated release checks.
 
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 deki.
+See [credits and acknowledgements](CONTRIBUTORS.md).
+
 The bus does not store a mutable kanban card as truth. Every action is an
 immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes

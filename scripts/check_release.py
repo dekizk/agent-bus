@@ -7,6 +7,7 @@ fresh venv and runtime directory are disposable and cleaned up on exit.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ import venv
 
 
 IMPORT_PROBE = """
-import importlib, importlib.metadata, json, pathlib, sys
+import hashlib, importlib, importlib.metadata, json, pathlib, sys
 prefix = pathlib.Path(sys.prefix).resolve()
 modules = ['agent_bus', 'agent_bus.adapters', 'agent_bus.protocol', 'adapter_check',
            'agent_bus_cli', 'bus', 'client', 'local_config', 'projection_store',
@@ -33,8 +34,17 @@ for name in modules:
     if not path.is_relative_to(prefix):
         raise RuntimeError(f'{name} imported outside isolated environment: {path}')
     origins[name] = str(path)
-print(json.dumps({'version': importlib.metadata.version('agent-bus'),
-                  'origins': origins, 'python': sys.version}, indent=2))
+dist = importlib.metadata.distribution('agent-bus')
+assert dist.metadata['License-Expression'] == 'MIT', 'missing MIT SPDX metadata'
+assert dist.metadata['Author'] == 'deki', 'incorrect author metadata'
+assert dist.metadata.get_all('License-File') == ['LICENSE'], 'incorrect license file metadata'
+licenses = [f for f in dist.files if str(f).endswith('.dist-info/licenses/LICENSE')]
+assert len(licenses) == 1, 'installed wheel must contain one license notice'
+license_bytes = pathlib.Path(dist.locate_file(licenses[0])).read_bytes()
+assert b'Copyright (c) 2026 deki' in license_bytes, 'incorrect copyright notice'
+print(json.dumps({'version': dist.version, 'origins': origins, 'python': sys.version,
+                  'license': {'expression': 'MIT', 'author': 'deki',
+                              'sha256': hashlib.sha256(license_bytes).hexdigest()}}, indent=2))
 """
 
 
@@ -130,6 +140,10 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
             run('dependency consistency', [python, '-m', 'pip', 'check'])
             imports = json.loads(run('import origins', [python, '-I', '-c', IMPORT_PROBE]))
             report['imports'] = imports
+            source_license = Path(__file__).resolve().parents[1] / 'LICENSE'
+            if imports['license']['sha256'] != hashlib.sha256(source_license.read_bytes()).hexdigest():
+                raise AssertionError('installed license differs from source notice')
+            report['license_verified'] = True
             version = run('version', [cli, '--version']).strip()
             if version != f"agent-bus {imports['version']}":
                 raise AssertionError(f'CLI and wheel version differ: {version}')

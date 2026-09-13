@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,9 @@ name = "agent-bus"
 dynamic = ["version"]
 description = "Local, event-driven orchestration and operations for interchangeable agents"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "deki"}]
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115,<1",

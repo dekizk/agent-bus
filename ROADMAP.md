@@ -726,12 +726,32 @@ operator checks. Reports are retained in
 Checkpoint 4 is complete for its stated v0.11.0 baseline; the support-window
 decision and remaining v1.0 gates below are not implied complete.
 
+### Owner-approved license and upgrade scope — 2026-09-13
+
+- [x] Select MIT licensing with `deki` as copyright holder; credit GPT Sol,
+  Fable 5.1, and GPT-6 Astra separately in development acknowledgements.
+- [x] Add license/author metadata and include the license in distributions.
+- [x] Select v0.11.0 as the oldest supported direct-upgrade source for v1.0;
+  do not imply coverage of older or untested intervening releases.
+- [x] Verify distribution contents, run regressions and recheck this list.
+
+GitHub source installations remain the trial path. PyPI publication and the
+v1.0 release itself are not authorized or implied by these decisions.
+
+Locally rechecked: 324 tests passed (one existing dependency warning). The
+source archive contains LICENSE and CONTRIBUTORS.md; the installed wheel
+declares MIT, lists deki as author, and includes a byte-identical copyright/
+license notice. Its upgrade and live operator checks also passed. Evidence:
+`outputs/agent-bus-trials/readiness-mit-license` in the Codex task workspace.
+Build tooling now requires setuptools 77.0.3+ for standard license metadata;
+runtime requirements and the version are unchanged. These local changes await
+review/commit and remote CI; no release tag or package publication was changed.
+
 ### Remaining v1.0 gates
 
-- [ ] Select the v1.0 upgrade-support window explicitly. The v0.11.0 baseline
-  above is now covered; add released fixtures for any other promised source
-  versions. These cases do not certify all historical state transitions.
-- [ ] Obtain the owner's license/distribution decisions; do not infer a license.
+- [x] Obtain the owner's upgrade-scope and license decisions, recorded above.
+- [ ] Rerun the v0.11.0 baseline against the final v1.0 release candidate;
+  add fixtures before promising any further direct-upgrade source versions.
 - [ ] Record an unaided newcomer install/connect/inspect/intervene trial.
 - [ ] Verify another genuine agent integration through the public contract.
 - [ ] Gather longer genuine-agent evidence with an agreed workload, authority,

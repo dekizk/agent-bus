@@ -116,8 +116,15 @@ additional fields but preserve existing field types and values.
 
 This demonstrates **v0.11.0 → current development** for the captured cases.
 It adds no schema migration and does not certify physical WAL recovery, every
-historical release, or downgrades. The v1.0 support window still needs an explicit
-release decision. See the [fixture provenance](tests/fixtures/compatibility/v0.11.0-upgrade/README.md).
+historical release, or downgrades. See the [fixture provenance](tests/fixtures/compatibility/v0.11.0-upgrade/README.md).
+
+The owner-approved v1.0 upgrade baseline is **v0.11.0**: this is the oldest
+starting release for a supported direct upgrade to v1.0. Direct upgrades from
+earlier releases are not promised. Any intervening release included in the
+supported path needs its own release-derived regression coverage; do not infer
+coverage solely from its version number. The final v1.0 build must pass these
+upgrade checks before release. This is a selected support scope, not a claim
+that v1.0 has shipped or that every historical database has been tested.
 
 For v1.x, patches are intended for compatible fixes; minor releases may add
 compatible capabilities. Removing supported APIs or changing existing wire/
@@ -128,9 +135,16 @@ series; use runtime warnings where actionable and safe for protocol output.
 Bug fixes can change behavior outside the documented contract.
 
 Maintenance targets the latest release; no LTS/backport window or response-time
-SLA is promised. PyPI publication, license selection, native Windows, and a
-distributed service remain separate decisions. The public 1.x promise requires
+SLA is promised. The project uses the [MIT License](LICENSE), with copyright
+held by deki and development acknowledgements in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+Trials continue using GitHub source installations; PyPI publication, native
+Windows, and a distributed service remain separate decisions. No package is
+published by selecting a license. The public 1.x promise requires
 the remaining roadmap gates, including independent onboarding evidence.
+
+Building from source requires setuptools 77.0.3 or newer for standard SPDX
+license metadata. Isolated builds install that build dependency automatically;
+the runtime Python and dependency requirements are unchanged.
 
 ## Running the release checks
 
