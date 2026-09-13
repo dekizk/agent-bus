@@ -822,16 +822,41 @@ def reconcile(
     raise RuntimeError("reconciliation did not converge")
 
 
-def main():
+def initial_cursor(bus: BusClient, snapshot_path: Optional[Path] = None) -> OrderedProjectionCursor:
+    if snapshot_path is None:
+        cursor = OrderedProjectionCursor(PMState())
+        cursor.consume(bus.query_all(after_id=0, topics=list(PM_TOPICS)))
+        return cursor
+    import sqlite3
+    from projection_store import event_anchor, load_projection, save_projection
+
+    try:
+        result = load_projection(snapshot_path)
+    except sqlite3.Error as exc:
+        raise ValueError("could not replay the local snapshot database; start the upgraded bus "
+                         "with the same --config, or omit --snapshot") from exc
+    if bus.database_identity() != result.database_id:
+        raise ValueError("local snapshot database does not match the HTTP bus; check --config")
+    if result.last_event_id and event_anchor(bus.get_event(result.last_event_id)) != result.anchor:
+        raise ValueError("local snapshot event anchor does not match the HTTP bus; check --config")
+    # Refresh only from this pinned replay, before reconcile mutates the state.
+    # A cache write failure must not prevent a successfully replayed PM starting.
+    try:
+        saved = save_projection(snapshot_path, result)
+        if not saved:
+            print("[pm] snapshot too large; using replayed state without saving", flush=True)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(f"[pm] snapshot not saved: {exc}", flush=True)
+    print(f"[pm] {result.cache_note}; replayed {result.replayed_events} coordination events", flush=True)
+    return OrderedProjectionCursor(result.state, result.last_event_id)
+
+
+def main(snapshot_path: Optional[Path] = None):
     with single_pm_lock():
         bus = BusClient(BUS_URL, actor="pm")
-        state = PMState()
-        cursor = OrderedProjectionCursor(state)
-
-        history = bus.query_all(after_id=0, topics=list(PM_TOPICS))
-        head = max((event["id"] for event in history), default=0)
-        print(f"[pm] replaying log up to #{head}, then reconciling...", flush=True)
-        cursor.consume(history)
+        cursor = initial_cursor(bus, snapshot_path)
+        state = cursor.state
+        print(f"[pm] replayed log up to #{cursor.last_event_id}, then reconciling...", flush=True)
 
         policy_defaults = {
             "default_workflow_max_active_assignments": (

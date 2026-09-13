@@ -388,7 +388,69 @@ remains useful release evidence beyond these correctness trials.
 
 ## v0.11 — local scale, retention, and recovery hardening
 
-Address known local-scale boundaries while preserving the event log as truth:
+### Phase 1 — measured, rebuildable task lookup (implemented and verified)
+
+- [x] Add an isolated, credential-free benchmark for late/missing task lookup,
+  dependency-bearing append, coordination replay, and replay peak memory.
+- [x] Record the scan-based baseline before changing storage.
+- [x] Maintain a task identity index in the same transaction as event append;
+  backfill existing databases without changing events or task identities.
+- [x] Provide an atomic local rebuild command. A missing index must be recreated
+  at startup; a failed rebuild must leave the previous index intact.
+- [x] Test migration, idempotency, concurrent duplicate creation, rollback,
+  rebuild equivalence, and indexed query plans.
+- [x] Compare before/after measurements and run the full regression suite.
+
+Rechecked 2026-09-13: 246 tests passed, including real process loss during
+rebuild and concurrent rebuild/publish checks. See
+[measurements and reproduction instructions](benchmarks/RESULTS.md).
+
+Acceptance: task lookup uses primary-key searches instead of parsing task history;
+deleting/rebuilding the derived index preserves event bytes and lookup results;
+event, counter, and index writes commit or roll back together. Benchmarks report
+measurements, not machine-independent timing assertions. This phase does not
+claim faster PM or worker admission replay: worker-specific admission benchmarks,
+incremental replay, snapshots, and broader DAG/worker workloads belong to phase 2.
+Retention and backup/corruption/soak work follow separately. Completing phase 1
+does not complete v0.11.
+
+### Phase 2 — replay measurements and opt-in local PM snapshots (implemented and verified)
+
+- [x] Benchmark streamed coordination replay and actual worker admission:
+  initial history, incremental history, memory, and rows read, with mixed
+  telemetry, multiple workers, and wide/deep task dependencies.
+- [x] Add a versioned, checksummed, JSON-only coordination snapshot containing
+  the complete reducer state and an exact persisted event cursor.
+- [x] Bind snapshots to a database identity, reducer implementation fingerprint,
+  and event anchor; missing, incompatible, or damaged caches trigger full replay.
+- [x] Replay the suffix from a consistent SQLite read transaction; atomically
+  replace the disposable cache without modifying event history.
+- [x] Provide local build/delete commands and opt-in PM startup integration;
+  verify that the HTTP bus is the same database before using local state.
+- [x] Test full-replay equivalence (including subsequent reconciliation), stale
+  caches, wrong identity/version, corruption, interruption, and deletion/rebuild.
+- [x] Record benchmark evidence, run regression tests, and recheck this list.
+
+Rechecked 2026-09-13: 258 tests passed (one existing dependency deprecation
+warning). Wheel build/import checks include the new snapshot module. Package
+metadata now identifies this unfinished iteration as `0.11.0.dev0`; v0.11 as a
+whole is not yet complete. See [replay evidence](benchmarks/REPLAY_RESULTS.md).
+Next measured performance target: streaming initial worker admission history
+without changing independent validation; its incremental read path is already
+small. The live local PM restart/snapshot smoke check passed on 2026-09-13:
+five demo-worker tasks, valid/deleted/corrupted cache recovery, pending workflow
+pause/resume, and zero duplicate assignments/completions. Evidence is recorded
+in [replay results](benchmarks/REPLAY_RESULTS.md); broader load/soak and the
+remaining v0.11 work are not claimed complete.
+
+Design boundary: snapshots are local performance caches, not event contracts or
+external inputs. No pickle or executable serialization. They contain task context
+and must receive the same protection as the database. Snapshot loading is opt-in
+for the PM; worker admission keeps its independent exact-prefix replay. Worker
+snapshot transport is deferred until measurements justify extending that trust
+surface. No automatic retention, event deletion, or distributed checkpointing.
+
+Address remaining local-scale boundaries while preserving the event log as truth:
 
 - replace full-log task identity scans with a transactionally maintained task
   index;

@@ -334,28 +334,18 @@ class HardeningDatabaseTests(unittest.TestCase):
             )
 
     def _race_identical_appends(self, topic, payload, *, idempotency_key):
-        original = bus._resolve_correlation_id
         barrier = threading.Barrier(2)
 
-        def resolve(*args, **kwargs):
-            result = original(*args, **kwargs)
+        def publish():
+            # Append now takes its write lock before resolving correlation.
+            # Synchronize contenders before that lock, not inside it: waiting
+            # for a second lock owner there would manufacture a deadlock.
             barrier.wait(timeout=5)
-            return result
+            return bus.append_event(topic, "human", payload, None, idempotency_key)
 
-        with patch.object(bus, "_resolve_correlation_id", side_effect=resolve):
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [
-                    pool.submit(
-                        bus.append_event,
-                        topic,
-                        "human",
-                        payload,
-                        None,
-                        idempotency_key,
-                    )
-                    for _ in range(2)
-                ]
-                return [future.result(timeout=10) for future in futures]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(publish) for _ in range(2)]
+            return [future.result(timeout=10) for future in futures]
 
     def _active_workflow(self, correlation_id, *, deadline_at=None):
         worker = bus.append_event(

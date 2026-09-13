@@ -91,6 +91,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     pm = commands.add_parser("pm", help="run the local orchestration manager")
     pm.add_argument("--config", default="agent-bus.local.json")
+    pm.add_argument("--snapshot", action="store_true", help="use a disposable local replay snapshot")
+
+    snapshot = commands.add_parser("snapshot", help="build or clear the local coordination replay cache")
+    snapshot.add_argument("action", choices=["build", "clear"])
+    snapshot.add_argument("--config", default="agent-bus.local.json")
+    _add_output_option(snapshot)
+
+    rebuild = commands.add_parser(
+        "rebuild-task-index", help="rebuild local task lookup from immutable history"
+    )
+    rebuild.add_argument("--config", default="agent-bus.local.json")
+    _add_output_option(rebuild)
 
     demo = commands.add_parser(
         "demo-worker", help="run a bounded worker for the local quick start"
@@ -302,14 +314,14 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
-        "supersede", "policy", "agent-policy", "adapter",
+        "supersede", "policy", "agent-policy", "adapter", "rebuild-task-index", "snapshot",
     }:
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
         except httpx.HTTPError as exc:
             print(f"agent-bus: could not reach local bus: {_friendly_error(exc)}", file=stderr)
             return 2
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
+        except (OSError, json.JSONDecodeError, ValueError, BusProtocolError) as exc:
             print(f"agent-bus: {exc}", file=stderr)
             return 2
         except KeyboardInterrupt:
@@ -476,6 +488,48 @@ def _run_local_command(
     local = LocalConfig.from_file(local_path)
     local.apply_environment()
 
+    if args.command == "snapshot":
+        import sqlite3
+        from projection_store import load_projection, save_projection, clear_projection
+
+        try:
+            if args.action == "clear":
+                clear_projection(local.database_path)
+                value = {"ok": True, "action": "clear"}
+                message = "Cleared coordination snapshot; event history unchanged."
+            else:
+                result = load_projection(local.database_path, use_snapshot=False)
+                saved = save_projection(local.database_path, result)
+                if not saved:
+                    raise ValueError("projection exceeds the 64 MiB snapshot limit; full replay remains available")
+                value = {"ok": True, "action": "build", "through_id": result.last_event_id,
+                         "replayed_events": result.replayed_events}
+                message = f"Built coordination snapshot through event #{result.last_event_id}."
+        except sqlite3.Error as exc:
+            raise ValueError(f"snapshot operation failed: {exc}; start the upgraded bus first") from exc
+        _render_simple(value, args, stdout, message)
+        return 0
+
+    if args.command == "rebuild-task-index":
+        import bus
+        import sqlite3
+
+        if not local.database_path.is_file():
+            raise ValueError(f"database does not exist: {local.database_path}")
+        previous_path = bus.DB_PATH
+        try:
+            bus.DB_PATH = local.database_path
+            count = bus.rebuild_task_index()
+        except sqlite3.Error as exc:
+            raise ValueError(f"task index rebuild failed (rolled back): {exc}") from exc
+        finally:
+            bus.DB_PATH = previous_path
+        _render_simple(
+            {"ok": True, "tasks_indexed": count, "database": str(local.database_path)},
+            args, stdout, f"Rebuilt task index: {count} tasks; event history unchanged.",
+        )
+        return 0
+
     if args.command == "serve":
         import uvicorn
 
@@ -486,7 +540,7 @@ def _run_local_command(
         # its authoritative URL and lease settings at import time.
         import pm_agent
 
-        pm_agent.main()
+        pm_agent.main(snapshot_path=local.database_path if args.snapshot else None)
         return 0
     if args.command == "demo-worker":
         from client import BusClient

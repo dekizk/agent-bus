@@ -1130,6 +1130,11 @@ def db():
 def init_db() -> None:
     with db() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
+        # Serialize schema/backfill work with publishers; no partially built
+        # identity projection may become visible after a crash or concurrent init.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("CREATE TABLE IF NOT EXISTS bus_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO bus_metadata VALUES ('database_id',?)", (uuid.uuid4().hex,))
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
@@ -1165,20 +1170,15 @@ def init_db() -> None:
             )
             """
         )
-        max_task_id = 0
-        for row in conn.execute("SELECT payload FROM events WHERE topic = 'task.created'"):
-            try:
-                task_id = json.loads(row["payload"]).get("task_id")
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if _is_positive_int(task_id):
-                max_task_id = max(max_task_id, task_id)
-        conn.execute(
-            "INSERT OR IGNORE INTO counters (name, value) VALUES ('task_id', ?)",
-            (max_task_id,),
-        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_topic_id ON events(topic, id)")
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_identity'"
+        ).fetchone()
+        _create_task_identity(conn)
+        if exists is None:
+            _backfill_task_identity(conn)
+        _advance_task_counter(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_events_correlation_id
@@ -1215,7 +1215,7 @@ def init_db() -> None:
         ):
             try:
                 origin = json.loads(row["payload"]).get("external_origin")
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 continue
             if not isinstance(origin, dict):
                 continue
@@ -1249,7 +1249,7 @@ def init_db() -> None:
                 supersedes_task_id = json.loads(row["payload"]).get(
                     "supersedes_task_id"
                 )
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 continue
             if _is_positive_int(supersedes_task_id):
                 conn.execute(
@@ -1260,6 +1260,54 @@ def init_db() -> None:
                     """,
                     (supersedes_task_id, row["id"]),
                 )
+
+
+def _create_task_identity(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS task_identity ("
+        "task_id INTEGER PRIMARY KEY, created_event_id INTEGER NOT NULL UNIQUE)"
+    )
+
+
+def _backfill_task_identity(conn: sqlite3.Connection) -> None:
+    # First valid creation wins, matching historical task identity semantics.
+    # This O(task history) scan is reserved for migration/explicit recovery.
+    for row in conn.execute(
+        "SELECT id, payload FROM events WHERE topic='task.created' ORDER BY id"
+    ):
+        try:
+            payload = json.loads(row["payload"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        if _is_positive_int(task_id):
+            conn.execute(
+                "INSERT OR IGNORE INTO task_identity VALUES (?, ?)",
+                (task_id, row["id"]),
+            )
+
+
+def _advance_task_counter(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO counters(name,value) VALUES ('task_id',"
+        "(SELECT COALESCE(MAX(task_id),0) FROM task_identity)) "
+        "ON CONFLICT(name) DO UPDATE SET value=MAX(value,excluded.value)"
+    )
+
+
+def rebuild_task_index() -> int:
+    """Atomically replace the disposable identity index, never event history.
+
+    Run against an initialized database. Writers wait for the transaction;
+    readers retain their previous consistent view. Failures roll back the rebuild.
+    """
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _create_task_identity(conn)
+        conn.execute("DELETE FROM task_identity")
+        _backfill_task_identity(conn)
+        _advance_task_counter(conn)
+        return conn.execute("SELECT COUNT(*) FROM task_identity").fetchone()[0]
 
 
 def next_task_id(conn: sqlite3.Connection) -> int:
@@ -1287,19 +1335,11 @@ def _find_task_created(
     conn: sqlite3.Connection,
     task_id: int,
 ) -> Optional[sqlite3.Row]:
-    # v0.5 deliberately derives this local-scale lookup from the immutable log.
-    # It is O(task.created rows) and runs inside the append transaction. Before
-    # high-volume use, replace it with a transactionally maintained
-    # task_id -> created_event_id projection table or an indexed stored column.
-    for row in conn.execute(
-        "SELECT * FROM events WHERE topic = 'task.created' ORDER BY id"
-    ):
-        try:
-            if json.loads(row["payload"]).get("task_id") == task_id:
-                return row
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return None
+    return conn.execute(
+        "SELECT events.* FROM task_identity AS identity "
+        "JOIN events ON events.id=identity.created_event_id "
+        "WHERE identity.task_id=?", (task_id,),
+    ).fetchone()
 
 
 def _resolve_correlation_id(
@@ -1579,6 +1619,9 @@ def append_event(
     )
     requested_payload = dict(payload)
     with db() as conn:
+        # Identity checks and all derived claims must observe the same serialized
+        # write transaction as append (including concurrent explicit task IDs).
+        conn.execute("BEGIN IMMEDIATE")
         if idempotency_key is not None:
             row = conn.execute(
                 "SELECT * FROM events WHERE actor = ? AND idempotency_key = ?",
@@ -1777,6 +1820,11 @@ def append_event(
             )
             return row_to_dict(row)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
+        if topic == "task.created":
+            conn.execute(
+                "INSERT INTO task_identity(task_id,created_event_id) VALUES (?,?)",
+                (payload["task_id"], cur.lastrowid),
+            )
         if origin_claim is not None:
             conn.execute(
                 """
@@ -1968,4 +2016,8 @@ async def get_event(event_id: int) -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "schema_version": CURRENT_SCHEMA_VERSION}
+    def identity():
+        with db() as conn:
+            return conn.execute("SELECT value FROM bus_metadata WHERE name='database_id'").fetchone()[0]
+    return {"ok": True, "schema_version": CURRENT_SCHEMA_VERSION,
+            "database_id": await run_in_threadpool(identity)}

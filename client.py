@@ -47,6 +47,15 @@ class BusClient:
         self.offset_file = offset_dir / f"{safe_name}.offset"
         self.offset_lock_file = offset_dir / f"{safe_name}.offset.lock"
 
+    def database_identity(self) -> str:
+        response = httpx.get(f"{self.base_url}/health", headers=self._headers, timeout=10)
+        response.raise_for_status()
+        body = response.json()
+        value = body.get("database_id") if isinstance(body, dict) else None
+        if not isinstance(value, str) or not value:
+            raise BusProtocolError("bus identity unavailable; disable PM snapshots or upgrade the server")
+        return value
+
     def publish(
         self,
         topic: str,

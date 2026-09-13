@@ -1090,6 +1090,79 @@ and causal history are explicit.
 
 ## Crash recovery guarantees
 
+### Rebuilding task lookup
+
+The v0.11 phase-1 task identity index is a disposable lookup from task ID to
+its original creation event, not another source of task state. It is maintained
+atomically with event append and automatically populated when upgrading a
+database without the index. Task/event identities and event payloads do not change.
+
+To repair an incomplete index on an existing initialized local database:
+
+```sh
+agent-bus rebuild-task-index --config agent-bus.local.json
+```
+
+The command reads immutable history and atomically replaces only the derived
+index, preserving the monotonic task-ID counter. It can recover a missing table
+or missing index rows. A failed/interrupted rebuild rolls back. SQLite serializes
+it with publishers, but a large rebuild may exceed their five-second lock wait;
+use a quiet maintenance window (stop publishers/PM/workers) for large databases.
+The command needs filesystem access to the configured database, not a running
+HTTP server. This is not an event-log corruption repair or backup tool.
+
+Normal startup recreates an absent index; it does not detect arbitrary edits to
+an existing index. Publish through the bus API, not direct SQL, and do not run
+older bus writers against an upgraded database: they cannot maintain this index.
+If older writers were used, stop them, upgrade, and rebuild before resuming.
+See [benchmark measurements and limitations](benchmarks/RESULTS.md).
+
+### Optional local PM replay snapshots
+
+For long-running local logs, v0.11 phase 2 adds an **opt-in** disposable
+coordination snapshot. To build or discard it using the configured database:
+
+```sh
+agent-bus snapshot build --config agent-bus.local.json
+agent-bus snapshot clear --config agent-bus.local.json
+```
+
+To use it when starting the PM (stop the previous PM first):
+
+```sh
+agent-bus pm --config agent-bus.local.json --snapshot
+```
+
+Without `--snapshot`, the PM follows its existing HTTP replay path. With it, the
+PM streams local SQLite history from a validated snapshot cursor, verifies the
+database identity and cursor event against the HTTP bus, then reconciles and
+subscribes normally. A mismatch stops startup with an error. The snapshot is
+refreshed at PM startup; it is not a periodic live checkpoint. For a later
+checkpoint, use `snapshot build`, preferably in a quiet window on large logs.
+
+The cache contains the complete coordination state: tasks, dependencies, worker
+leases, pending controls/decisions, workflow and agent policies, retry state,
+budget reservations/usage, and fairness position. Raw telemetry is excluded.
+It is JSON-only, versioned, checksummed, and bound to the database identity,
+loaded reducer implementation and cursor event. Missing, incompatible, or
+damaged snapshots fall back to full replay; deleting a cache does not delete
+events. Cache writes are atomic. A failed PM cache write does not prevent the
+already-replayed state from being used. Snapshots over 64 MiB are not saved.
+
+This assumes immutable history on a trusted local host. Checksums are accidental
+corruption checks, not signatures; the cursor anchor is not a whole-log tamper
+audit. Do not concurrently operate divergent copies of a database as one bus.
+Snapshots contain task context and decisions: protect them like the event
+database. Clearing the cache logically removes it, not securely erases old disk
+pages. Retention, backup, and forensic corruption repair remain separate work.
+
+Snapshots are not always faster and have higher temporary memory overhead than
+streamed replay. Worker admission still independently replays the exact event
+prefix and then reads only incremental history; it does not trust PM snapshots.
+See [replay/admission measurements](benchmarks/REPLAY_RESULTS.md).
+
+### Lifecycle recovery behavior
+
 ### PM
 
 At startup the PM:

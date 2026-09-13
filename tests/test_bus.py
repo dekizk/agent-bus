@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import bus
+from version import VERSION
 from fastapi.testclient import TestClient
 
 
@@ -691,7 +692,7 @@ class BusApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_query_and_contract_errors(self):
-        self.assertEqual("0.9.0", bus.app.version)
+        self.assertEqual(VERSION, bus.app.version)
         created = self.client.post(
             "/events",
             json={
