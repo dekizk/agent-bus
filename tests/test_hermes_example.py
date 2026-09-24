@@ -155,6 +155,7 @@ class HermesExecutorTests(unittest.TestCase):
         self.assertIn("decisions array contains authoritative human responses", prompt)
         self.assertEqual("clarify", args[args.index("--toolsets") + 1])
         self.assertIn("--safe-mode", args)
+        self.assertNotIn("--reasoning", args)
         self.assertEqual(self.root.resolve(), Path(recorded["cwd"]).resolve())
         self.assertEqual("tool", recorded["source"])
         self.assertEqual("1", recorded["safe"])
@@ -276,6 +277,24 @@ class HermesExecutorTests(unittest.TestCase):
         self.assertIsInstance(results[0], RetryableFailure)
         self.assertEqual("hermes_cancelled", results[0].code)
 
+    def test_reasoning_is_forwarded_in_safe_mode(self):
+        capture = self.root / "reasoning.json"
+        executor = self.make_executor(
+            {"status": "completed", "summary": "done", "result": {}},
+            reasoning="high",
+            environment={"FAKE_HERMES_CAPTURE": str(capture)},
+        )
+        self.assertIsInstance(executor.execute(assignment()), Completed)
+        args = json.loads(capture.read_text(encoding="utf-8"))["argv"]
+        self.assertEqual(1, args.count("--reasoning"))
+        self.assertEqual("high", args[args.index("--reasoning") + 1])
+        self.assertIn("--safe-mode", args)
+
+    def test_invalid_reasoning_is_rejected(self):
+        for value in ("", "HIGH", "invalid", False, 3):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "reasoning"):
+                self.make_executor({}, reasoning=value)
+
     def test_configuration_requires_explicit_bounded_authority(self):
         with self.assertRaisesRegex(ValueError, "safe_mode requires"):
             HermesExecutor(
@@ -295,6 +314,14 @@ class HermesExecutorTests(unittest.TestCase):
 
 
 class HermesWorkerWiringTests(unittest.TestCase):
+    def test_reasoning_cli_default_and_validation(self):
+        base = ["--working-directory", "/tmp", "--model", "fake", "--provider", "fake"]
+        self.assertIsNone(run_worker.parse_args(base).reasoning)
+        self.assertEqual("none", run_worker.parse_args(base + ["--reasoning", "none"]).reasoning)
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as error:
+            run_worker.parse_args(base + ["--reasoning", "invalid"])
+        self.assertEqual(2, error.exception.code)
+
     @patch("examples.hermes.run_worker.WorkerRuntime")
     @patch("examples.hermes.run_worker.BusClient")
     @patch("examples.hermes.run_worker.HermesExecutor")
@@ -316,11 +343,14 @@ class HermesWorkerWiringTests(unittest.TestCase):
                     "fake-model",
                     "--provider",
                     "fake-provider",
+                    "--reasoning",
+                    "high",
                     "--capability",
                     "research",
                 ]
             )
         executor_class.assert_called_once()
+        self.assertEqual("high", executor_class.call_args.kwargs["reasoning"])
         client_class.assert_called_once_with(
             "http://127.0.0.1:8765",
             actor="hermes",

@@ -31,6 +31,7 @@ DEFAULT_MAX_STDERR_BYTES = 16 * 1024
 MAX_PROMPT_BYTES = 32 * 1024
 MAX_OUTCOME_TEXT_CHARS = 4096
 MAX_USAGE_BYTES = 8 * 1024
+REASONING_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 FORBIDDEN_ORCHESTRATION_TOOLSETS = frozenset(
     {"all", "*", "todo", "delegation", "cronjob"}
@@ -74,6 +75,7 @@ class HermesExecutor:
         working_directory: str | Path,
         model: Optional[str],
         provider: Optional[str],
+        reasoning: Optional[str] = None,
         toolsets: Sequence[str] = ("clarify",),
         command: Sequence[str] = ("hermes",),
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
@@ -102,6 +104,9 @@ class HermesExecutor:
 
         self.model = self._optional_string(model, "model")
         self.provider = self._optional_string(provider, "provider")
+        if reasoning is not None and reasoning not in REASONING_LEVELS:
+            raise ValueError(f"reasoning must be one of: {', '.join(REASONING_LEVELS)}")
+        self.reasoning = reasoning
         if self.provider is not None and self.model is None:
             raise ValueError("provider requires an explicit model")
         if safe_mode and (self.model is None or self.provider is None):
@@ -536,6 +541,8 @@ ASSIGNMENT_JSON
             invocation.extend(("--model", self.model))
         if self.provider is not None:
             invocation.extend(("--provider", self.provider))
+        if self.reasoning is not None:
+            invocation.extend(("--reasoning", self.reasoning))
         if self.safe_mode:
             invocation.append("--safe-mode")
         return invocation

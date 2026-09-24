@@ -92,6 +92,15 @@ python -m examples.hermes.run_worker \
   --capability hermes
 ```
 
+For an explicit reasoning effort, add `--reasoning high` to the worker command.
+The adapter forwards this as Hermes' per-invocation `--reasoning` option, including
+in safe mode; changing saved Hermes user configuration is not needed. Omit it to
+preserve Hermes' default behavior. Supported CLI levels are `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; actual support depends on
+the selected model and provider. Use a Hermes version with `--reasoning` in
+`hermes --help`. This option belongs to `run_worker`, not the task submission
+or the separate `live_smoke` command.
+
 Publish a low-risk task in another terminal:
 
 ```sh

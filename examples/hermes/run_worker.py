@@ -10,7 +10,7 @@ from pathlib import Path
 
 from artifacts import ArtifactStore
 from client import BusClient
-from examples.hermes.hermes_executor import HermesExecutor
+from examples.hermes.hermes_executor import HermesExecutor, REASONING_LEVELS
 from runtime import WorkerRuntime
 from telemetry import BusTelemetrySink, ProducerIdentity
 
@@ -29,6 +29,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--working-directory", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--provider", required=True)
+    parser.add_argument(
+        "--reasoning",
+        choices=REASONING_LEVELS,
+        help="optional Hermes reasoning effort override; requires model/provider support",
+    )
     parser.add_argument(
         "--toolsets",
         default="clarify",
@@ -96,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         working_directory=args.working_directory,
         model=args.model,
         provider=args.provider,
+        reasoning=args.reasoning,
         toolsets=toolsets,
         command=(args.hermes_command,),
         timeout=args.timeout,

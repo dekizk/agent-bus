@@ -952,6 +952,96 @@ post-backup restore trial, a provider-side cancellation guarantee, or proof of
 exactly-once external effects. It complements the separate demo recovery/soak
 evidence in `RECOVERY.md`.
 
+## Live Luna coding trial and reasoning passthrough — 2026-09-24
+
+**PASS, bounded coding trial.** The existing local bus assigned task 2,
+"Implement and test a Python JSONL event-log summarizer", to the Hermes worker
+using `nous` / `openai/gpt-6-luna`, explicitly requested `--reasoning high`,
+safe mode, `file,terminal`, capacity 1, and a 600-second timeout. The working
+directory was `/tmp/agent-bus-hermes-code-trial`. This disposable directory was
+not an OS sandbox; file/terminal tools retained host access. No further paid
+invocation was made during the review.
+
+Correlation: `0f92553fcd964cc38b117155bcf20a1a`.
+Worker instance: `6556b40f48774009be2a312c2eba39d7`.
+The live history records creation #539, workflow policy #540 (maximum 4 active),
+assignment #541 (`task:2:attempt:1`), start #542, model-span start #543,
+model-span completion #569, accounting #570, and task completion #571.
+The workflow completed on its first attempt, with zero retryable failures,
+zero active reservations, and no open model spans. Duration was approximately
+128.378 seconds. This trial did not exercise retries, cancellation, or DAGs.
+
+### Generated-code review
+
+Hermes produced `summarize_events.py`, `test_summarize_events.py`,
+`sample_events.jsonl`, and `README.md`. Independent review reran all 8 generated
+tests successfully and reproduced the filtered sample output: 3 events,
+one each of task.created/task.started/task.completed, task IDs `[101, 102]`.
+Seven additional subprocess checks confirmed malformed JSON, boolean IDs,
+invalid IDs in filtered-out records, mixed integer/string IDs, no matches,
+non-object payload behavior, and missing-file handling. Invalid-record CLI
+checks returned exit 1 and a line-numbered error; missing files returned exit 1
+with an OS error. No blocking defect was found for this bounded trial.
+
+Limits and consciously deferred improvements:
+
+- This is a standalone JSONL summarizer, not a SQLite reader, workflow reducer,
+  or strict agent-bus schema validator. It accepts non-empty string task IDs,
+  while native bus task IDs are positive integers; non-object payloads are
+  counted without extracting an ID. Tighten these if promoting it to a bus tool.
+- Input is streamed line by line, but unique topics/IDs accumulate in memory;
+  neither distinct-key counts nor individual line size are bounded.
+- The generated unit tests exercise the function, not subprocess exit codes;
+  the independent CLI checks above are review evidence, not committed tests.
+- The sample demonstrates counting, not a causally valid task lifecycle.
+
+The generated files remain disposable local output and are not shipped with
+agent-bus. Reviewed script SHA-256:
+`ae0a90ad047d295e37c2f4792189c1025c3a787a0dd7891284c25c07541dd937`.
+Reviewed test SHA-256:
+`e39ccfe3af01cf409ab263b8edfc22b1c64ce98e60fac8c5de3dda6196151728`.
+Event IDs refer to this local bus database, not a bundled evidence database.
+
+### Usage reconciliation
+
+Raw terminal telemetry #569 reported 27 internal API calls within one
+adapter-level model span, not one underlying model request:
+
+| Usage field | Value |
+| --- | ---: |
+| Uncached input tokens | 81 |
+| Cache-read tokens | 339,882 |
+| Cache-write tokens | 19,364 |
+| Output tokens | 8,084 |
+| Reasoning tokens (reported separately, not added again) | 3,611 |
+| Total tokens | 367,411 |
+| Estimated cost (USD) | 0.00986942 |
+
+The token buckets reconcile: `81 + 339882 + 19364 + 8084 = 367411`.
+Using the per-million rates present in the installed Hermes Luna pricing
+table (input 0.10, cache read 0.01, cache write 0.125, output 0.50) reproduces
+the estimate exactly:
+`(81*0.10 + 339882*0.01 + 19364*0.125 + 8084*0.50) / 1000000 = 0.00986942`.
+The telemetry labels this `cost_status=estimated` and
+`cost_source=provider_models_api`; this is not verification of a final invoice.
+Accounting #570 carries the same total and cost, with no observed duplication.
+Content capture was off (`artifacts=[]`); generated files are not artifact-store
+references. High effort was requested via CLI and passthrough is tested, but
+the stored telemetry does not attest the provider's effective effort setting.
+
+### Adapter change checklist
+
+- Added optional `--reasoning` on the example worker and forwarded it to Hermes.
+- Shared CLI/constructor validation; omitted option preserves prior behavior.
+- Safe mode remains enabled; the core bus contract and dependencies are unchanged.
+- Tests cover safe-mode forwarding, omission, invalid values, CLI parsing, and
+  worker-to-executor wiring. The focused adapter/runtime suite passed 57 tests.
+- Documented usage and model/provider support constraints in the example README.
+- Pre-commit full regression: `python -m unittest discover -q` passed all 327
+  tests. The initial restricted run hit process/network permission errors;
+  rerunning with those local test permissions passed. Starlette/httpx deprecation
+  and SQLite resource warnings were emitted and are not resolved by this patch.
+
 ## Trial-note template
 
 - Date and task category:
