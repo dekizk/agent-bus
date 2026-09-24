@@ -159,12 +159,24 @@ The design depends on these invariants:
 
 Use macOS or Linux with Python 3.10+; native Windows is not supported.
 See the [tested-platform policy](COMPATIBILITY.md#supported-deployment-target).
-For a new installation, obtain the released source first:
+For the current onboarding trial, use **`main`**. The instructions in this
+README describe that development branch, including the newer `tasks`,
+`workflows`, `decisions`, `cancel`, `retry`, and `decide` commands. It includes
+changes made after v0.11.0; it is not a new tagged release.
+
+For a new checkout:
 
 ```sh
-git clone --branch v0.11.0 https://github.com/dekizk/agent-bus.git
+git clone --branch main https://github.com/dekizk/agent-bus.git
 cd agent-bus
+git rev-parse HEAD             # record this commit when reporting trial results
 ```
+
+If you specifically want the fixed **v0.11.0 release**, use `--branch v0.11.0`
+instead of `--branch main`, and follow
+[the README at that tag](https://github.com/dekizk/agent-bus/blob/v0.11.0/README.md).
+That release does not include the newer commands listed above. Choose one
+version; do not mix its installation with instructions from another version.
 
 If you already have a development checkout, use that directory instead; do not
 clone over it or replace its uncommitted work. Then install from that directory:
