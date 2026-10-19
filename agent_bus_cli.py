@@ -158,12 +158,33 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--config", default="agent-bus.local.json")
     demo.add_argument("--capacity", type=_positive_int, default=1)
     demo.add_argument("--capability", action="append", default=[])
+    demo_outcome = demo.add_mutually_exclusive_group()
+    demo_outcome.add_argument(
+        "--block", type=_positive_int, metavar="TASK_ID",
+        help="block this task once and ask a human for a decision",
+    )
+    demo_outcome.add_argument(
+        "--fail", type=_positive_int, metavar="TASK_ID",
+        help="report one retryable failure for this task",
+    )
+    demo_outcome.add_argument(
+        "--fail-permanently", type=_positive_int, metavar="TASK_ID",
+        help="report one permanent failure for this task",
+    )
+    demo.add_argument(
+        "--delay", type=_nonnegative_number, default=0.5, metavar="SECONDS",
+        help="simulated work time per task (default 0.5); raise it to kill a worker mid-task",
+    )
 
     submit = commands.add_parser("submit", help="submit one controlled local task")
     submit.add_argument("title")
     submit.add_argument("--config", default="agent-bus.local.json")
     submit.add_argument("--context", default="{}", help="JSON object passed to the agent")
     submit.add_argument("--capability", action="append", default=[])
+    submit.add_argument(
+        "--depends-on", action="append", default=[], type=_positive_int, metavar="TASK_ID",
+        help="upstream task that must complete first; repeat for several",
+    )
     submit.add_argument("--max-retries", type=_nonnegative_int, default=0)
     submit.add_argument(
         "--priority",
@@ -654,7 +675,13 @@ def _run_local_command(
         runtime = WorkerRuntime(
             BusClient(local.bus_url, actor=args.name),
             name=args.name,
-            executor=DemoExecutor(args.name),
+            executor=DemoExecutor(
+                args.name,
+                block_once=args.block,
+                fail_once=args.fail,
+                fail_permanently_once=args.fail_permanently,
+                delay_seconds=args.delay,
+            ),
             capacity=args.capacity,
             capabilities=args.capability,
         )
@@ -676,6 +703,8 @@ def _run_local_command(
         }
         if args.not_before is not None:
             payload["not_before"] = args.not_before
+        if args.depends_on:
+            payload["depends_on"] = args.depends_on
         bus = BusClient(local.bus_url, actor="human")
         event = bus.publish(
             "task.created",

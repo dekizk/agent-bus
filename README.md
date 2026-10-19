@@ -289,6 +289,35 @@ or `agent-bus workflows` to find them again.
 `agent-bus workflow "$CORRELATION_ID" --mermaid` prints a read-only Mermaid
 flowchart. It is another projection over the log, never an editable board.
 
+### Try dependencies, decisions, and failures
+
+The demo worker can deliberately block, fail, or work slowly so you can watch
+the other paths without writing an agent. Use one outcome flag per worker; the
+outcome happens once for that task ID.
+
+```sh
+agent-bus demo-worker alice --block 2           # task 2 asks a human for a decision
+agent-bus demo-worker alice --fail 2            # one retryable failure
+agent-bus demo-worker alice --fail-permanently 2
+agent-bus demo-worker alice --delay 30          # slow enough to kill mid-task
+```
+
+`submit --depends-on` builds a DAG from the command line; repeat it for
+fan-in. Dependents inherit the upstream workflow automatically (IDs below
+assume a fresh bus):
+
+```sh
+agent-bus submit "Research options"                                  # task 1
+agent-bus submit "Design storage" --depends-on 1                     # task 2
+agent-bus submit "Write docs" --depends-on 1                         # task 3
+agent-bus submit "Ship it" --depends-on 2 --depends-on 3             # task 4
+```
+
+A lease expiry or retryable failure consumes one retry, and `submit` defaults
+to no retries. If you plan to use `--fail` or kill a worker mid-task, submit
+with `--max-retries 2` (or higher) so the next attempt is allowed; otherwise
+the task correctly ends `failed`.
+
 ## Operations CLI
 
 ### Find work and respond without composing events
@@ -1076,8 +1105,10 @@ durable ownership decision.
 ## Human decisions
 
 When a worker emits `task.blocked`, the PM deterministically emits one
-`decision.needed` for that assignment. Read the event and copy its identifiers
-into the response:
+`decision.needed` for that assignment. From the CLI, `agent-bus decisions`
+lists pending questions with a ready-to-edit `agent-bus decide` command. To do
+the same with raw events, read the event and copy its identifiers into the
+response:
 
 ```sh
 curl 'http://127.0.0.1:8765/events?topics=decision.needed'
@@ -1202,6 +1233,9 @@ A task declares dependency edges when it is created:
   }
 }
 ```
+
+From the command line, `agent-bus submit "Plan fixes from the audit"
+--depends-on 4 --capability hermes` publishes the same event.
 
 Every dependency must already exist, appear only once, and belong to the same
 `correlation_id`. Because new nodes may point only to existing nodes, the bus
