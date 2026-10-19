@@ -117,6 +117,7 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 | `artifacts.py` | Atomic, content-addressed local storage for opt-in captured content |
 | `topics.py` | Canonical coordination, integration, and telemetry topic groups |
 | `worker.py` | Demo executor wired through the reusable runtime |
+| `demo.py` | Scripted `agent-bus demo` scenarios with real processes in a throwaway directory |
 | `events.db` | Append-only event log and task-id counter |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
 

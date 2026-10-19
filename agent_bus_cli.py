@@ -176,6 +176,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="simulated work time per task (default 0.5); raise it to kill a worker mid-task",
     )
 
+    demo_command = commands.add_parser(
+        "demo", help="run a scripted, self-contained demonstration scenario",
+        description="Start a throwaway bus, PM, and workers, then play one scenario. "
+        "Run without a scenario to list them.",
+    )
+    demo_command.add_argument("scenario", nargs="?", help="recovery, decision, or audit-triage")
+    demo_command.add_argument(
+        "--pace", type=_positive_number, default=1.0,
+        help="time multiplier for simulated work; 0.5 runs about twice as fast",
+    )
+    demo_command.add_argument(
+        "--yes", action="store_true",
+        help="answer human decisions with the default instead of prompting",
+    )
+    demo_command.add_argument(
+        "--dir", help="new or empty directory for the demo history (default: a temp directory)",
+    )
+    demo_command.add_argument(
+        "--keep-running", action=argparse.BooleanOptionalAction, default=None,
+        help="leave the bus running for exploration until Enter (default: when interactive)",
+    )
+
     submit = commands.add_parser("submit", help="submit one controlled local task")
     submit.add_argument("title")
     submit.add_argument("--config", default="agent-bus.local.json")
@@ -384,6 +406,17 @@ def main(
     local_config_path: Optional[str | Path] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "demo":
+        import demo
+
+        return demo.run(
+            args.scenario,
+            out=stdout,
+            pace=args.pace,
+            assume_yes=args.yes,
+            directory=args.dir,
+            keep_running=args.keep_running,
+        )
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
         "supersede", "policy", "agent-policy", "adapter", "rebuild-task-index", "snapshot",
