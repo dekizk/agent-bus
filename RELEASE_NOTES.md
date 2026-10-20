@@ -49,12 +49,12 @@ configuration, or database changes.
 
 - 358 regression tests passed on the latest dependencies and on the declared
   minimums (one existing dependency deprecation warning). They include live
-  runs of all three demo scenarios and a real `agent-bus serve` stopped with
+  runs of all four demo scenarios and a real `agent-bus serve` stopped with
   Ctrl-C while a client stream is open.
 - Release wheel built from a clean checkout and verified by
   `scripts/check_release.py`.
 - GitHub CI matrix passed for the merged demo work (PR #1).
-- Live trials: all three demos on Linux and `audit-triage` on macOS, with
+- Live trials: all four demos on Linux and `audit-triage` on macOS, with
   every process log free of tracebacks; the bus stopped and restarted under a
   connected PM and worker, both of which resumed and completed new work.
 
