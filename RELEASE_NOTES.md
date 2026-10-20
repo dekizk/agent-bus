@@ -1,5 +1,66 @@
 # Release notes
 
+## v0.12.0 — 2026-10-20
+
+Demonstrations and everyday operator ergonomics. No event, executor,
+configuration, or database changes.
+
+### Changes
+
+- `agent-bus demo <scenario>` plays a scripted, narrated scenario against a
+  real bus, PM, and workers started as separate processes in a fresh
+  directory on a free port. It never touches existing history or a running
+  bus, and crashes are genuine `SIGKILL`s. Scenarios: `recovery` (worker and
+  PM killed mid-task), `decision` (a human answer while independent work
+  continues), and `audit-triage` (fan-out reviewers, a crashed reviewer, a
+  human severity call, and exactly-once submission via
+  `assignment.effect_id`). Options: `--pace`, `--yes`, `--dir`,
+  `--keep-running`, and `--read-pauses`, which holds each narration long
+  enough to read for recordings and talks. The history is kept for
+  inspection afterwards.
+- `agent-bus submit --depends-on TASK_ID` (repeatable) creates DAG edges
+  without composing raw events.
+- `agent-bus demo-worker` gains `--block`, `--fail`, `--fail-permanently`,
+  and `--delay`, matching the standalone `worker.py`.
+- `agent-bus serve` stops promptly. Event streams now notice a departed
+  client or a stop signal within about a second instead of up to 15 seconds,
+  so Ctrl-C no longer waits, or hangs until a second Ctrl-C, while the PM or
+  workers are connected. Idle keepalives and history re-reads keep their
+  15-second cadence, and clients reconnect with their normal backoff.
+- `agent-bus serve` now exits with status 2 and a short message when it
+  cannot start, for example when the port is in use. It previously exited
+  with uvicorn's status (1 or 3, depending on the uvicorn version); 3
+  contradicted the documented "not found" meaning.
+- The README opens with a short introduction, an animation of
+  `agent-bus demo recovery`, and the one-command demos.
+  `scripts/record_demo.sh` re-records the animation with asciinema and agg.
+  [`examples/audit_triage/`](examples/audit_triage/README.md) explains the
+  audit pipeline and how to replace its stand-in agents with real ones.
+
+### Validation
+
+- 352 regression tests passed on the latest dependencies and on the declared
+  minimums (one existing dependency deprecation warning). They include live
+  runs of all three demo scenarios and a real `agent-bus serve` stopped with
+  Ctrl-C while a client stream is open.
+- Release wheel built from a clean checkout and verified by
+  `scripts/check_release.py`.
+- GitHub CI matrix passed for the merged demo work (PR #1).
+- Live trials: all three demos on Linux and `audit-triage` on macOS, with
+  every process log free of tracebacks; the bus stopped and restarted under a
+  connected PM and worker, both of which resumed and completed new work.
+
+### Upgrade and operating limits
+
+Follow the normal [upgrade steps](COMPATIBILITY.md#upgrade-downgrade-and-deployment-versions).
+Nothing is migrated, and the v0.11.0 released-database baseline continues to
+pass against this release. Editable installs must be reinstalled
+(`python -m pip install -e .`) so the new `demo` module is importable.
+
+Demo agents are deterministic stand-ins with canned results; they show
+coordination behaviour, not model quality. Demos use POSIX signals. The
+v0.11.0 operating limits below still apply.
+
 ## v0.11.0 — 2026-09-13
 
 Local scale and recovery hardening, preserving immutable event history and

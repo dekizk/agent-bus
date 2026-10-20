@@ -3,6 +3,8 @@
 **A local control plane for AI agents, built on an append-only event log
 instead of a mutable task board.**
 
+![agent-bus demo recovery: a worker and the coordinator are killed mid-task, then a new worker finishes the workflow from the log](docs/demo-recovery.gif)
+
 Agent workflows fail in ordinary ways. A worker crashes mid-task, the
 coordinator restarts, two runners pick up the same job, an agent needs a human
 answer, or a retry repeats an external action. A kanban-style board only shows
@@ -59,7 +61,7 @@ ownership, execution attempts, recovery, and human decisions.
 See [ROADMAP.md](ROADMAP.md) for the product direction, adoption principles,
 and remaining path from the current local control plane to v1.0.
 
-Current release: **v0.11.0** — local scale and recovery hardening.
+Current release: **v0.12.0** — demonstrations and operator ergonomics.
 See [release notes](RELEASE_NOTES.md) for changes, validation, and known limits.
 New here? Start with [setup](#setup) and the [first task](#quick-start-one-verifiable-task).
 See [compatibility and support](COMPATIBILITY.md) for platform targets, upgrades,
@@ -213,9 +215,8 @@ The design depends on these invariants:
 Use macOS or Linux with Python 3.10+; native Windows is not supported.
 See the [tested-platform policy](COMPATIBILITY.md#supported-deployment-target).
 For the current onboarding trial, use **`main`**. The instructions in this
-README describe that development branch, including the newer `tasks`,
-`workflows`, `decisions`, `cancel`, `retry`, and `decide` commands. It includes
-changes made after v0.11.0; it is not a new tagged release.
+README describe that development branch. At the time of writing it matches the
+v0.12.0 release; later commits on `main` are not part of a tagged release.
 
 For a new checkout:
 
@@ -225,11 +226,11 @@ cd agent-bus
 git rev-parse HEAD             # record this commit when reporting trial results
 ```
 
-If you specifically want the fixed **v0.11.0 release**, use `--branch v0.11.0`
+If you specifically want the fixed **v0.12.0 release**, use `--branch v0.12.0`
 instead of `--branch main`, and follow
-[the README at that tag](https://github.com/dekizk/agent-bus/blob/v0.11.0/README.md).
-That release does not include the newer commands listed above. Choose one
-version; do not mix its installation with instructions from another version.
+[the README at that tag](https://github.com/dekizk/agent-bus/blob/v0.12.0/README.md).
+Choose one version; do not mix its installation with instructions from another
+version.
 
 If you already have a development checkout, use that directory instead; do not
 clone over it or replace its uncommitted work. Then install from that directory:
