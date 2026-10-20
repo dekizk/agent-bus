@@ -636,8 +636,11 @@ class Harness:
     def recap(self, points: list[str]) -> None:
         self.emit()
         self.emit(self._style("1;36", "▸ What just happened"))
+        width = max(40, shutil.get_terminal_size((100, 24)).columns - 1)
         for point in points:
-            self.emit(f"  • {point}")
+            for line in textwrap.fill(point, width=width, initial_indent="  • ",
+                                      subsequent_indent="    ").splitlines():
+                self.emit(line)
         self.reading_pause(" ".join(points))
 
     # -- running the real CLI ---------------------------------------------

@@ -219,6 +219,21 @@ class NarrationWrapTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= 49 for line in lines))
         self.assertIn("renewed.", lines[-1])
 
+    def test_recap_bullets_wrap_at_word_boundaries(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("demo.shutil.get_terminal_size",
+                                    return_value=os.terminal_size((50, 24))):
+            demo.Harness(Path(directory), out=out).recap([
+                "An approved refund is keyed by assignment.effect_id, so a retry after a "
+                "crash cannot refund twice."])
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        bullet = lines[1:]
+        self.assertTrue(bullet[0].startswith("  • "))
+        self.assertTrue(all(line.startswith("    ") for line in bullet[1:]))
+        self.assertTrue(all(len(line) <= 49 for line in bullet))
+        self.assertIn("twice.", bullet[-1])
+
 
 class DemoCommandTests(unittest.TestCase):
     def test_listing_and_unknown_scenarios(self):

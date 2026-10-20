@@ -32,6 +32,20 @@ throwaway directory, narrates what happens, and keeps the history for you to
 inspect. The crashes are real `kill -9`s. None of it touches your other
 agent-bus data.
 
+<details>
+<summary>Watch <code>agent-bus demo approval</code>: an agent asks before an irreversible tool call</summary>
+
+![agent-bus demo approval: a support agent blocks before calling issue_refund, a human approves, and the refund runs once](docs/demo-approval.gif)
+
+</details>
+
+<details>
+<summary>Watch <code>agent-bus demo budget</code>: a cost cap stops a runaway bill</summary>
+
+![agent-bus demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](docs/demo-budget.gif)
+
+</details>
+
 ### What you get
 
 - **Crash recovery by design.** Workers hold leases. A dead worker's attempt is

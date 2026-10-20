@@ -580,7 +580,8 @@ try, without new coordination semantics. See [release notes](RELEASE_NOTES.md).
   status for startup failure;
 - [x] README introduction with one-command demos and an audit-triage guide,
   with reference material split into `docs/`;
-- [x] record the README demo animation (`scripts/record_demo.sh`).
+- [x] record the README demo animations for `recovery`, `approval`, and
+  `budget` (`scripts/record_demo.sh`).
 
 The demos also make the remaining *unaided newcomer trial* gate a short ask:
 a newcomer can install, run `agent-bus demo recovery`, then inspect and

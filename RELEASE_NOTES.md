@@ -35,7 +35,8 @@ configuration, or database changes.
   with uvicorn's status (1 or 3, depending on the uvicorn version); 3
   contradicted the documented "not found" meaning.
 - The README is now a short introduction: an animation of
-  `agent-bus demo recovery`, the one-command demos, install, a first task, a
+  `agent-bus demo recovery` (with `approval` and `budget` animations one click
+  away), the one-command demos, install, a first task, a
   command cheat sheet, and links. Reference material moved, largely verbatim,
   to `docs/architecture.md`, `docs/operations.md`, `docs/integration.md`,
   `docs/events.md`, and `RECOVERY.md`, rewritten as current behaviour rather
@@ -46,7 +47,7 @@ configuration, or database changes.
 
 ### Validation
 
-- 357 regression tests passed on the latest dependencies and on the declared
+- 358 regression tests passed on the latest dependencies and on the declared
   minimums (one existing dependency deprecation warning). They include live
   runs of all three demo scenarios and a real `agent-bus serve` stopped with
   Ctrl-C while a client stream is open.
