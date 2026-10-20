@@ -72,7 +72,9 @@ REVIEW_FINDINGS: dict[str, list[dict[str, Any]]] = {
 }
 
 SEVERITIES = ("High", "Medium")
+APPROVAL_CHOICES = ("approve", "deny")
 INBOX_FILE = "contest-inbox.jsonl"
+REFUND_LEDGER = "refunds.jsonl"
 REPORT_FILE = "report.md"
 
 
@@ -137,11 +139,17 @@ def triage_question(findings: Iterable[Mapping[str, Any]]) -> Optional[str]:
 
 
 class ScenarioExecutor:
-    """One executor for every scenario stage, selected by ``context.stage``."""
+    """One executor for every scenario stage, selected by ``context.stage``.
 
-    def __init__(self, name: str, workdir: Path):
+    When a task's context carries ``model_usage``, the stage reports one
+    stand-in model call through the normal telemetry sink, so workflows show
+    real token and cost accounting (provider ``demo``, model ``stand-in``).
+    """
+
+    def __init__(self, name: str, workdir: Path, telemetry=None):
         self.name = name
         self.workdir = Path(workdir)
+        self.telemetry = telemetry
 
     def execute(self, assignment: AssignmentContext):
         context = assignment.context
@@ -152,21 +160,78 @@ class ScenarioExecutor:
         handler = getattr(self, f"stage_{stage.replace('-', '_')}", None)
         if handler is None:
             raise ValueError(f"unknown demo stage: {stage}")
+        call = self._start_model_call(assignment, context)
         if stage != "submit":
             time.sleep(seconds)
-        return handler(assignment, context)
+        outcome = handler(assignment, context)
+        self._finish_model_call(assignment, context, call)
+        return outcome
+
+    def _start_model_call(self, assignment, context) -> Optional[dict]:
+        if self.telemetry is None or "model_usage" not in context:
+            return None
+        call = {"invocation_id": f"{assignment.assignment_id}:model",
+                "started": time.monotonic()}
+        try:  # telemetry is best-effort and must never change the outcome
+            self.telemetry.model_started(assignment, invocation_id=call["invocation_id"],
+                                         provider="demo", model="stand-in")
+        except Exception:
+            pass
+        return call
+
+    def _finish_model_call(self, assignment, context, call: Optional[dict]) -> None:
+        if call is None:
+            return
+        try:
+            self.telemetry.model_completed(
+                assignment, invocation_id=call["invocation_id"], provider="demo",
+                model="stand-in", duration_ms=(time.monotonic() - call["started"]) * 1000,
+                usage=plain(context["model_usage"]))
+        except Exception:
+            pass
 
     def stage_work(self, assignment, context):
         return Completed(summary=f"{self.name} finished: {assignment.goal}")
 
-    def stage_question(self, assignment, context):
+    def stage_approval(self, assignment, context):
+        """Ask before an irreversible tool call, then make it at most once."""
+        tool = str(context["tool"])
+        arguments = plain(context.get("arguments", {}))
+        call = str(context.get("call") or tool)
+        question = f"The support agent wants to call {call}. Approve or deny?"
         decision = latest_decision(assignment)
         if decision is None:
-            return Blocked(str(context["question"]))
-        return Completed(
-            summary=f"{self.name} finished using the human decision: {decision}",
-            result={"decision": decision},
-        )
+            return Blocked(question)
+        choice = normalize_choice(decision, APPROVAL_CHOICES)
+        if choice is None:
+            return Blocked(f"{question} ({json.dumps(decision)} is not one of: "
+                           f"{', '.join(APPROVAL_CHOICES)}.)")
+        if choice == "deny":
+            return Completed(summary=f"Human denied {call}; nothing was executed",
+                             result={"tool": tool, "outcome": "denied"})
+        effect = assignment.effect_id(f"tool:{tool}")
+        ledger = self.workdir / REFUND_LEDGER
+        if effect in read_inbox_effects(ledger):
+            summary = f"{call} was already executed by an earlier attempt; not repeated"
+        else:
+            record = {"effect_id": effect, "tool": tool, "arguments": arguments,
+                      "approved_by": assignment.decisions[-1].get("actor"),
+                      "attempt": assignment.attempt}
+            with ledger.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            summary = f"Executed {call} after human approval"
+        return Completed(summary=summary, result={"tool": tool, "outcome": "executed"})
+
+    def stage_reply(self, assignment, context):
+        outcomes = [result.get("outcome") for result in upstream_results(assignment)
+                    if "outcome" in result]
+        if "executed" in outcomes:
+            message = "Sent the customer: your $120.00 refund is on its way."
+        else:
+            message = "Sent the customer: a teammate will follow up about your refund."
+        return Completed(summary=message, result={"refund": outcomes[0] if outcomes else None})
 
     def stage_scope(self, assignment, context):
         contracts = plain(context["contracts"])
@@ -283,10 +348,20 @@ def _worker_main(argv: list[str]) -> int:
     parser.add_argument("--capacity", type=int, default=1)
     parser.add_argument("--heartbeat", type=float, default=1.0)
     args = parser.parse_args(argv)
+    import uuid
+
+    from telemetry import BusTelemetrySink, ProducerIdentity
+    from version import VERSION
+
+    bus = BusClient(args.url, actor=args.name)
+    instance_id = uuid.uuid4().hex
+    telemetry = BusTelemetrySink(bus, producer=ProducerIdentity(
+        implementation="agent-bus-demo", instance_id=instance_id, version=VERSION))
     runtime = WorkerRuntime(
-        BusClient(args.url, actor=args.name),
+        bus,
         name=args.name,
-        executor=ScenarioExecutor(args.name, Path(args.workdir)),
+        instance_id=instance_id,
+        executor=ScenarioExecutor(args.name, Path(args.workdir), telemetry),
         capacity=args.capacity,
         capabilities=args.capability,
         heartbeat_seconds=args.heartbeat,
@@ -320,6 +395,8 @@ SHOWN_TOPICS = {
     "task.attempt_failed": "attempt failed",
     "task.failed": "FAILED",
     "task.dependency_failed": "dependency failed",
+    "workflow.policy_set": "policy set",
+    "workflow.usage_recorded": "usage recorded",
 }
 
 
@@ -516,6 +593,12 @@ class Harness:
         return self.wait_until(lambda: self.find_event(topic, task_id=task_id, actor=actor),
                                timeout, label)
 
+    def workflow_state(self, workflow: str) -> dict:
+        code, output = self.view(["workflow", workflow, "--json"], show=False)
+        if code != 0:
+            raise DemoError(f"could not read workflow {workflow}: {output}")
+        return json.loads(output)
+
     def task_state(self, task_id: int) -> dict:
         code, output = self.view(["task", str(task_id), "--json"], show=False)
         if code != 0:
@@ -572,32 +655,37 @@ class Harness:
         return code, output
 
     def cli(self, args: list[str], *, shown_as: Optional[list[str]] = None,
-            show_output: bool = True) -> str:
+            show_output: bool = True, quiet: bool = False) -> str:
         """Run a writing CLI command as a separate process, as a user would."""
-        self.command(["agent-bus", *(shown_as or args)])
+        if not quiet:
+            self.command(["agent-bus", *(shown_as or args)])
         completed = subprocess.run(
             [sys.executable, "-m", "agent_bus_cli", *args, "--config", str(self.config_path)],
             cwd=self.workdir, env=self.environment, capture_output=True, text=True, timeout=60,
         )
         if completed.returncode != 0:
             raise DemoError(f"agent-bus {' '.join(args)} failed: {completed.stderr.strip()}")
-        if show_output:
+        if show_output and not quiet:
             self.block(completed.stdout)
         return completed.stdout
 
     def submit(self, title: str, *, depends_on: Iterable[int] = (),
                capability: Optional[str] = None, context: Optional[dict] = None,
-               max_retries: int = 2) -> tuple[int, str]:
+               max_retries: int = 2, correlation_id: Optional[str] = None,
+               quiet: bool = False) -> tuple[int, str]:
         shown = ["submit", title]
+        if correlation_id:
+            shown += ["--correlation-id", correlation_id]
         for upstream in depends_on:
             shown += ["--depends-on", str(upstream)]
         if capability:
             shown += ["--capability", capability]
         shown += ["--max-retries", str(max_retries)]
         args = [*shown, "--context", json.dumps(context or {}), "--json"]
-        event = json.loads(self.cli(args, shown_as=shown, show_output=False))
+        event = json.loads(self.cli(args, shown_as=shown, show_output=False, quiet=quiet))
         task_id = event["payload"]["task_id"]
-        self.emit(f"  Submitted task {task_id}")
+        if not quiet:
+            self.emit(f"  Submitted task {task_id}")
         return task_id, event["correlation_id"]
 
     # -- live event tail --------------------------------------------------
@@ -642,6 +730,17 @@ def describe_event(event: Mapping[str, Any]) -> str:
         detail = f"task {task}: {payload.get('reason', 'lease expired')}"
     elif topic in {"task.blocked", "decision.needed"}:
         detail = f"task {task}"
+    elif topic == "workflow.usage_recorded":
+        cost = payload.get("cost_usd")
+        tokens = payload.get("tokens")
+        money = (f"${cost:.3f}" if isinstance(cost, (int, float)) and cost < 0.1
+                 else f"${cost:.2f}" if isinstance(cost, (int, float)) else "cost unknown")
+        detail = (f"task {task}: {money}"
+                  + (f", {tokens:,} tokens" if isinstance(tokens, int) else ""))
+    elif topic == "workflow.policy_set":
+        limit = payload.get("max_total_cost_usd")
+        detail = (f"cost cap ${limit:.2f} by {actor}" if isinstance(limit, (int, float))
+                  else f"workflow defaults by {actor}")
     elif topic == "decision.made":
         detail = f"task {task}: {json.dumps(payload.get('decision'))} by {actor}"
     else:
@@ -660,6 +759,12 @@ class Scenario:
     run: Callable[[Harness], None]
 
 
+def usage(input_tokens: int, output_tokens: int, cost_usd: float) -> dict:
+    """Stand-in model usage for one call, reported through normal telemetry."""
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "cost_usd": cost_usd}
+
+
 def scenario_recovery(h: Harness) -> None:
     h.title("Kill anything, lose nothing")
     h.say("A three-step workflow runs on one worker, alice. Part-way through step 2 "
@@ -668,9 +773,11 @@ def scenario_recovery(h: Harness) -> None:
     h.start_pm()
     h.start_worker("alice")
     t1, workflow = h.submit("Fetch market data", context={"work_seconds": 1 * h.pace})
-    t2, _ = h.submit("Analyse price feeds", depends_on=[t1],
-                     context={"work_seconds": 30 * h.pace, "retry_work_seconds": 1 * h.pace})
-    t3, _ = h.submit("Write summary", depends_on=[t2], context={"work_seconds": 1 * h.pace})
+    t2, _ = h.submit("Analyse price feeds", depends_on=[t1], context={
+        "work_seconds": 30 * h.pace, "retry_work_seconds": 1 * h.pace,
+        "model_usage": usage(12000, 1500, 0.09)})
+    t3, _ = h.submit("Write summary", depends_on=[t2], context={
+        "work_seconds": 1 * h.pace, "model_usage": usage(4000, 900, 0.03)})
     h.wait_for("task.started", task_id=t2, actor="alice")
     h.pause(1.5)
     h.kill("alice")
@@ -699,36 +806,114 @@ def scenario_recovery(h: Harness) -> None:
     ])
 
 
-def scenario_decision(h: Harness) -> None:
-    h.title("A human in the loop")
-    h.say("Four tasks: research, then two in parallel (a storage decision and the docs), "
-          "then ship. The storage task needs a human answer. The rest of the graph keeps moving.")
+def scenario_approval(h: Harness) -> None:
+    h.title("An agent asks before it acts")
+    h.say("A support agent handles ticket #4411. It decides a refund is due, but issuing "
+          "one is irreversible, so it asks a human before calling the refund tool. "
+          "Drafting the reply carries on meanwhile.")
     h.start_bus()
     h.start_pm()
-    h.start_worker("alice", capacity=2)
-    t1, workflow = h.submit("Research storage options", context={"work_seconds": 1 * h.pace})
-    t2, _ = h.submit("Choose storage backend", depends_on=[t1], context={
-        "stage": "question", "work_seconds": 1 * h.pace,
-        "question": "Choose storage backend: SQLite or Postgres?"})
-    t3, _ = h.submit("Draft operator docs", depends_on=[t1], context={"work_seconds": 2 * h.pace})
-    t4, _ = h.submit("Ship v1", depends_on=[t2, t3], context={"work_seconds": 1 * h.pace})
+    h.start_worker("support-agent", capacity=2)
+    t1, workflow = h.submit("Read ticket #4411", context={
+        "work_seconds": 1 * h.pace, "model_usage": usage(2400, 300, 0.012)})
+    t2, _ = h.submit("Resolve ticket #4411", depends_on=[t1], context={
+        "stage": "approval", "work_seconds": 1 * h.pace,
+        "tool": "issue_refund", "arguments": {"order": 4411, "amount_usd": "120.00"},
+        "call": "issue_refund(order=4411, amount_usd=120.00)",
+        "model_usage": usage(3100, 220, 0.014)})
+    t3, _ = h.submit("Draft the reply", depends_on=[t1], context={
+        "work_seconds": 2 * h.pace, "model_usage": usage(2800, 450, 0.016)})
+    t4, _ = h.submit("Send the reply", depends_on=[t2, t3], context={
+        "stage": "reply", "work_seconds": 1 * h.pace})
     needed = h.wait_for("decision.needed", task_id=t2)
     h.wait_status(t3, "completed")
-    h.say("alice asked a question instead of guessing. The docs task finished anyway; "
-          "shipping waits, and says why:")
+    h.say("The agent stopped before the tool call and asked. The draft finished anyway; "
+          "sending waits, and says why:")
     h.view(["decisions"])
     h.view(["explain", str(t4)])
-    answer = h.ask("Your answer (SQLite/Postgres)", default="SQLite", choices=("SQLite", "Postgres"))
-    h.say("Answering is one command. It's recorded as an event, like everything else:")
+    answer = h.ask("Approve the refund? (approve/deny)", default="approve",
+                   choices=APPROVAL_CHOICES)
+    h.say("The answer is one command, recorded as an event like everything else:")
     h.cli(["decide", str(t2), "--decision-event", str(needed["id"]), "--value", json.dumps(answer)])
     h.wait_status(t4, "completed")
     h.pause(0.5)
-    h.say("The answer went to a new attempt of task 2, and the graph finished:")
+    h.say("A new attempt of task 2 acted on the answer, and the reply went out:")
     h.view(["task", str(t2)])
     h.view(["workflow", workflow])
+    ledger = read_inbox(h.workdir / REFUND_LEDGER)
+    h.block(f"{REFUND_LEDGER}: {len(ledger)} refund(s) issued")
+    if answer == "deny":
+        first = ("The agent never reached the refund tool: a human said no, and that answer is "
+                 "on record with who gave it and which attempt used it.")
+    else:
+        first = ("The agent could not reach the refund tool until a human said yes; the approval "
+                 "is on record with who gave it and which attempt used it.")
     h.recap([
-        "Blocking didn't stall unrelated work, and it used none of the task's retries.",
-        "The decision is part of the history: who answered, what, and which attempt used it.",
+        first,
+        "An approved refund is keyed by assignment.effect_id, so a retry after a crash cannot "
+        "refund twice.",
+        "Waiting for a human didn't stall the draft, and it used none of the task's retries.",
+    ])
+
+
+def scenario_budget(h: Harness) -> None:
+    h.title("A cost cap stops a runaway bill")
+    h.say("An agent fleet has ten papers to summarise, at about $0.40 of model usage each. "
+          "Left alone that is $4. The workflow gets a $2.00 cap before any work starts.")
+    h.start_bus()
+    h.start_pm()
+    work = {"work_seconds": 1.5 * h.pace, "model_usage": usage(9000, 1300, 0.4)}
+    first, workflow = h.submit("Summarise paper 1", context=work, quiet=True)
+    for number in range(2, 11):
+        h.submit(f"Summarise paper {number}", context=work, correlation_id=workflow, quiet=True)
+    h.command(["agent-bus", "submit", "Summarise paper N", "--correlation-id", workflow])
+    h.emit(f"  Submitted tasks {first}–{first + 9} (one workflow)")
+    h.cli(["policy", workflow, "--max-cost", "2", "--reserve-cost-per-assignment", "0.5",
+           "--reason", "nightly research budget"])
+    h.say("Each assignment reserves $0.50 until its real cost is reported, so two workers "
+          "running at once can't overshoot the cap together. Start the workers:")
+    h.start_worker("worker-1")
+    h.start_worker("worker-2")
+
+    def capped():
+        state = h.workflow_state(workflow)
+        budget = state["budget"]
+        busy = any(task["status"] in {"assigned", "started"} for task in state["tasks"])
+        return state if budget.get("blocked") and not busy else None
+
+    state = h.wait_until(capped, 120, "the cost cap to stop new work")
+    done = sum(task["status"] == "completed" for task in state["tasks"])
+    spent = state["budget"]["cost_usd"]
+    waiting = next(task["task_id"] for task in state["tasks"] if task["status"] == "open")
+    h.say(f"Work stopped after {done} summaries at ${spent:.2f}: one more could cost up to "
+          "its $0.50 reservation and overshoot the $2.00 cap. Nothing was killed; running "
+          "tasks finished and new ones wait. The views say why:")
+    h.view(["workflow", workflow])
+    h.view(["explain", str(waiting)])
+    answer = h.ask("Raise the cap to $5.00? (yes/no)", default="yes", choices=("yes", "no"))
+    if answer == "no":
+        h.say("The remaining papers stay queued. Raising the cap later picks up where it "
+              "left off.")
+        h.recap([
+            "The cap stopped new spend without killing in-flight work.",
+            "Queued tasks wait with an explanation instead of failing.",
+        ])
+        return
+    h.say("Raising the cap is a new policy event, so the approval of extra spend is on record:")
+    h.cli(["policy", workflow, "--max-cost", "5", "--reserve-cost-per-assignment", "0.5",
+           "--reason", "approved: finish the batch tonight"])
+    h.wait_until(lambda: all(task["status"] == "completed"
+                             for task in h.workflow_state(workflow)["tasks"]),
+                 120, "the remaining summaries")
+    h.pause(0.5)
+    final = h.workflow_state(workflow)["budget"]
+    h.say(f"All ten are done: {final['tokens']:,} tokens and ${final['cost_usd']:.2f}, "
+          "recorded per model call and attempt. One finished task, for example:")
+    h.view(["task", str(waiting)])
+    h.recap([
+        "The cap stopped new work at the limit; in-flight tasks finished normally.",
+        "Reservations kept concurrent workers from overshooting the cap together.",
+        "Both the cap and the raise are events: who allowed more spend, when, and why.",
     ])
 
 
@@ -744,19 +929,24 @@ def scenario_audit_triage(h: Harness) -> None:
     h.start_worker("reviewer-2", capabilities=["review"])
     contracts = list(REVIEW_FINDINGS)
     scope, workflow = h.submit("Scope the Lumen audit", capability="lead", context={
-        "stage": "scope", "contracts": contracts, "work_seconds": 1 * h.pace})
+        "stage": "scope", "contracts": contracts, "work_seconds": 1 * h.pace,
+        "model_usage": usage(6000, 400, 0.03)})
     reviews = []
     for contract in contracts:
         task, _ = h.submit(f"Review {contract}", depends_on=[scope], capability="review", context={
             "stage": "review", "contract": contract,
-            "work_seconds": 6 * h.pace, "retry_work_seconds": 2 * h.pace})
+            "work_seconds": 6 * h.pace, "retry_work_seconds": 2 * h.pace,
+            "model_usage": usage(28000, 2600, 0.21)})
         reviews.append(task)
     dedupe, _ = h.submit("Merge duplicate findings", depends_on=reviews, capability="lead",
-                         context={"stage": "dedupe", "work_seconds": 1 * h.pace})
+                         context={"stage": "dedupe", "work_seconds": 1 * h.pace,
+                                  "model_usage": usage(9000, 1100, 0.07)})
     triage, _ = h.submit("Triage severity", depends_on=[dedupe], capability="lead",
-                         context={"stage": "triage", "work_seconds": 0.5 * h.pace})
+                         context={"stage": "triage", "work_seconds": 0.5 * h.pace,
+                                  "model_usage": usage(5000, 600, 0.04)})
     report, _ = h.submit("Write the report", depends_on=[triage], capability="lead",
-                         context={"stage": "report", "work_seconds": 1 * h.pace})
+                         context={"stage": "report", "work_seconds": 1 * h.pace,
+                                  "model_usage": usage(7000, 2400, 0.08)})
     submit, _ = h.submit("Submit findings to the contest", depends_on=[report],
                          capability="lead",
                          context={"stage": "submit", "pause_seconds": 4 * h.pace})
@@ -794,6 +984,10 @@ def scenario_audit_triage(h: Harness) -> None:
     h.say("The report the lead wrote:")
     h.block((h.workdir / REPORT_FILE).read_text(encoding="utf-8"))
     h.view(["workflow", workflow, "--mermaid"])
+    budget = h.workflow_state(workflow)["budget"]
+    h.say(f"Model usage for the whole audit: {budget['tokens']:,} tokens and "
+          f"${budget['cost_usd']:.2f}, recorded per model call and attempt. The crashed "
+          "reviewer's call never finished, so it has no usage to record; nothing is guessed.")
     h.recap([
         "Two reviewers shared three contracts, and the review on a crashed reviewer was "
         "reassigned rather than lost.",
@@ -808,8 +1002,10 @@ SCENARIOS: dict[str, Scenario] = {
     for scenario in (
         Scenario("recovery", "kill the worker and the coordinator mid-task; nothing is lost",
                  scenario_recovery),
-        Scenario("decision", "an agent asks a human; the rest of the graph keeps moving",
-                 scenario_decision),
+        Scenario("approval", "an agent asks before an irreversible tool call; other work "
+                 "continues", scenario_approval),
+        Scenario("budget", "a cost cap stops a runaway bill; raise it and work resumes",
+                 scenario_budget),
         Scenario("audit-triage", "parallel reviewers, a human severity call, exactly-once "
                  "submission", scenario_audit_triage),
     )

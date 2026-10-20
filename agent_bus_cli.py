@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Start a throwaway bus, PM, and workers, then play one scenario. "
         "Run without a scenario to list them.",
     )
-    demo_command.add_argument("scenario", nargs="?", help="recovery, decision, or audit-triage")
+    demo_command.add_argument("scenario", nargs="?", help="recovery, approval, budget, or audit-triage")
     demo_command.add_argument(
         "--pace", type=_positive_number, default=1.0,
         help="time multiplier for simulated work; 0.5 runs about twice as fast",

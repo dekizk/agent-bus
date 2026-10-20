@@ -11,10 +11,13 @@ configuration, or database changes.
   real bus, PM, and workers started as separate processes in a fresh
   directory on a free port. It never touches existing history or a running
   bus, and crashes are genuine `SIGKILL`s. Scenarios: `recovery` (worker and
-  PM killed mid-task), `decision` (a human answer while independent work
-  continues), and `audit-triage` (fan-out reviewers, a crashed reviewer, a
-  human severity call, and exactly-once submission via
-  `assignment.effect_id`). Options: `--pace`, `--yes`, `--dir`,
+  PM killed mid-task), `approval` (an agent asks before an irreversible tool
+  call and makes it at most once), `budget` (a workflow cost cap stops new
+  work, and raising it resumes), and `audit-triage` (fan-out reviewers, a
+  crashed reviewer, a human severity call, and exactly-once submission via
+  `assignment.effect_id`). Stand-in agents report model usage through the
+  normal telemetry sink, so every demo shows token and cost accounting, and
+  the live event tail shows usage and policy events. Options: `--pace`, `--yes`, `--dir`,
   `--keep-running`, and `--read-pauses`, which holds each narration long
   enough to read for recordings and talks. The history is kept for
   inspection afterwards.
@@ -39,7 +42,7 @@ configuration, or database changes.
 
 ### Validation
 
-- 352 regression tests passed on the latest dependencies and on the declared
+- 357 regression tests passed on the latest dependencies and on the declared
   minimums (one existing dependency deprecation warning). They include live
   runs of all three demo scenarios and a real `agent-bus serve` stopped with
   Ctrl-C while a client stream is open.

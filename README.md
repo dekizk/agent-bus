@@ -21,7 +21,8 @@ python3 -m venv .venv && . .venv/bin/activate   # Python 3.10+
 python -m pip install -e .
 
 agent-bus demo recovery       # kill the worker and the coordinator mid-task
-agent-bus demo decision       # an agent asks a human; other work keeps moving
+agent-bus demo approval       # an agent asks before an irreversible tool call
+agent-bus demo budget         # a cost cap stops a runaway bill
 agent-bus demo audit-triage   # parallel reviewers, a human severity call,
                               # findings submitted once despite a crash
 ```
@@ -39,8 +40,11 @@ agent-bus data.
   results from a lost worker are rejected.
 - **Dependencies.** Tasks form a DAG, wait for upstream results, and propagate
   failure downstream.
-- **Humans in the loop.** An agent can block with a question. `agent-bus decide`
-  answers it, and the answer is on record.
+- **Humans in the loop.** An agent can block with a question, such as approval
+  for a risky tool call. `agent-bus decide` answers it, and the answer is on
+  record.
+- **Spend limits.** Model calls report tokens and cost per task and attempt.
+  Workflow budgets stop new work at a cap, and raising the cap is an event too.
 - **Retry-safe external effects.** `assignment.effect_id(...)` is stable across
   attempts, so a retry can skip work a crashed attempt already did.
 - **Bring your own agents.** Wrap a Python object, a CLI, or an HTTP service.

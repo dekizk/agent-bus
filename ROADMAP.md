@@ -571,8 +571,9 @@ The current retention promise is safe reachability reporting, not automatic GC.
 **Released 2026-10-20.** Makes the existing control plane easy to show and to
 try, without new coordination semantics. See [release notes](RELEASE_NOTES.md).
 
-- [x] `agent-bus demo` with `recovery`, `decision`, and `audit-triage`
-  scenarios using real processes in a throwaway directory;
+- [x] `agent-bus demo` with `recovery`, `approval`, `budget`, and
+  `audit-triage` scenarios using real processes in a throwaway directory, with
+  stand-in model usage so token and cost accounting is visible;
 - [x] `submit --depends-on` and `demo-worker` outcome flags so every demo path
   is reachable from the CLI;
 - [x] prompt `serve` shutdown with open event streams, and a documented exit
