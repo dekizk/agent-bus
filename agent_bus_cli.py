@@ -691,7 +691,22 @@ def _run_local_command(
     if args.command == "serve":
         import uvicorn
 
-        uvicorn.run("bus:app", host=local.host, port=local.port)
+        import bus
+
+        class BusServer(uvicorn.Server):
+            """uvicorn server that ends open event streams on the first stop signal."""
+
+            def handle_exit(self, sig, frame):
+                bus.begin_shutdown()
+                super().handle_exit(sig, frame)
+
+        server = BusServer(uvicorn.Config("bus:app", host=local.host, port=local.port))
+        server.run()
+        if not server.started:
+            raise ValueError(
+                f"the bus could not start on {local.bus_url}; check the log above "
+                "(is the port already in use?)"
+            )
         return 0
     if args.command == "pm":
         # Import only after the local environment is selected: pm_agent reads

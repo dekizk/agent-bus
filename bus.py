@@ -1899,6 +1899,27 @@ def fetch_stream_window(
 new_event = asyncio.Condition()
 event_generation = 0
 
+# Open event streams wait for new events in short slices so they notice a
+# departed client or a server shutdown within about a second, while idle
+# keepalives keep their original 15-second cadence.
+STREAM_POLL_SECONDS = 1.0
+STREAM_KEEPALIVE_SECONDS = 15.0
+_shutting_down = False
+
+
+def begin_shutdown() -> None:
+    """Ask open event streams to finish so the server can stop promptly.
+
+    Called by `agent-bus serve` when it receives a stop signal. Clients see
+    the stream end and reconnect with their normal backoff.
+    """
+    global _shutting_down
+    _shutting_down = True
+
+
+def _stream_should_stop_now() -> bool:
+    return _shutting_down
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1983,7 +2004,7 @@ async def stream(
         last_id = from_id
         observed_generation = event_generation
         while True:
-            if await request.is_disconnected():
+            if _stream_should_stop_now() or await request.is_disconnected():
                 return
             events, scanned_to, full_window = await run_in_threadpool(
                 fetch_stream_window, last_id, topic_list, 500, correlation_id
@@ -1993,13 +2014,27 @@ async def stream(
                 yield f"id: {event['id']}\ndata: {json.dumps(event)}\n\n"
             if full_window:
                 continue
-            try:
-                async with new_event:
-                    if event_generation == observed_generation:
-                        await asyncio.wait_for(new_event.wait(), timeout=15.0)
-                    observed_generation = event_generation
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+            # Wait for the next event without polling the database, checking
+            # for a departed client or shutdown each slice. After a full
+            # keepalive interval with no event, send a keepalive and re-check
+            # history, exactly as the single 15-second wait used to.
+            waited = 0.0
+            while True:
+                if _stream_should_stop_now() or await request.is_disconnected():
+                    return
+                try:
+                    async with new_event:
+                        if event_generation == observed_generation:
+                            await asyncio.wait_for(
+                                new_event.wait(), timeout=STREAM_POLL_SECONDS
+                            )
+                        observed_generation = event_generation
+                    break
+                except asyncio.TimeoutError:
+                    waited += STREAM_POLL_SECONDS
+                    if waited >= STREAM_KEEPALIVE_SECONDS:
+                        yield ": keepalive\n\n"
+                        break
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

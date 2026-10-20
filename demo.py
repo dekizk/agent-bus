@@ -452,14 +452,6 @@ class Harness:
                 continue
             process.send_signal(signal.SIGINT)
             try:
-                process.wait(timeout=2)
-                continue
-            except subprocess.TimeoutExpired:
-                pass
-            # The bus waits up to 15s for idle event streams on the first
-            # interrupt; a second one makes uvicorn close them and finish now.
-            process.send_signal(signal.SIGINT)
-            try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
