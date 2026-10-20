@@ -18,11 +18,13 @@ import io
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 from dataclasses import dataclass
@@ -339,7 +341,7 @@ def _child_environment() -> dict[str, str]:
 
 class Harness:
     def __init__(self, workdir: Path, *, out: TextIO, pace: float = 1.0,
-                 interactive: bool = False, color: bool = False):
+                 interactive: bool = False, color: bool = False, read_pauses: bool = False):
         if pace <= 0:
             raise ValueError("pace must be positive")
         self.workdir = workdir
@@ -347,6 +349,7 @@ class Harness:
         self.pace = pace
         self.interactive = interactive
         self.color = color
+        self.read_pauses = read_pauses
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.lease_seconds = max(1.5, 4.0 * pace)
@@ -375,7 +378,16 @@ class Harness:
 
     def say(self, text: str) -> None:
         self.emit()
-        self.emit(self._style("1;36", f"▸ {text}"))
+        width = max(40, shutil.get_terminal_size((100, 24)).columns - 1)
+        wrapped = textwrap.fill(text, width=width, initial_indent="▸ ", subsequent_indent="  ")
+        for line in wrapped.splitlines():
+            self.emit(self._style("1;36", line))
+        self.reading_pause(text)
+
+    def reading_pause(self, text: str) -> None:
+        """With --read-pauses, hold long enough to read the narration (~4 words/s)."""
+        if self.read_pauses:
+            time.sleep(min(8.0, max(1.5, len(text.split()) / 4.0)))
 
     def command(self, argv: list[str]) -> None:
         self.emit(self._style("33", "$ " + " ".join(shlex.quote(part) for part in argv)))
@@ -539,9 +551,11 @@ class Harness:
                 print(f"  Please answer {' or '.join(choices)}.", file=self.out, flush=True)
 
     def recap(self, points: list[str]) -> None:
-        self.say("What just happened")
+        self.emit()
+        self.emit(self._style("1;36", "▸ What just happened"))
         for point in points:
             self.emit(f"  • {point}")
+        self.reading_pause(" ".join(points))
 
     # -- running the real CLI ---------------------------------------------
     def view(self, args: list[str], *, show: bool = True, shown_as: Optional[list[str]] = None):
@@ -659,9 +673,10 @@ def scenario_recovery(h: Harness) -> None:
     t3, _ = h.submit("Write summary", depends_on=[t2], context={"work_seconds": 1 * h.pace})
     h.wait_for("task.started", task_id=t2, actor="alice")
     h.pause(1.5)
-    h.say("alice is part-way through task 2. Pulling the plug on alice AND the PM (kill -9).")
     h.kill("alice")
     h.kill("pm")
+    h.say("alice was part-way through task 2, so we just pulled the plug on alice AND the PM "
+          "(kill -9).")
     count = h.last_event_id()
     h.say(f"Nothing is coordinating now. All state is in the log: {count} immutable events. "
           "The bus still answers questions from it:")
@@ -749,8 +764,8 @@ def scenario_audit_triage(h: Harness) -> None:
     started = h.wait_for("task.started", actor="reviewer-1")
     h.pause(1.5)
     victim = started["payload"]["task_id"]
-    h.say(f"reviewer-1 is part-way through task {victim}. It crashes (kill -9).")
     h.kill("reviewer-1")
+    h.say(f"reviewer-1 was part-way through task {victim} when it crashed (kill -9).")
     h.say("reviewer-2 is still working. When reviewer-1's lease expires, its review is "
           "reassigned to reviewer-2.")
     needed = h.wait_for("decision.needed", task_id=triage, timeout=120)
@@ -762,9 +777,9 @@ def scenario_audit_triage(h: Harness) -> None:
 
     inbox = h.workdir / INBOX_FILE
     h.wait_until(lambda: read_inbox(inbox), 90, "the first submission")
-    h.say("The lead has submitted its first finding to the contest platform, and then it "
-          "crashes before reporting back (kill -9).")
     h.kill("lead")
+    h.say("The lead submitted its first finding to the contest platform, then crashed before "
+          "reporting back (kill -9).")
     h.block(f"{INBOX_FILE}: {len(read_inbox(inbox))} submission(s) so far")
     h.say("A replacement lead starts. Attempt 2 of the submit task has the same effect keys, "
           "so it skips what attempt 1 already submitted.")
@@ -803,7 +818,8 @@ SCENARIOS: dict[str, Scenario] = {
 
 def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float = 1.0,
         assume_yes: bool = False, directory: Optional[str] = None,
-        keep_running: Optional[bool] = None, stdin: TextIO = sys.stdin) -> int:
+        keep_running: Optional[bool] = None, stdin: TextIO = sys.stdin,
+        read_pauses: bool = False) -> int:
     if scenario_name is None or scenario_name not in SCENARIOS:
         if scenario_name is not None:
             print(f"agent-bus: unknown demo scenario: {scenario_name}", file=out)
@@ -823,7 +839,8 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
     tty = hasattr(stdin, "isatty") and stdin.isatty() and hasattr(out, "isatty") and out.isatty()
     interactive = tty and not assume_yes
     color = hasattr(out, "isatty") and out.isatty() and "NO_COLOR" not in os.environ
-    harness = Harness(workdir, out=out, pace=pace, interactive=interactive, color=color)
+    harness = Harness(workdir, out=out, pace=pace, interactive=interactive, color=color,
+                      read_pauses=read_pauses)
     harness.emit(f"Demo directory: {workdir}")
     harness.emit(f"Bus: {harness.url} (lease {harness.lease_seconds:g}s; separate from any bus "
                  "you already run)")

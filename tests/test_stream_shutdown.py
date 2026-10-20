@@ -120,17 +120,42 @@ def free_port():
         return probe.getsockname()[1]
 
 
+def serve_environment():
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_BUS_")}
+    environment["PYTHONPATH"] = str(ROOT)
+    return environment
+
+
+def config_on_port(directory, port):
+    config = initialize_local_config(directory)
+    value = json.loads(config.read_text())
+    value["bus"]["port"] = port
+    config.write_text(json.dumps(value))
+    return config
+
+
+class ServeStartupFailureTests(unittest.TestCase):
+    def test_port_in_use_exits_with_the_documented_usage_status(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen()
+            config = config_on_port(directory, holder.getsockname()[1])
+            result = subprocess.run(
+                [sys.executable, "-m", "agent_bus_cli", "serve", "--config", str(config)],
+                cwd=directory, env=serve_environment(), capture_output=True, text=True,
+                timeout=30,
+            )
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("could not start", result.stderr)
+
+
 @unittest.skipIf(os.name != "posix", "uses POSIX signals")
 class ServeShutdownTests(unittest.TestCase):
     def test_ctrl_c_stops_promptly_with_a_connected_stream(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = initialize_local_config(directory)
-            value = json.loads(config.read_text())
             port = free_port()
-            value["bus"]["port"] = port
-            config.write_text(json.dumps(value))
-            environment = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_BUS_")}
-            environment["PYTHONPATH"] = str(ROOT)
+            config = config_on_port(directory, port)
+            environment = serve_environment()
             log = Path(directory, "serve.log")
             with log.open("w") as handle:
                 server = subprocess.Popen(
@@ -173,6 +198,7 @@ class ServeShutdownTests(unittest.TestCase):
                     server.kill()
                     server.wait()
             output = log.read_text()
+            self.assertEqual(130, server.returncode, output)
             self.assertLess(elapsed, 4, output)
             self.assertIn("Finished server process", output)
             self.assertNotIn("Traceback", output)

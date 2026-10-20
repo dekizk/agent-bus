@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import demo
@@ -111,6 +112,40 @@ class ScenarioStageTests(unittest.TestCase):
     def test_unknown_stage_is_an_error(self):
         with self.assertRaises(ValueError):
             self.run_stage(1, "nonsense")
+
+
+class ReadingPauseTests(unittest.TestCase):
+    def harness(self, directory, read_pauses):
+        return demo.Harness(Path(directory), out=io.StringIO(), read_pauses=read_pauses)
+
+    def test_narration_waits_only_when_asked(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("demo.time.sleep") as sleep:
+            self.harness(directory, False).say("one two three four five six seven eight")
+            sleep.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("demo.time.sleep") as sleep:
+            pausing = self.harness(directory, True)
+            pausing.say("one two three four five six seven eight nine ten eleven twelve")
+            pausing.say("short")
+            pausing.say(" ".join(["word"] * 200))
+            self.assertEqual([3.0, 1.5, 8.0], [call.args[0] for call in sleep.call_args_list])
+
+
+class NarrationWrapTests(unittest.TestCase):
+    def test_narration_wraps_at_word_boundaries(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("demo.shutil.get_terminal_size",
+                                    return_value=os.terminal_size((50, 24))):
+            demo.Harness(Path(directory), out=out).say(
+                "The log hasn't been told that alice died, and nothing guesses. "
+                "Her lease simply stops being renewed.")
+        lines = [line for line in out.getvalue().splitlines() if line]
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(lines[0].startswith("▸ "))
+        self.assertTrue(all(len(line) <= 49 for line in lines))
+        self.assertIn("renewed.", lines[-1])
 
 
 class DemoCommandTests(unittest.TestCase):
