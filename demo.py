@@ -69,6 +69,7 @@ REVIEW_FINDINGS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+SEVERITIES = ("High", "Medium")
 INBOX_FILE = "contest-inbox.jsonl"
 REPORT_FILE = "report.md"
 
@@ -114,6 +115,12 @@ def dedupe_findings(reviews: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]
     for number, finding in enumerate(ordered, start=1):
         finding["id"] = f"AUD-{number}"
     return ordered
+
+
+def normalize_choice(answer: Any, choices: Iterable[str]) -> Optional[str]:
+    """Match an answer to one of the choices, ignoring case and spacing."""
+    text = str(answer).strip().casefold()
+    return next((choice for choice in choices if choice.casefold() == text), None)
 
 
 def triage_question(findings: Iterable[Mapping[str, Any]]) -> Optional[str]:
@@ -188,11 +195,18 @@ class ScenarioExecutor:
                     for item in result.get("findings", [])]
         question = triage_question(findings)
         decision = latest_decision(assignment)
-        if question is not None and decision is None:
-            return Blocked(question)
+        severity = None
+        if question is not None:
+            if decision is None:
+                return Blocked(question)
+            severity = normalize_choice(decision, SEVERITIES)
+            if severity is None:
+                # An answer from `agent-bus decide` is free-form: ask again.
+                return Blocked(f"{question} ({json.dumps(decision)} is not one of: "
+                               f"{', '.join(SEVERITIES)}.)")
         for finding in findings:
             if finding.get("contested"):
-                finding["severity"] = str(decision)
+                finding["severity"] = severity
                 finding["contested"] = False
         counts = {}
         for finding in findings:
@@ -276,7 +290,10 @@ def _worker_main(argv: list[str]) -> int:
         heartbeat_seconds=args.heartbeat,
         log=lambda message: print(message, flush=True),
     )
-    runtime.run()
+    try:
+        runtime.run()
+    except KeyboardInterrupt:
+        runtime.stop()
     return 0
 
 
@@ -341,6 +358,7 @@ class Harness:
         self._print_lock = threading.Lock()
         self._tail_stop = threading.Event()
         self._tail_thread: Optional[threading.Thread] = None
+        self._tail_observer = None
         self.environment = _child_environment()
 
     # -- output -----------------------------------------------------------
@@ -424,10 +442,22 @@ class Harness:
 
     def stop_all(self) -> None:
         self._tail_stop.set()
+        if self._tail_observer is not None:
+            # Drop the open event stream first so the bus can shut down promptly.
+            with contextlib.suppress(Exception):
+                self._tail_observer.close()
         for key in ["pm", *[k for k in self.processes if k not in {"pm", "bus"}], "bus"]:
             process = self.processes.pop(key, None)
             if process is None or process.poll() is not None:
                 continue
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=2)
+                continue
+            except subprocess.TimeoutExpired:
+                pass
+            # The bus waits up to 15s for idle event streams on the first
+            # interrupt; a second one makes uvicorn close them and finish now.
             process.send_signal(signal.SIGINT)
             try:
                 process.wait(timeout=5)
@@ -496,16 +526,25 @@ class Harness:
         return self.wait_until(reached, timeout, f"task {task_id} to be {status}")
 
     # -- interaction ------------------------------------------------------
-    def ask(self, prompt: str, default: str) -> str:
+    def ask(self, prompt: str, default: str, choices: Iterable[str] = ()) -> str:
+        choices = tuple(choices)
         if not self.interactive:
             self.emit(f"  {prompt}: {default} (automatic; run in a terminal without --yes to answer)")
             return default
         with self._print_lock:
-            try:
-                answer = input(f"  {prompt} [{default}]: ").strip()
-            except EOFError:
-                answer = ""
-        return answer or default
+            while True:
+                try:
+                    answer = input(f"  {prompt} [{default}]: ").strip()
+                except EOFError:
+                    answer = ""
+                if not answer:
+                    return default
+                if not choices:
+                    return answer
+                matched = normalize_choice(answer, choices)
+                if matched is not None:
+                    return matched
+                print(f"  Please answer {' or '.join(choices)}.", file=self.out, flush=True)
 
     def recap(self, points: list[str]) -> None:
         self.say("What just happened")
@@ -564,6 +603,7 @@ class Harness:
         from observer import ObserverClient
 
         observer = ObserverClient(self.url)
+        self._tail_observer = observer
         try:
             for event in observer.subscribe(topics=list(SHOWN_TOPICS)):
                 if self._tail_stop.is_set():
@@ -671,7 +711,7 @@ def scenario_decision(h: Harness) -> None:
           "shipping waits, and says why:")
     h.view(["decisions"])
     h.view(["explain", str(t4)])
-    answer = h.ask("Your answer", default="SQLite")
+    answer = h.ask("Your answer (SQLite/Postgres)", default="SQLite", choices=("SQLite", "Postgres"))
     h.say("Answering is one command. It's recorded as an event, like everything else:")
     h.cli(["decide", str(t2), "--decision-event", str(needed["id"]), "--value", json.dumps(answer)])
     h.wait_status(t4, "completed")
@@ -725,7 +765,7 @@ def scenario_audit_triage(h: Harness) -> None:
     h.say("All three reviews are in, and the duplicates were merged. The lead agent wants a "
           "human to make one severity call:")
     h.view(["decisions"])
-    answer = h.ask("Severity (High/Medium)", default="High")
+    answer = h.ask("Severity (High/Medium)", default="High", choices=SEVERITIES)
     h.cli(["decide", str(triage), "--decision-event", str(needed["id"]), "--value", json.dumps(answer)])
 
     inbox = h.workdir / INBOX_FILE
@@ -787,7 +827,7 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
             return 2
         workdir.mkdir(parents=True, exist_ok=True)
     else:
-        workdir = Path(tempfile.mkdtemp(prefix=f"agent-bus-demo-{scenario_name}-"))
+        workdir = Path(tempfile.mkdtemp(prefix=f"agent-bus-demo-{scenario_name}-")).resolve()
     tty = hasattr(stdin, "isatty") and stdin.isatty() and hasattr(out, "isatty") and out.isatty()
     interactive = tty and not assume_yes
     color = hasattr(out, "isatty") and out.isatty() and "NO_COLOR" not in os.environ

@@ -80,6 +80,21 @@ class ScenarioStageTests(unittest.TestCase):
         self.assertIsInstance(report, Completed)
         self.assertIn(oracle["id"], (self.workdir / demo.REPORT_FILE).read_text())
 
+    def test_severity_answers_are_normalized_or_asked_again(self):
+        self.assertEqual("Medium", demo.normalize_choice("  medium ", demo.SEVERITIES))
+        self.assertIsNone(demo.normalize_choice("banana", demo.SEVERITIES))
+        merged = Completed(summary="m", result={"findings": demo.dedupe_findings([
+            {"contract": c, "findings": f} for c, f in demo.REVIEW_FINDINGS.items()])})
+        upstream = [dependency(5, merged)]
+        triaged = self.run_stage(6, "triage", attempt=2, dependencies=upstream,
+                                 decisions=[decision(6, "medium")])
+        self.assertEqual({"High", "Medium"},
+                         {item["severity"] for item in triaged.result["findings"]})
+        again = self.run_stage(6, "triage", attempt=2, dependencies=upstream,
+                               decisions=[decision(6, "banana")])
+        self.assertIsInstance(again, Blocked)
+        self.assertIn('"banana" is not one of: High, Medium', again.reason)
+
     def test_submission_is_idempotent_across_attempts(self):
         findings = {"findings": [{"id": f"AUD-{n}", "severity": "High", "title": f"t{n}"}
                                  for n in (1, 2)]}
