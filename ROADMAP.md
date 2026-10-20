@@ -578,7 +578,8 @@ try, without new coordination semantics. See [release notes](RELEASE_NOTES.md).
   is reachable from the CLI;
 - [x] prompt `serve` shutdown with open event streams, and a documented exit
   status for startup failure;
-- [x] README introduction with one-command demos and an audit-triage guide;
+- [x] README introduction with one-command demos and an audit-triage guide,
+  with reference material split into `docs/`;
 - [x] record the README demo animation (`scripts/record_demo.sh`).
 
 The demos also make the remaining *unaided newcomer trial* gate a short ask:

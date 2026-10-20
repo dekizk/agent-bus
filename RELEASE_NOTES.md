@@ -34,9 +34,13 @@ configuration, or database changes.
   cannot start, for example when the port is in use. It previously exited
   with uvicorn's status (1 or 3, depending on the uvicorn version); 3
   contradicted the documented "not found" meaning.
-- The README opens with a short introduction, an animation of
-  `agent-bus demo recovery`, and the one-command demos.
-  `scripts/record_demo.sh` re-records the animation with asciinema and agg.
+- The README is now a short introduction: an animation of
+  `agent-bus demo recovery`, the one-command demos, install, a first task, a
+  command cheat sheet, and links. Reference material moved, largely verbatim,
+  to `docs/architecture.md`, `docs/operations.md`, `docs/integration.md`,
+  `docs/events.md`, and `RECOVERY.md`, rewritten as current behaviour rather
+  than per-version history. `scripts/record_demo.sh` re-records the animation
+  with asciinema and agg.
   [`examples/audit_triage/`](examples/audit_triage/README.md) explains the
   audit pipeline and how to replace its stand-in agents with real ones.
 
