@@ -6,3 +6,4 @@ recursive-include scripts *.py
 recursive-include ci *.txt
 recursive-include tests *.py *.json *.sql *.md
 recursive-include examples *.py *.json *.md
+recursive-include docs *.md

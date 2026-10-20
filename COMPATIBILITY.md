@@ -23,7 +23,7 @@ require a passing package-install smoke, not just tests in an editable checkout.
 
 | Surface | Current baseline | Compatibility boundary |
 | --- | --- | --- |
-| Package | `0.11.0` release | Pre-1.0 changes must be documented; do not infer a 1.x guarantee yet |
+| Package | `0.12.0` release | Pre-1.0 changes must be documented; do not infer a 1.x guarantee yet |
 | Python integration | Names exported by `agent_bus`, `agent_bus.adapters`, `agent_bus.protocol` | Documented constructors, methods, typed outcomes, and effect identity |
 | Executor wire format | `agent-bus.executor` v1 | Selected envelope version is explicit; headers are strict |
 | Event envelope | Built-in writes use schema v2 | History is immutable; acceptance and replay semantics are part of the contract |
@@ -35,7 +35,8 @@ require a passing package-install smoke, not just tests in an editable checkout.
 Flat implementation modules remain importable for existing integrations, but
 new code should use `agent_bus`. Private helpers, reducer dataclass internals,
 SQLite tables, test fixtures, and benchmark output are not public integration
-APIs. Keeping legacy modules importable is not a promise to freeze all their
+APIs. The `demo` module behind `agent-bus demo` is a CLI implementation detail,
+not an integration API. Keeping legacy modules importable is not a promise to freeze all their
 private members. Repository examples are source assets, not installed packages.
 
 ### Additions and unknown values
@@ -115,6 +116,9 @@ expiry, and persisted policy with missing usage. Public JSON comparisons permit
 additional fields but preserve existing field types and values.
 
 This demonstrates **v0.11.0 → current development** for the captured cases.
+v0.12.0 adds CLI commands and options only (`demo`, `submit --depends-on`, and
+`demo-worker` outcome flags), corrects `serve`'s startup-failure status to 2,
+and changes no event, executor, configuration, or `--json` field contract.
 It adds no schema migration and does not certify physical WAL recovery, every
 historical release, or downgrades. See the [fixture provenance](tests/fixtures/compatibility/v0.11.0-upgrade/README.md).
 
@@ -154,7 +158,7 @@ From a development checkout with a supported Python:
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 python -m build
-python scripts/check_release.py --wheel dist/agent_bus-0.11.0-py3-none-any.whl
+python scripts/check_release.py --wheel dist/agent_bus-0.12.0-py3-none-any.whl
 ```
 
 Use the wheel filename produced by the build if its version differs. The build

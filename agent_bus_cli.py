@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Start a throwaway bus, PM, and workers, then play one scenario. "
         "Run without a scenario to list them.",
     )
-    demo_command.add_argument("scenario", nargs="?", help="recovery, decision, or audit-triage")
+    demo_command.add_argument("scenario", nargs="?", help="recovery, approval, budget, or audit-triage")
     demo_command.add_argument(
         "--pace", type=_positive_number, default=1.0,
         help="time multiplier for simulated work; 0.5 runs about twice as fast",
@@ -196,6 +196,10 @@ def build_parser() -> argparse.ArgumentParser:
     demo_command.add_argument(
         "--keep-running", action=argparse.BooleanOptionalAction, default=None,
         help="leave the bus running for exploration until Enter (default: when interactive)",
+    )
+    demo_command.add_argument(
+        "--read-pauses", action="store_true",
+        help="pause after each narration long enough to read it (for recordings and talks)",
     )
 
     submit = commands.add_parser("submit", help="submit one controlled local task")
@@ -416,6 +420,7 @@ def main(
             assume_yes=args.yes,
             directory=args.dir,
             keep_running=args.keep_running,
+            read_pauses=args.read_pauses,
         )
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
@@ -701,12 +706,20 @@ def _run_local_command(
                 super().handle_exit(sig, frame)
 
         server = BusServer(uvicorn.Config("bus:app", host=local.host, port=local.port))
-        server.run()
+        startup_failure = ValueError(
+            f"the bus could not start on {local.bus_url}; check the log above "
+            "(is the port already in use?)"
+        )
+        try:
+            server.run()
+        except SystemExit:
+            # uvicorn exits by itself when startup fails (status 1 or 3,
+            # depending on its version); report the documented usage status.
+            if server.started:
+                raise
+            raise startup_failure from None
         if not server.started:
-            raise ValueError(
-                f"the bus could not start on {local.bus_url}; check the log above "
-                "(is the port already in use?)"
-            )
+            raise startup_failure
         return 0
     if args.command == "pm":
         # Import only after the local environment is selected: pm_agent reads
