@@ -21,3 +21,5 @@ Copyable examples:
 - [`http_agent/`](http_agent/) demonstrates the guarded HTTP bridge, retry-safe
   effect identity, and cooperative cancellation;
 - [`hermes/`](hermes/) is the realistic model-agent integration.
+- [`audit_triage/`](audit_triage/) explains the `agent-bus demo audit-triage`
+  pipeline and how to swap its stand-in stages for real agents.

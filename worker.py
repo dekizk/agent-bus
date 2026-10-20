@@ -29,8 +29,12 @@ class DemoExecutor:
         block_once: int | None = None,
         fail_once: int | None = None,
         fail_permanently_once: int | None = None,
+        delay_seconds: float = 0.5,
     ):
+        if delay_seconds < 0:
+            raise ValueError("delay_seconds must be non-negative")
         self.name = name
+        self.delay_seconds = delay_seconds
         self.block_once = block_once
         self.fail_once = fail_once
         self.fail_permanently_once = fail_permanently_once
@@ -39,7 +43,7 @@ class DemoExecutor:
     def execute(self, assignment: AssignmentContext):
         # Replace this body with a real agent implementation. The surrounding
         # runtime already owns registration, leases, concurrency, and events.
-        time.sleep(0.5)
+        time.sleep(self.delay_seconds)
         with self._lock:
             if self.fail_once == assignment.task_id:
                 self.fail_once = None
@@ -76,6 +80,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="report one permanent failure for this task",
     )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.5,
+        help="simulated work time per task in seconds",
+    )
     parser.add_argument("--capacity", type=int, default=1)
     parser.add_argument(
         "--capability",
@@ -94,6 +104,7 @@ def main() -> None:
         block_once=args.block,
         fail_once=args.fail,
         fail_permanently_once=args.fail_permanently,
+        delay_seconds=getattr(args, "delay", 0.5),
     )
     bus = BusClient(BUS_URL, actor=args.name)
     runtime = WorkerRuntime(

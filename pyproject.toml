@@ -30,6 +30,7 @@ py-modules = [
     "bus",
     "client",
     "conformance",
+    "demo",
     "executor_protocol",
     "executors",
     "integration",

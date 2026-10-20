@@ -1,5 +1,57 @@
 # agent-bus
 
+**A local control plane for AI agents, built on an append-only event log
+instead of a mutable task board.**
+
+Agent workflows fail in ordinary ways. A worker crashes mid-task, the
+coordinator restarts, two runners pick up the same job, an agent needs a human
+answer, or a retry repeats an external action. A kanban-style board only shows
+where a card was last moved. agent-bus records what actually happened, as
+immutable events, and derives current state by replaying them. Ownership,
+retries, dependencies, and human decisions are all events, so a crash loses
+nothing and every state can be explained.
+
+### See it in a minute
+
+```sh
+git clone https://github.com/dekizk/agent-bus.git && cd agent-bus
+python3 -m venv .venv && . .venv/bin/activate   # Python 3.10+
+python -m pip install -e .
+
+agent-bus demo recovery       # kill the worker and the coordinator mid-task
+agent-bus demo decision       # an agent asks a human; other work keeps moving
+agent-bus demo audit-triage   # parallel reviewers, a human severity call,
+                              # findings submitted once despite a crash
+```
+
+Each demo starts its own bus, coordinator, and workers as real processes in a
+throwaway directory, narrates what happens, and keeps the history for you to
+inspect. The crashes are real `kill -9`s. None of it touches your other
+agent-bus data.
+
+### What you get
+
+- **Crash recovery by design.** Workers hold leases. A dead worker's attempt is
+  expired and reassigned, and a restarted coordinator rebuilds state by replay.
+- **One owner per task.** Only the current attempt can advance a task, and late
+  results from a lost worker are rejected.
+- **Dependencies.** Tasks form a DAG, wait for upstream results, and propagate
+  failure downstream.
+- **Humans in the loop.** An agent can block with a question. `agent-bus decide`
+  answers it, and the answer is on record.
+- **Retry-safe external effects.** `assignment.effect_id(...)` is stable across
+  attempts, so a retry can skip work a crashed attempt already did.
+- **Bring your own agents.** Wrap a Python object, a CLI, or an HTTP service.
+  agent-bus never needs your agent's internals.
+- **Explainable state.** `agent-bus task`, `explain`, and `workflow --mermaid`
+  answer "why is this waiting?" from the log.
+
+It is local-first: one machine, SQLite, loopback only. See
+[scope and next boundaries](#scope-and-next-boundaries) for what it does not do
+yet.
+
+## Overview
+
 `agent-bus` is a local, append-only orchestration log for coordinating agents.
 It is designed to replace board-style agent management with event-driven
 ownership, execution attempts, recovery, and human decisions.
@@ -117,6 +169,7 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 | `artifacts.py` | Atomic, content-addressed local storage for opt-in captured content |
 | `topics.py` | Canonical coordination, integration, and telemetry topic groups |
 | `worker.py` | Demo executor wired through the reusable runtime |
+| `demo.py` | Scripted `agent-bus demo` scenarios with real processes in a throwaway directory |
 | `events.db` | Append-only event log and task-id counter |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
 
@@ -191,7 +244,9 @@ agent-bus init
 ```
 
 Create the environment in `.venv`; do not use the repository root itself as a
-virtual-environment directory. The editable install provides the `agent-bus`
+virtual-environment directory. After pulling changes that add modules (for
+example `demo.py`), rerun `python -m pip install -e .` so the command can
+import them. The editable install provides the `agent-bus`
 command while keeping this checkout as the source. The project is not yet
 claiming a published PyPI release; `pip install agent-bus` becomes the intended
 path once release packaging is published and hardened. If the final assertion
@@ -288,6 +343,35 @@ or `agent-bus workflows` to find them again.
 
 `agent-bus workflow "$CORRELATION_ID" --mermaid` prints a read-only Mermaid
 flowchart. It is another projection over the log, never an editable board.
+
+### Try dependencies, decisions, and failures
+
+The demo worker can deliberately block, fail, or work slowly so you can watch
+the other paths without writing an agent. Use one outcome flag per worker; the
+outcome happens once for that task ID.
+
+```sh
+agent-bus demo-worker alice --block 2           # task 2 asks a human for a decision
+agent-bus demo-worker alice --fail 2            # one retryable failure
+agent-bus demo-worker alice --fail-permanently 2
+agent-bus demo-worker alice --delay 30          # slow enough to kill mid-task
+```
+
+`submit --depends-on` builds a DAG from the command line; repeat it for
+fan-in. Dependents inherit the upstream workflow automatically (IDs below
+assume a fresh bus):
+
+```sh
+agent-bus submit "Research options"                                  # task 1
+agent-bus submit "Design storage" --depends-on 1                     # task 2
+agent-bus submit "Write docs" --depends-on 1                         # task 3
+agent-bus submit "Ship it" --depends-on 2 --depends-on 3             # task 4
+```
+
+A lease expiry or retryable failure consumes one retry, and `submit` defaults
+to no retries. If you plan to use `--fail` or kill a worker mid-task, submit
+with `--max-retries 2` (or higher) so the next attempt is allowed; otherwise
+the task correctly ends `failed`.
 
 ## Operations CLI
 
@@ -1076,8 +1160,10 @@ durable ownership decision.
 ## Human decisions
 
 When a worker emits `task.blocked`, the PM deterministically emits one
-`decision.needed` for that assignment. Read the event and copy its identifiers
-into the response:
+`decision.needed` for that assignment. From the CLI, `agent-bus decisions`
+lists pending questions with a ready-to-edit `agent-bus decide` command. To do
+the same with raw events, read the event and copy its identifiers into the
+response:
 
 ```sh
 curl 'http://127.0.0.1:8765/events?topics=decision.needed'
@@ -1202,6 +1288,9 @@ A task declares dependency edges when it is created:
   }
 }
 ```
+
+From the command line, `agent-bus submit "Plan fixes from the audit"
+--depends-on 4 --capability hermes` publishes the same event.
 
 Every dependency must already exist, appear only once, and belong to the same
 `correlation_id`. Because new nodes may point only to existing nodes, the bus

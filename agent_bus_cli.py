@@ -158,12 +158,55 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--config", default="agent-bus.local.json")
     demo.add_argument("--capacity", type=_positive_int, default=1)
     demo.add_argument("--capability", action="append", default=[])
+    demo_outcome = demo.add_mutually_exclusive_group()
+    demo_outcome.add_argument(
+        "--block", type=_positive_int, metavar="TASK_ID",
+        help="block this task once and ask a human for a decision",
+    )
+    demo_outcome.add_argument(
+        "--fail", type=_positive_int, metavar="TASK_ID",
+        help="report one retryable failure for this task",
+    )
+    demo_outcome.add_argument(
+        "--fail-permanently", type=_positive_int, metavar="TASK_ID",
+        help="report one permanent failure for this task",
+    )
+    demo.add_argument(
+        "--delay", type=_nonnegative_number, default=0.5, metavar="SECONDS",
+        help="simulated work time per task (default 0.5); raise it to kill a worker mid-task",
+    )
+
+    demo_command = commands.add_parser(
+        "demo", help="run a scripted, self-contained demonstration scenario",
+        description="Start a throwaway bus, PM, and workers, then play one scenario. "
+        "Run without a scenario to list them.",
+    )
+    demo_command.add_argument("scenario", nargs="?", help="recovery, decision, or audit-triage")
+    demo_command.add_argument(
+        "--pace", type=_positive_number, default=1.0,
+        help="time multiplier for simulated work; 0.5 runs about twice as fast",
+    )
+    demo_command.add_argument(
+        "--yes", action="store_true",
+        help="answer human decisions with the default instead of prompting",
+    )
+    demo_command.add_argument(
+        "--dir", help="new or empty directory for the demo history (default: a temp directory)",
+    )
+    demo_command.add_argument(
+        "--keep-running", action=argparse.BooleanOptionalAction, default=None,
+        help="leave the bus running for exploration until Enter (default: when interactive)",
+    )
 
     submit = commands.add_parser("submit", help="submit one controlled local task")
     submit.add_argument("title")
     submit.add_argument("--config", default="agent-bus.local.json")
     submit.add_argument("--context", default="{}", help="JSON object passed to the agent")
     submit.add_argument("--capability", action="append", default=[])
+    submit.add_argument(
+        "--depends-on", action="append", default=[], type=_positive_int, metavar="TASK_ID",
+        help="upstream task that must complete first; repeat for several",
+    )
     submit.add_argument("--max-retries", type=_nonnegative_int, default=0)
     submit.add_argument(
         "--priority",
@@ -363,6 +406,17 @@ def main(
     local_config_path: Optional[str | Path] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "demo":
+        import demo
+
+        return demo.run(
+            args.scenario,
+            out=stdout,
+            pace=args.pace,
+            assume_yes=args.yes,
+            directory=args.dir,
+            keep_running=args.keep_running,
+        )
     if args.command in {
         "init", "serve", "pm", "demo-worker", "submit", "pause", "resume",
         "supersede", "policy", "agent-policy", "adapter", "rebuild-task-index", "snapshot",
@@ -637,7 +691,22 @@ def _run_local_command(
     if args.command == "serve":
         import uvicorn
 
-        uvicorn.run("bus:app", host=local.host, port=local.port)
+        import bus
+
+        class BusServer(uvicorn.Server):
+            """uvicorn server that ends open event streams on the first stop signal."""
+
+            def handle_exit(self, sig, frame):
+                bus.begin_shutdown()
+                super().handle_exit(sig, frame)
+
+        server = BusServer(uvicorn.Config("bus:app", host=local.host, port=local.port))
+        server.run()
+        if not server.started:
+            raise ValueError(
+                f"the bus could not start on {local.bus_url}; check the log above "
+                "(is the port already in use?)"
+            )
         return 0
     if args.command == "pm":
         # Import only after the local environment is selected: pm_agent reads
@@ -654,7 +723,13 @@ def _run_local_command(
         runtime = WorkerRuntime(
             BusClient(local.bus_url, actor=args.name),
             name=args.name,
-            executor=DemoExecutor(args.name),
+            executor=DemoExecutor(
+                args.name,
+                block_once=args.block,
+                fail_once=args.fail,
+                fail_permanently_once=args.fail_permanently,
+                delay_seconds=args.delay,
+            ),
             capacity=args.capacity,
             capabilities=args.capability,
         )
@@ -676,6 +751,8 @@ def _run_local_command(
         }
         if args.not_before is not None:
             payload["not_before"] = args.not_before
+        if args.depends_on:
+            payload["depends_on"] = args.depends_on
         bus = BusClient(local.bus_url, actor="human")
         event = bus.publish(
             "task.created",

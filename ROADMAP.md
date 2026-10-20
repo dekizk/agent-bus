@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current implementation — v0.10 release candidate
+## Current implementation — v0.11.0
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -91,11 +91,14 @@ agent control plane:
 - persisted workflow and agent concurrency policy, deterministic workflow
   fairness, and accounted token, cost, attempt, and wall-clock budgets;
 - shared PM/runtime assignment admission from coordination history, including
-  intervening usage and obsolete default-policy rejection.
+  intervening usage and obsolete default-policy rejection;
+- a rebuildable task identity index, opt-in PM replay snapshots, bounded-page
+  worker admission, read-only artifact audits, and verified backup/restore.
 
 v0.9's integration work and its CLI/HTTP trials are complete and committed.
-v0.10's Phase 3C accounting and admission hardening complete the implementation
-checklist below. The project remains a release candidate for release review.
+v0.10's scheduling and management policy shipped, and v0.11.0 (2026-09-13)
+added local scale and recovery hardening. Work on `main` since v0.11.0 covers
+the pre-v1.0 readiness checkpoints below; see the remaining v1.0 gates.
 Evidence is recorded in the CLI, HTTP, and Hermes example trial notes; the
 Hermes notes also record credential-free coordination trials.
 
