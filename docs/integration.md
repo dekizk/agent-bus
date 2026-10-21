@@ -1,11 +1,11 @@
 # Integrating agents
 
-Connecting existing agents as workers, the adapter safety contract, telemetry, and adopting agent-bus alongside an existing system. Copyable examples live in [`examples/`](../examples/README.md); they come from the source checkout (or the source distribution), not from installing the wheel alone.
+Connecting existing agents as workers, the adapter safety contract, telemetry, and adopting logplane alongside an existing system. Copyable examples live in [`examples/`](../examples/README.md); they come from the source checkout (or the source distribution), not from installing the wheel alone.
 
 ## Integrating an existing agent
 
 Application code should import the supported integration surface from
-`agent_bus`. Flat modules remain available for compatibility, but are internal
+`logplane`. Flat modules remain available for compatibility, but are internal
 building blocks rather than the preferred long-term import path. The public
 package includes assignment/outcome types, `WorkerRuntime`, Python/CLI/HTTP
 adapters, adoption helpers, telemetry hooks, and artifact-reference validation.
@@ -35,7 +35,7 @@ An existing Python agent with a `run()` method can be wrapped without teaching
 it about the bus:
 
 ```python
-from agent_bus import BusClient, Completed, PythonAgentAdapter, WorkerRuntime
+from logplane import BusClient, Completed, PythonAgentAdapter, WorkerRuntime
 
 class ExistingAgent:
     def run(self, assignment):
@@ -59,9 +59,9 @@ WorkerRuntime(
 Before connecting it to a live bus, run the contract probe:
 
 ```sh
-agent-bus adapter check --python-target my_package.agent:ExistingAgent
+logplane adapter check --python-target my_package.agent:ExistingAgent
 # For a deliberately slower trusted probe:
-agent-bus adapter check --python-target my_package.agent:ExistingAgent --timeout 60
+logplane adapter check --python-target my_package.agent:ExistingAgent --timeout 60
 ```
 
 The target may be a zero-argument class, an object with `run(assignment)`, or a
@@ -101,7 +101,7 @@ No cancellation protocol is sent to remote agents by this timeout.
 
 </details>
 
-The public library helper `agent_bus.check_executor(executor)` remains
+The public library helper `logplane.check_executor(executor)` remains
 synchronous and untimed for already-created objects. Library callers must own
 execution/cleanup bounds themselves; arbitrary live objects are not transferred
 to the CLI subprocess.
@@ -143,8 +143,8 @@ Use a checked-in, credential-free configuration to describe the process:
 ```
 
 ```sh
-agent-bus adapter check --config adapter.json
-agent-bus adapter run adapter.json
+logplane adapter check --config adapter.json
+logplane adapter run adapter.json
 ```
 
 Exit code `75` maps to a retryable process failure; other non-zero exits map to
@@ -216,8 +216,8 @@ coverage, and its recorded live trial evidence.
   ownership belong to the publisher and PM.
 
 The bus can make orchestration effects idempotent; it cannot make an arbitrary
-external side effect atomic. `agent-bus demo approval` and
-`agent-bus demo audit-triage` show effect keys preventing repeated refunds and
+external side effect atomic. `logplane demo approval` and
+`logplane demo audit-triage` show effect keys preventing repeated refunds and
 submissions across retries.
 
 ## Telemetry and artifacts
@@ -274,7 +274,7 @@ backup and retention policy. `artifacts/` is ignored by Git.
 system:
 
 ```python
-from agent_bus import AdoptionBridge, AdoptionMode, CanarySelector, ExternalOrigin
+from logplane import AdoptionBridge, AdoptionMode, CanarySelector, ExternalOrigin
 
 event = AdoptionBridge(bus).adopt(
     origin=ExternalOrigin("legacy-system", "ticket-42"),
@@ -286,9 +286,9 @@ event = AdoptionBridge(bus).adopt(
 )
 ```
 
-- **Controlled:** emits `task.created`; agent-bus owns execution.
+- **Controlled:** emits `task.created`; logplane owns execution.
 - **Shadow:** emits `integration.task_observed`; the external system remains
-  owner and agent-bus does not create an executable task.
+  owner and logplane does not create an executable task.
 - **Canary:** a stable hash selects a configured percentage. Selected work is
   bus-owned; unselected work is recorded as externally owned.
 
@@ -312,14 +312,14 @@ deadline event as the ownership boundary.
 ### Safe rollout recipe
 
 1. **Shadow:** publish observations from the external source and compare the
-   derived view with its current workflow. agent-bus performs no work.
+   derived view with its current workflow. logplane performs no work.
 2. **Canary:** select only new origins, durably record the ownership decision,
    and remove selected work from the external executor before allowing the bus
    worker to run it.
 3. **Controlled:** stop the old source from enqueueing new work, drain or leave
    existing externally owned origins alone, then create new bus-owned tasks.
 
-For a database or queue you do not control transactionally with agent-bus, use
+For a database or queue you do not control transactionally with logplane, use
 an outbox. In one external transaction, update the source task and insert an
 outbox row containing a stable `system`, `task_ref`, title, and payload. A
 bridge process publishes that row through `AdoptionBridge` with a stable actor,
@@ -342,5 +342,5 @@ durable ownership decision.
   identity rather than the changing assignment attempt.
 - **Remote HTTP rejected:** use HTTPS, set `allow_remote`, and put the bearer
   token in the environment variable named by `token_env`.
-- **Task remains open:** run `agent-bus explain TASK_ID`; capability mismatch,
+- **Task remains open:** run `logplane explain TASK_ID`; capability mismatch,
   absent workers, dependencies, PM state, and lease health are distinguished.

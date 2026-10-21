@@ -2,7 +2,7 @@
 
 This directory contains optional examples of connecting existing agents to the
 framework-neutral contract in `executors.py`. Nothing under `examples/` is
-imported by the agent-bus core, and example-specific dependencies do not belong
+imported by the logplane core, and example-specific dependencies do not belong
 in the core requirements files.
 
 Each example should:
@@ -21,5 +21,5 @@ Copyable examples:
 - [`http_agent/`](http_agent/) demonstrates the guarded HTTP bridge, retry-safe
   effect identity, and cooperative cancellation;
 - [`hermes/`](hermes/) is the realistic model-agent integration.
-- [`audit_triage/`](audit_triage/) explains the `agent-bus demo audit-triage`
+- [`audit_triage/`](audit_triage/) explains the `logplane demo audit-triage`
   pipeline and how to swap its stand-in stages for real agents.

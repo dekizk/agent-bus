@@ -18,6 +18,23 @@ dependencies = [
     "uvicorn>=0.30,<1",
 ]
 
+keywords = ["ai-agents", "orchestration", "control-plane", "event-sourcing", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.urls]
+Homepage = "https://github.com/dekizk/logplane"
+Documentation = "https://github.com/dekizk/logplane#documentation"
+Changelog = "https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md"
+Issues = "https://github.com/dekizk/logplane/issues"
+
 [project.scripts]
 logplane = "logplane.cli:main"
 

@@ -1,5 +1,65 @@
 # Release notes
 
+## v0.13.0 — 2026-10-21
+
+agent-bus is now **logplane**, and the code moves to a `src/` layout. This is
+a clean break in names only: no event, executor-wire, database, or backup
+format changes, and existing history replays unchanged.
+
+### Changes
+
+- The PyPI distribution, import package, and command are `logplane`.
+  `pip install logplane` (once published), `import logplane`, and
+  `logplane demo recovery` replace their agent-bus equivalents.
+- All implementation modules live in `src/logplane/` and import as
+  `logplane.<module>` (for example `logplane.bus`, `logplane.cli`). The flat
+  top-level modules and the `agent_bus` package are removed, with no
+  compatibility shims.
+- `python -m logplane` runs the CLI.
+- Environment variables use the `LOGPLANE_` prefix (`LOGPLANE_TOKEN`,
+  `LOGPLANE_URL`, `LOGPLANE_DB_PATH`, and the rest). `logplane init` writes
+  `logplane.local.json` and keeps runtime data in `.logplane/`.
+- Leftover `AGENT_BUS_*` environment variables stop the CLI, bus, PM, and demo
+  worker with a message naming each replacement, rather than being ignored. An
+  ignored `AGENT_BUS_TOKEN` would otherwise start an unauthenticated bus.
+- When `logplane.local.json` is missing but `agent-bus.local.json` exists, the
+  error says to rename the file.
+
+### Unchanged on purpose
+
+These identifiers are stored in event history or shared with external
+adapters, so they keep their original spelling:
+
+- the task ownership owner `agent-bus`;
+- the effect-key salts behind `assignment.effect_scope` and `effect_id()`, so
+  a retried task never repeats an external effect that already happened;
+- the executor protocol name `agent-bus.executor` and the
+  `X-Agent-Bus-Assignment-Id`, `X-Agent-Bus-Effect-Scope`, and
+  `X-Agent-Bus-Protocol-Version` HTTP headers;
+- the `agent_bus_conformance_probe` context key that adapters check to skip
+  side effects during `adapter check`;
+- the `agent-bus-backup` and `agent-bus-restore` bundle kinds, so earlier
+  backups still verify and restore.
+
+### Migrating from agent-bus
+
+1. Stop the bus, PM, and workers.
+2. Reinstall from the new name: `python -m pip uninstall agent-bus` and then
+   `python -m pip install -e .` in an updated checkout (or
+   `pip install logplane` once it is on PyPI).
+3. Rename `agent-bus.local.json` to `logplane.local.json`. Its
+   `database_path` can keep pointing at `.agent-bus/events.db`; to tidy up,
+   move that directory to `.logplane/` and update the path.
+4. Rename environment variables from `AGENT_BUS_*` to `LOGPLANE_*` and unset
+   the old ones, including in shell profiles, service files, and CI.
+5. Replace `agent-bus` with `logplane` in scripts that run the command, and
+   `agent_bus` with `logplane` in Python imports. Code that imported flat
+   modules such as `bus` or `client` should use the public `logplane`
+   package, or `logplane.bus` and similar for internals.
+6. Start the bus, PM, and workers again and check `logplane doctor`.
+
+External CLI and HTTP agents need no changes.
+
 ## v0.12.0 — 2026-10-20
 
 Demonstrations and everyday operator ergonomics. No event, executor,

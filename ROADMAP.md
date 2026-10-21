@@ -1,20 +1,20 @@
-# agent-bus roadmap
+# logplane roadmap
 
 ## Product direction
 
-`agent-bus` should become an agent-agnostic control plane that people can run
+`logplane` should become an agent-agnostic control plane that people can run
 alongside agents they already use. Adopting it should not require rewriting an
 agent, replacing its model provider, or moving the agent's internal logic into
-agent-bus.
+logplane.
 
 The product is intended to be a realistic alternative to kanban-style agent
 monitoring. A board represents work through mutable cards that humans or agents
-must keep synchronized. agent-bus instead records immutable facts about work,
+must keep synchronized. logplane instead records immutable facts about work,
 derives current state by replaying those facts, and coordinates the next safe
 action. Any dashboard or CLI is a view over that history—not another source of
 truth.
 
-| Board-style monitoring | agent-bus |
+| Board-style monitoring | logplane |
 |---|---|
 | Mutable cards describe current state | Immutable events record what happened |
 | Status can drift from real execution | State is derived from execution history |
@@ -36,11 +36,11 @@ Every version should preserve these constraints:
    be able to integrate through a small stable boundary.
 2. **Adopt incrementally.** Shadow, canary, and controlled modes let a team
    observe first and transfer ownership only when ready.
-3. **Easy first success.** A new user should be able to install agent-bus,
+3. **Easy first success.** A new user should be able to install logplane,
    connect one existing agent, submit one task, and inspect its state in under
    ten minutes.
 4. **One orchestration owner.** Integration must prevent an external scheduler
-   and agent-bus from executing the same task simultaneously.
+   and logplane from executing the same task simultaneously.
 5. **The event log is truth.** Operational views, indexes, snapshots, and UIs
    are disposable projections that can be rebuilt.
 6. **Local-first and safe by default.** The smallest useful deployment should
@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current implementation — v0.12.0
+## Current implementation — v0.13.0
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -80,7 +80,7 @@ agent control plane:
 - human and JSON task, workflow, worker, explanation, health, and tail views;
 - event-traced waiting reasons plus workflow token, cost, duration, and span
   summaries from the separate telemetry stream.
-- a stable `agent_bus` integration package, protocol-v1 CLI/HTTP envelopes,
+- a stable `logplane` integration package, protocol-v1 CLI/HTTP envelopes,
   configuration-driven adapters, and a standalone conformance command;
 - loopback-only local onboarding commands, minimal Python/CLI examples, a
   guarded HTTP bridge, safe rollout/outbox guidance, and Mermaid DAG export;
@@ -94,14 +94,15 @@ agent control plane:
   intervening usage and obsolete default-policy rejection;
 - a rebuildable task identity index, opt-in PM replay snapshots, bounded-page
   worker admission, read-only artifact audits, and verified backup/restore;
-- scripted `agent-bus demo` scenarios, CLI DAG submission, scriptable demo
+- scripted `logplane demo` scenarios, CLI DAG submission, scriptable demo
   worker outcomes, and prompt bus shutdown with open event streams.
 
 v0.9's integration work and its CLI/HTTP trials are complete and committed.
 v0.10's scheduling and management policy shipped, and v0.11.0 (2026-09-13)
 added local scale and recovery hardening. v0.12.0 (2026-10-20) released the
 pre-v1.0 readiness checkpoints below together with the demonstration work; see
-the remaining v1.0 gates.
+the remaining v1.0 gates. v0.13.0 renamed the project from agent-bus to
+logplane and moved the code to a `src/` layout, with no contract changes.
 Evidence is recorded in the CLI, HTTP, and Hermes example trial notes; the
 Hermes notes also record credential-free coordination trials.
 
@@ -142,12 +143,12 @@ scratch.
 Implemented commands include:
 
 ```text
-agent-bus doctor
-agent-bus workers
-agent-bus task TASK_ID
-agent-bus workflow CORRELATION_ID
-agent-bus explain TASK_ID
-agent-bus tail CORRELATION_ID
+logplane doctor
+logplane workers
+logplane task TASK_ID
+logplane workflow CORRELATION_ID
+logplane explain TASK_ID
+logplane tail CORRELATION_ID
 ```
 
 Output should default to concise human-readable summaries, with `--json` for
@@ -160,10 +161,10 @@ v0.8 establishes an editable-install console command for operator visibility.
 The fuller published-package path remains the target:
 
 ```text
-pip install agent-bus
-agent-bus init
-agent-bus doctor
-agent-bus serve
+pip install logplane
+logplane init
+logplane doctor
+logplane serve
 ```
 
 At v0.8, publishing to PyPI plus the `init` and `serve` convenience commands
@@ -204,7 +205,7 @@ integration is central to the product, not an optional final layer.
 
 ### Integration kit
 
-- `agent-bus adapter check` conformance tests;
+- `logplane adapter check` conformance tests;
 - a minimal Python-agent example;
 - a minimal CLI-agent example;
 - the Hermes example as a realistic reference integration;
@@ -228,7 +229,7 @@ integration is central to the product, not an optional final layer.
 - [x] add a strict versioned subprocess/HTTP protocol while retaining legacy
   subprocess compatibility;
 - [x] provide generic Python, configured CLI, and guarded HTTP wrappers;
-- [x] add `agent-bus adapter check` without requiring a running bus or PM;
+- [x] add `logplane adapter check` without requiring a running bus or PM;
 - [x] add `init`, `serve`, `pm`, `demo-worker`, `submit`, and configured adapter
   run commands for an approachable local first success;
 - [x] provide minimal Python and CLI examples while retaining Hermes as the
@@ -566,12 +567,22 @@ Automatic artifact deletion and archival log segments are consciously deferred:
 they require additional ownership/publication guarantees, not just an age flag.
 The current retention promise is safe reachability reporting, not automatic GC.
 
+## v0.13 — the logplane name and a src/ layout
+
+- [x] rename the distribution, package, command, environment variables, and
+  local config to logplane, with clear failures for leftover agent-bus
+  settings;
+- [x] move every module into `src/logplane/`;
+- [x] keep stored and wire identifiers (`agent-bus` owner, effect salts,
+  protocol name, HTTP headers, probe key, backup kinds) unchanged;
+- [ ] publish `logplane` to PyPI through trusted publishing.
+
 ## v0.12 — demonstrations and operator ergonomics
 
 **Released 2026-10-20.** Makes the existing control plane easy to show and to
 try, without new coordination semantics. See [release notes](RELEASE_NOTES.md).
 
-- [x] `agent-bus demo` with `recovery`, `approval`, `budget`, and
+- [x] `logplane demo` with `recovery`, `approval`, `budget`, and
   `audit-triage` scenarios using real processes in a throwaway directory, with
   stand-in model usage so token and cost accounting is visible;
 - [x] `submit --depends-on` and `demo-worker` outcome flags so every demo path
@@ -584,7 +595,7 @@ try, without new coordination semantics. See [release notes](RELEASE_NOTES.md).
   `budget` (`scripts/record_demo.sh`).
 
 The demos also make the remaining *unaided newcomer trial* gate a short ask:
-a newcomer can install, run `agent-bus demo recovery`, then inspect and
+a newcomer can install, run `logplane demo recovery`, then inspect and
 intervene with the normal commands.
 
 ## Pre-v1.0 readiness — implementation checkpoints

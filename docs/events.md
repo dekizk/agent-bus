@@ -185,7 +185,7 @@ or force filtered consumers to deserialize unrelated events.
 
 ## Publishing raw events
 
-The CLI publishes these events for you (see [operating agent-bus](operations.md)).
+The CLI publishes these events for you (see [operating logplane](operations.md)).
 Use them directly when building your own publisher or integration. Python
 publishers can call `BusClient` helpers such as `cancel_task(task_id, reason=...)`.
 
@@ -197,7 +197,7 @@ A task with required capabilities and inline context:
   "actor": "human",
   "payload": {
     "title": "Run the Python test suite",
-    "context": {"repository": "agent-bus", "suite": "integration"},
+    "context": {"repository": "logplane", "suite": "integration"},
     "required_capabilities": ["python", "testing"]
   }
 }

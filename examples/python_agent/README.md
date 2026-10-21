@@ -6,7 +6,7 @@ bus registration, leases, event publishing, cancellation fencing, and retries.
 From the repository root:
 
 ```sh
-agent-bus adapter check --python-target examples.python_agent.agent:ExistingAgent
+logplane adapter check --python-target examples.python_agent.agent:ExistingAgent
 python -m examples.python_agent.run_worker
 ```
 

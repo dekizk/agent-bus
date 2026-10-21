@@ -1,7 +1,7 @@
 """Stable public integration SDK for logplane.
 
-Application code should prefer imports from this package. The repository's
-flat modules remain available for backward compatibility with pre-v0.9 users.
+Application code should import from this package (or ``logplane.adapters``
+and ``logplane.protocol``) rather than from implementation modules.
 """
 
 from logplane.adoption import (

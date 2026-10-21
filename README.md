@@ -1,14 +1,16 @@
-# agent-bus
+# logplane
 
-**A local control plane for AI agents, built on an append-only event log
-instead of a mutable task board.**
+**A local control plane for AI agents.** logplane assigns work, recovers from
+crashes, holds risky actions for human approval, and enforces cost caps, and
+it drives all of it from an append-only event log instead of a mutable task
+board.
 
-![agent-bus demo recovery: a worker and the coordinator are killed mid-task, then a new worker finishes the workflow from the log](docs/demo-recovery.gif)
+![logplane demo recovery: a worker and the coordinator are killed mid-task, then a new worker finishes the workflow from the log](docs/demo-recovery.gif)
 
 Agent workflows fail in ordinary ways. A worker crashes mid-task, the
 coordinator restarts, two runners pick up the same job, an agent needs a human
 answer, or a retry repeats an external action. A kanban-style board only shows
-where a card was last moved. agent-bus records what actually happened, as
+where a card was last moved. logplane records what actually happened, as
 immutable events, and derives current state by replaying them. Ownership,
 retries, dependencies, and human decisions are all events, so a crash loses
 nothing and every state can be explained.
@@ -16,33 +18,33 @@ nothing and every state can be explained.
 ### See it in a minute
 
 ```sh
-git clone https://github.com/dekizk/agent-bus.git && cd agent-bus
+git clone https://github.com/dekizk/logplane.git && cd logplane
 python3 -m venv .venv && . .venv/bin/activate   # Python 3.10+
 python -m pip install -e .
 
-agent-bus demo recovery       # kill the worker and the coordinator mid-task
-agent-bus demo approval       # an agent asks before an irreversible tool call
-agent-bus demo budget         # a cost cap stops a runaway bill
-agent-bus demo audit-triage   # parallel reviewers, a human severity call,
+logplane demo recovery       # kill the worker and the coordinator mid-task
+logplane demo approval       # an agent asks before an irreversible tool call
+logplane demo budget         # a cost cap stops a runaway bill
+logplane demo audit-triage   # parallel reviewers, a human severity call,
                               # findings submitted once despite a crash
 ```
 
 Each demo starts its own bus, coordinator, and workers as real processes in a
 throwaway directory, narrates what happens, and keeps the history for you to
 inspect. The crashes are real `kill -9`s. None of it touches your other
-agent-bus data.
+logplane data.
 
 <details>
-<summary>Watch <code>agent-bus demo approval</code>: an agent asks before an irreversible tool call</summary>
+<summary>Watch <code>logplane demo approval</code>: an agent asks before an irreversible tool call</summary>
 
-![agent-bus demo approval: a support agent blocks before calling issue_refund, a human approves, and the refund runs once](docs/demo-approval.gif)
+![logplane demo approval: a support agent blocks before calling issue_refund, a human approves, and the refund runs once](docs/demo-approval.gif)
 
 </details>
 
 <details>
-<summary>Watch <code>agent-bus demo budget</code>: a cost cap stops a runaway bill</summary>
+<summary>Watch <code>logplane demo budget</code>: a cost cap stops a runaway bill</summary>
 
-![agent-bus demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](docs/demo-budget.gif)
+![logplane demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](docs/demo-budget.gif)
 
 </details>
 
@@ -55,15 +57,15 @@ agent-bus data.
 - **Dependencies.** Tasks form a DAG, wait for upstream results, and propagate
   failure downstream.
 - **Humans in the loop.** An agent can block with a question, such as approval
-  for a risky tool call. `agent-bus decide` answers it, and the answer is on
+  for a risky tool call. `logplane decide` answers it, and the answer is on
   record.
 - **Spend limits.** Model calls report tokens and cost per task and attempt.
   Workflow budgets stop new work at a cap, and raising the cap is an event too.
 - **Retry-safe external effects.** `assignment.effect_id(...)` is stable across
   attempts, so a retry can skip work a crashed attempt already did.
 - **Bring your own agents.** Wrap a Python object, a CLI, or an HTTP service.
-  agent-bus never needs your agent's internals.
-- **Explainable state.** `agent-bus task`, `explain`, and `workflow --mermaid`
+  logplane never needs your agent's internals.
+- **Explainable state.** `logplane task`, `explain`, and `workflow --mermaid`
   answer "why is this waiting?" from the log.
 
 It is local-first: one machine, SQLite, loopback only. See
@@ -91,7 +93,7 @@ attempt), and `instance_id` (one worker process). The normal lifecycle is
 `task.created → task.assigned → task.started → task.completed`; recovery,
 human input, cancellation, and pauses are explicit events too.
 
-[How agent-bus works](docs/architecture.md) covers the full lifecycle,
+[How logplane works](docs/architecture.md) covers the full lifecycle,
 components, invariants, crash recovery, and trust model.
 
 ## Install
@@ -100,11 +102,11 @@ Use macOS or Linux with Python 3.10+; native Windows is not supported (see the
 [tested-platform policy](COMPATIBILITY.md#supported-deployment-target)).
 
 ```sh
-git clone --branch v0.12.0 https://github.com/dekizk/agent-bus.git
-cd agent-bus
+git clone --branch v0.13.0 https://github.com/dekizk/logplane.git
+cd logplane
 python3 -m venv .venv && . .venv/bin/activate   # python3 --version must be 3.10+
 python -m pip install -e .
-agent-bus init
+logplane init
 ```
 
 Use `--branch main` instead for the latest development version, and follow
@@ -113,28 +115,28 @@ it rather than cloning over it, and record `git rev-parse HEAD` when reporting
 trial results. Create the environment in `.venv`, not in the repository root.
 If your default `python3` is older than 3.10, create `.venv` with a supported
 interpreter such as `python3.11`. The editable install keeps this checkout as
-the source of the `agent-bus` command, so after pulling changes that add
-modules (for example `demo.py`), rerun `python -m pip install -e .`. agent-bus is not yet
+the source of the `logplane` command, so after pulling changes that add
+modules (for example `demo.py`), rerun `python -m pip install -e .`. logplane is not yet
 published on PyPI.
 
 ## Run your own bus
 
 Run these in four terminals from the checkout, with `.venv` activated in each.
 The generated configuration binds only to loopback and keeps runtime data in
-the ignored `.agent-bus/` directory.
+the ignored `.logplane/` directory.
 
 ```sh
 # terminal 1
-agent-bus serve
+logplane serve
 
 # terminal 2
-agent-bus pm
+logplane pm
 
 # terminal 3
-agent-bus demo-worker alice
+logplane demo-worker alice
 
 # terminal 4
-RESPONSE=$(agent-bus submit "Verify the agent-bus quick start" --json)
+RESPONSE=$(logplane submit "Verify the logplane quick start" --json)
 TASK_ID=$(printf '%s' "$RESPONSE" | python -c \
   'import json,sys; print(json.load(sys.stdin)["payload"]["task_id"])')
 CORRELATION_ID=$(printf '%s' "$RESPONSE" | python -c \
@@ -145,9 +147,9 @@ printf 'Task: %s\nWorkflow: %s\n' "$TASK_ID" "$CORRELATION_ID"
 After about one second, verify the bus, task, and derived workflow:
 
 ```sh
-agent-bus doctor
-agent-bus task "$TASK_ID"
-agent-bus workflow "$CORRELATION_ID"
+logplane doctor
+logplane task "$TASK_ID"
+logplane workflow "$CORRELATION_ID"
 ```
 
 The expected state is a healthy schema-v2 bus with one healthy worker, a
@@ -159,7 +161,7 @@ The expected state is a healthy schema-v2 bus with one healthy worker, a
 <summary>Machine-readable pass/fail checks</summary>
 
 ```sh
-agent-bus task "$TASK_ID" --json | python -c '
+logplane task "$TASK_ID" --json | python -c '
 import json, sys
 task = json.load(sys.stdin)
 assert task["status"] == "completed", task
@@ -167,7 +169,7 @@ assert task["assignment_active"] is False, task
 print("PASS: task is completed with no active assignment")
 '
 
-agent-bus workflow "$CORRELATION_ID" --json | python -c '
+logplane workflow "$CORRELATION_ID" --json | python -c '
 import json, sys
 workflow = json.load(sys.stdin)
 assert workflow["status"] == "completed", workflow
@@ -179,12 +181,12 @@ print("PASS: workflow reports one completed task")
 </details>
 
 If the task is still `assigned` or `started`, wait briefly and check again. If
-`agent-bus doctor` keeps warning, the PM, worker, or bus is probably using a
+`logplane doctor` keeps warning, the PM, worker, or bus is probably using a
 different URL; see [connecting to the bus](docs/operations.md#connecting-to-the-bus).
-If `agent-bus` is not found, check that the terminal is in the checkout with
-`.venv` activated before reinstalling. `agent-bus tasks` and
-`agent-bus workflows` find IDs again if you lose them, and
-`agent-bus workflow "$CORRELATION_ID" --mermaid` prints the workflow as a
+If `logplane` is not found, check that the terminal is in the checkout with
+`.venv` activated before reinstalling. `logplane tasks` and
+`logplane workflows` find IDs again if you lose them, and
+`logplane workflow "$CORRELATION_ID" --mermaid` prints the workflow as a
 Mermaid flowchart: another projection over the log, never an editable board.
 
 These checks inspect projected state; they do not prove exactly-once execution
@@ -198,10 +200,10 @@ the other paths without writing an agent. Use one outcome flag per worker; the
 outcome happens once for that task ID.
 
 ```sh
-agent-bus demo-worker alice --block 2           # task 2 asks a human for a decision
-agent-bus demo-worker alice --fail 2            # one retryable failure
-agent-bus demo-worker alice --fail-permanently 2
-agent-bus demo-worker alice --delay 30          # slow enough to kill mid-task
+logplane demo-worker alice --block 2           # task 2 asks a human for a decision
+logplane demo-worker alice --fail 2            # one retryable failure
+logplane demo-worker alice --fail-permanently 2
+logplane demo-worker alice --delay 30          # slow enough to kill mid-task
 ```
 
 `submit --depends-on` builds a DAG from the command line; repeat it for
@@ -209,10 +211,10 @@ fan-in. Dependents inherit the upstream workflow automatically (IDs below
 assume a fresh bus):
 
 ```sh
-agent-bus submit "Research options"                                  # task 1
-agent-bus submit "Design storage" --depends-on 1                     # task 2
-agent-bus submit "Write docs" --depends-on 1                         # task 3
-agent-bus submit "Ship it" --depends-on 2 --depends-on 3             # task 4
+logplane submit "Research options"                                  # task 1
+logplane submit "Design storage" --depends-on 1                     # task 2
+logplane submit "Write docs" --depends-on 1                         # task 3
+logplane submit "Ship it" --depends-on 2 --depends-on 3             # task 4
 ```
 
 A lease expiry or retryable failure consumes one retry, and `submit` defaults
@@ -224,19 +226,19 @@ the task correctly ends `failed`.
 
 | Command | What it does |
 |---|---|
-| `agent-bus submit TITLE` | Create a task (`--depends-on`, `--capability`, `--max-retries`, `--priority`, `--context`) |
-| `agent-bus tasks` / `workflows` / `decisions` | List work, workflows, and pending questions with next-step commands |
-| `agent-bus task ID` / `explain ID` | Show one task's state and exactly why it is waiting or finished |
-| `agent-bus workflow ID` | Show a workflow's tasks, dependencies, policy, and token/cost usage (`--mermaid` for a diagram) |
-| `agent-bus tail ID` | Follow a workflow's events live |
-| `agent-bus decide` / `retry` / `cancel` | Answer a decision, grant more retries, or cancel a task |
-| `agent-bus pause` / `resume` / `supersede` | Pause or resume a task or workflow, or replace a task with new intent |
-| `agent-bus policy` / `agent-policy` | Set workflow concurrency and budgets, or per-agent limits |
-| `agent-bus workers` / `doctor` | Check worker leases and overall bus health |
-| `agent-bus adapter check` / `adapter run` | Verify and run an existing agent as a worker |
-| `agent-bus backup` / `verify-backup` / `restore` | Verified local backups ([recovery operations](RECOVERY.md)) |
+| `logplane submit TITLE` | Create a task (`--depends-on`, `--capability`, `--max-retries`, `--priority`, `--context`) |
+| `logplane tasks` / `workflows` / `decisions` | List work, workflows, and pending questions with next-step commands |
+| `logplane task ID` / `explain ID` | Show one task's state and exactly why it is waiting or finished |
+| `logplane workflow ID` | Show a workflow's tasks, dependencies, policy, and token/cost usage (`--mermaid` for a diagram) |
+| `logplane tail ID` | Follow a workflow's events live |
+| `logplane decide` / `retry` / `cancel` | Answer a decision, grant more retries, or cancel a task |
+| `logplane pause` / `resume` / `supersede` | Pause or resume a task or workflow, or replace a task with new intent |
+| `logplane policy` / `agent-policy` | Set workflow concurrency and budgets, or per-agent limits |
+| `logplane workers` / `doctor` | Check worker leases and overall bus health |
+| `logplane adapter check` / `adapter run` | Verify and run an existing agent as a worker |
+| `logplane backup` / `verify-backup` / `restore` | Verified local backups ([recovery operations](RECOVERY.md)) |
 
-Finite commands accept `--json` for scripts. [Operating agent-bus](docs/operations.md)
+Finite commands accept `--json` for scripts. [Operating logplane](docs/operations.md)
 covers every command, scheduling, fairness, budgets, and controls in detail.
 
 ## Connect your own agent
@@ -245,7 +247,7 @@ Wrap an existing agent instead of rewriting it. A Python object with `run()`
 becomes a worker:
 
 ```python
-from agent_bus import BusClient, Completed, PythonAgentAdapter, WorkerRuntime
+from logplane import BusClient, Completed, PythonAgentAdapter, WorkerRuntime
 
 class ExistingAgent:
     def run(self, assignment):
@@ -269,7 +271,7 @@ WorkerRuntime(
 Check the contract before connecting it to a live bus:
 
 ```sh
-agent-bus adapter check --python-target my_package.agent:ExistingAgent
+logplane adapter check --python-target my_package.agent:ExistingAgent
 ```
 
 CLI and HTTP agents use the same versioned protocol through a small JSON
@@ -283,8 +285,8 @@ HTTP, and real-agent integrations.
 
 | Page | Contents |
 |---|---|
-| [How agent-bus works](docs/architecture.md) | Event log, identities, lifecycle, components, invariants, crash recovery, trust model |
-| [Operating agent-bus](docs/operations.md) | Commands, decisions, retries, cancellation, pauses, DAGs, scheduling, fairness, budgets |
+| [How logplane works](docs/architecture.md) | Event log, identities, lifecycle, components, invariants, crash recovery, trust model |
+| [Operating logplane](docs/operations.md) | Commands, decisions, retries, cancellation, pauses, DAGs, scheduling, fairness, budgets |
 | [Integrating agents](docs/integration.md) | Python, CLI, and HTTP adapters, safety contract, telemetry, adoption modes |
 | [Event contracts and the HTTP API](docs/events.md) | Envelope, topics, limits, reading and publishing events |
 | [Local recovery operations](RECOVERY.md) | Artifact audits, backup and restore, task-index rebuilds, PM snapshots |
@@ -293,9 +295,9 @@ HTTP, and real-agent integrations.
 
 ## Trust and scope
 
-agent-bus is for local, single-user orchestration on one trusted host:
+logplane is for local, single-user orchestration on one trusted host:
 
-- **Perimeter auth is opt-in.** Set `AGENT_BUS_TOKEN` to require a bearer token
+- **Perimeter auth is opt-in.** Set `LOGPLANE_TOKEN` to require a bearer token
   on every data route; without it, anyone who can reach the port can publish.
 - **Actors are self-reported.** The token authenticates clients, not
   identities, so any authorized client may publish as any actor, including
@@ -321,7 +323,10 @@ the full pre-release procedure.
 
 ## Status and license
 
-Current release: **v0.12.0**, demonstrations and operator ergonomics. See the
+logplane was called agent-bus before v0.13.0; if you used it under that name,
+follow the [migration steps](RELEASE_NOTES.md#migrating-from-agent-bus).
+
+Current release: **v0.13.0**, the rename to logplane and a `src/` layout. See the
 [release notes](RELEASE_NOTES.md) and the [roadmap](ROADMAP.md) for the path to
 v1.0. Licensed under the [MIT License](LICENSE). Copyright (c) 2026 deki. See
 [credits and acknowledgements](CONTRIBUTORS.md).
