@@ -25,16 +25,17 @@ import venv
 IMPORT_PROBE = """
 import hashlib, importlib, importlib.metadata, json, pathlib, sys
 prefix = pathlib.Path(sys.prefix).resolve()
-modules = ['agent_bus', 'agent_bus.adapters', 'agent_bus.protocol', 'adapter_check',
-           'agent_bus_cli', 'bus', 'client', 'local_config', 'projection_store',
-           'recovery', 'runtime', 'scheduling', 'telemetry', 'operator_controls']
+modules = ['logplane', 'logplane.adapters', 'logplane.protocol', 'logplane.adapter_check',
+           'logplane.cli', 'logplane.bus', 'logplane.client', 'logplane.local_config',
+           'logplane.projection_store', 'logplane.recovery', 'logplane.runtime',
+           'logplane.scheduling', 'logplane.telemetry', 'logplane.operator_controls']
 origins = {}
 for name in modules:
     path = pathlib.Path(importlib.import_module(name).__file__).resolve()
     if not path.is_relative_to(prefix):
         raise RuntimeError(f'{name} imported outside isolated environment: {path}')
     origins[name] = str(path)
-dist = importlib.metadata.distribution('agent-bus')
+dist = importlib.metadata.distribution('logplane')
 assert dist.metadata['License-Expression'] == 'MIT', 'missing MIT SPDX metadata'
 assert dist.metadata['Author'] == 'deki', 'incorrect author metadata'
 assert dist.metadata.get_all('License-File') == ['LICENSE'], 'incorrect license file metadata'
@@ -52,7 +53,7 @@ def clean_environment() -> dict[str, str]:
     """Do not let the developer's bus config or import paths select live work."""
     environment = {
         key: value for key, value in os.environ.items()
-        if not key.startswith(('AGENT_BUS_', 'PYTHON'))
+        if not key.startswith(('LOGPLANE_', 'AGENT_BUS_', 'PYTHON'))
         and key not in {'VIRTUAL_ENV', 'PIP_TARGET', 'PIP_PREFIX', 'PIP_USER'}
     } | {'PYTHONUNBUFFERED': '1', 'PYTHONNOUSERSITE': '1'}
     # Keep package-index proxy configuration, but never proxy this local trial.
@@ -94,7 +95,7 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        with tempfile.TemporaryDirectory(prefix='agent-bus-installed-check-') as tmp:
+        with tempfile.TemporaryDirectory(prefix='logplane-installed-check-') as tmp:
             root = Path(tmp).resolve()
             environment = root / 'venv'
             work = root / 'work'
@@ -130,7 +131,7 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
 
             venv.EnvBuilder(with_pip=True, system_site_packages=False).create(environment)
             python = str(environment / 'bin/python')
-            cli = str(environment / 'bin/agent-bus')
+            cli = str(environment / 'bin/logplane')
             install = [python, '-m', 'pip', 'install', '--disable-pip-version-check', str(wheel)]
             if constraints:
                 install += ['--constraint', str(constraints)]
@@ -145,7 +146,7 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
                 raise AssertionError('installed license differs from source notice')
             report['license_verified'] = True
             version = run('version', [cli, '--version']).strip()
-            if version != f"agent-bus {imports['version']}":
+            if version != f"logplane {imports['version']}":
                 raise AssertionError(f'CLI and wheel version differ: {version}')
             report['version'] = version
             # Exercise the captured released database against installed modules,
@@ -154,7 +155,7 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
             run('released database upgrade', [python, '-I', str(upgrade_test), '-v'])
             report['released_upgrade_verified'] = True
             (work / 'check_example.py').write_text(
-                "from agent_bus import Completed\nclass Agent:\n"
+                "from logplane import Completed\nclass Agent:\n"
                 " def execute(self, assignment):\n"
                 "  print('adapter chatter must not reach JSON')\n"
                 "  return Completed('probe passed')\n", encoding='utf-8')
@@ -174,7 +175,7 @@ def check(wheel: Path, output: Path, constraints: Path | None = None) -> dict:
                 (output / f'{name}.json').write_text(json.dumps(value, indent=2), encoding='utf-8')
             report['adapter_checks_verified'] = True
             run('init', [cli, 'init'])
-            config_path = work / 'agent-bus.local.json'
+            config_path = work / 'logplane.local.json'
             config = json.loads(config_path.read_text())
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
@@ -302,7 +303,7 @@ def main() -> int:
     parser.add_argument('--constraints', type=Path)
     parser.add_argument('--output', type=Path, help='new evidence directory (must not exist)')
     args = parser.parse_args()
-    output = args.output or Path(tempfile.mkdtemp(prefix='agent-bus-release-evidence-')) / 'results'
+    output = args.output or Path(tempfile.mkdtemp(prefix='logplane-release-evidence-')) / 'results'
     try:
         check(args.wheel.resolve(), output.resolve(),
               args.constraints.resolve() if args.constraints else None)

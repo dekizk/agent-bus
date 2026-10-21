@@ -1,1 +1,1 @@
-"""agent-bus test suite."""
+"""logplane test suite."""

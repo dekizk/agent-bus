@@ -10,7 +10,7 @@ import httpx
 
 
 class ObserverClient:
-    """Read agent-bus history without exposing any state-mutating method."""
+    """Read logplane history without exposing any state-mutating method."""
 
     def __init__(
         self,

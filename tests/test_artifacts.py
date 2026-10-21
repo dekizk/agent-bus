@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from artifacts import ArtifactError, ArtifactIntegrityError, ArtifactStore
+from logplane.artifacts import ArtifactError, ArtifactIntegrityError, ArtifactStore
 
 
 class ArtifactStoreTests(unittest.TestCase):

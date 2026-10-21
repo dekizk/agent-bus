@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import httpx
 
-from executors import Blocked, Completed, PermanentFailure, RetryableFailure
-from runtime import RUNTIME_TOPICS, WorkerRuntime
+from logplane.executors import Blocked, Completed, PermanentFailure, RetryableFailure
+from logplane.runtime import RUNTIME_TOPICS, WorkerRuntime
 
 
 def assigned_event(

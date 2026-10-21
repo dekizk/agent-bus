@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from executor_protocol import CURRENT_PROTOCOL_VERSION, outcome_message, parse_outcome_message
-from executors import (
+from logplane.executor_protocol import CURRENT_PROTOCOL_VERSION, outcome_message, parse_outcome_message
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -16,7 +16,7 @@ from executors import (
     json_size,
     outcome_from_dict,
 )
-from limits import MAX_INLINE_RESULT_BYTES
+from logplane.limits import MAX_INLINE_RESULT_BYTES
 
 
 @dataclass(frozen=True)
@@ -55,13 +55,14 @@ class ConformanceReport:
 def probe_assignment() -> AssignmentContext:
     """A probe requesting no external effects; adapters must honor that request."""
     return AssignmentContext(
-        correlation_id="agent-bus-conformance",
+        correlation_id="logplane-conformance",
         task_id=1,
         assignment_id="conformance:task:1:attempt:1",
         assignment_event_id=1,
         attempt=1,
         goal="Validate the adapter contract without external side effects",
         context={
+            # Adapters check this key to skip side effects during probes.
             "agent_bus_conformance_probe": True,
             "instructions": "Return a typed outcome; do not perform external side effects.",
         },

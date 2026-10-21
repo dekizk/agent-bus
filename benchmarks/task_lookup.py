@@ -14,9 +14,9 @@ import time
 import tracemalloc
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import bus
-from projection import replay_events
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from logplane import bus
+from logplane.projection import replay_events
 
 
 def measure(fn, repeats):
@@ -31,7 +31,7 @@ def measure(fn, repeats):
 def run(size, repeats):
     original = bus.DB_PATH
     try:
-        with tempfile.TemporaryDirectory(prefix="agent-bus-benchmark-") as directory:
+        with tempfile.TemporaryDirectory(prefix="logplane-benchmark-") as directory:
             bus.DB_PATH = Path(directory) / "events.db"
             bus.init_db()
             with bus.db() as conn:

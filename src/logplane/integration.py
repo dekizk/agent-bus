@@ -16,14 +16,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from executor_protocol import (
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     assignment_message,
     cancellation_message,
     parse_outcome_message,
     validate_protocol_version,
 )
-from executors import (
+from logplane.executors import (
     DEFAULT_MAX_PROTOCOL_BYTES,
     AssignmentContext,
     InProcessExecutor,
@@ -305,6 +305,8 @@ class HttpAgentAdapter:
             **self._headers,
             "Content-Type": "application/json",
             "Idempotency-Key": assignment.assignment_id,
+            # Header names are part of the HTTP adapter protocol and keep
+            # their pre-0.13 spelling so existing agents stay compatible.
             "X-Agent-Bus-Assignment-Id": assignment.assignment_id,
             "X-Agent-Bus-Effect-Scope": assignment.effect_scope,
             "X-Agent-Bus-Protocol-Version": str(self.config.protocol_version),

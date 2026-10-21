@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 import unittest
 
-import agent_bus
-import agent_bus_cli
+import logplane
+from logplane import cli as logplane_cli
 from tests.test_cli import FakeObserver
 
 
@@ -15,24 +15,27 @@ BASELINE = json.loads((Path(__file__).parent / 'fixtures/compatibility/v0.11.0.j
 
 class CompatibilityTests(unittest.TestCase):
     def test_released_public_names_remain_importable(self):
-        for module_name, names in BASELINE['exports'].items():
+        # The baseline records the v0.11.0 package name; v0.13.0 renamed the
+        # agent_bus package to logplane without changing its public names.
+        for released_name, names in BASELINE['exports'].items():
+            module_name = 'logplane' + released_name[len('agent_bus'):]
             module = importlib.import_module(module_name)
             self.assertTrue(set(names).issubset(module.__all__), module_name)
             for name in names:
                 self.assertTrue(hasattr(module, name), f'{module_name}.{name}')
 
     def test_released_executor_messages_still_parse(self):
-        assignment = agent_bus.parse_assignment_message(BASELINE['assignment_v1'], 1)
+        assignment = logplane.parse_assignment_message(BASELINE['assignment_v1'], 1)
         self.assertEqual('task:1:attempt:1', assignment['assignment_id'])
         self.assertEqual({'status': 'completed', 'summary': 'done', 'result': {'value': 42}},
-                         agent_bus.parse_outcome_message(BASELINE['outcome_v1'], 1))
+                         logplane.parse_outcome_message(BASELINE['outcome_v1'], 1))
 
     def test_assignment_fields_and_effect_identity_do_not_silently_change(self):
-        assignment = agent_bus.AssignmentContext(
+        assignment = logplane.AssignmentContext(
             correlation_id='compat-flow', task_id=1, assignment_id='task:1:attempt:1',
             assignment_event_id=2, attempt=1, goal='Compatibility probe',
             assignee='example', worker_instance_id='instance-1')
-        message = agent_bus.assignment_message(assignment.to_dict(), 1)
+        message = logplane.assignment_message(assignment.to_dict(), 1)
         self.assertEqual(BASELINE['assignment_v1']['protocol'], message['protocol'])
         for key, value in BASELINE['assignment_v1']['assignment'].items():
             self.assertEqual(value, message['assignment'][key], key)
@@ -42,7 +45,7 @@ class CompatibilityTests(unittest.TestCase):
                                (['task', '9999', '--json'], 3),
                                (['workflow', 'flow-1', '--json', '--mermaid'], 2)]:
             stdout, stderr = io.StringIO(), io.StringIO()
-            code = agent_bus_cli.main(args, stdout=stdout, stderr=stderr,
+            code = logplane_cli.main(args, stdout=stdout, stderr=stderr,
                                       clock=lambda: 101, client_factory=FakeObserver,
                                       local_config_path='/nonexistent/compatibility-config.json')
             self.assertEqual(expected, code)

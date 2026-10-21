@@ -1,8 +1,8 @@
-"""Wire ExistingAgent to agent-bus without changing its core logic."""
+"""Wire ExistingAgent to logplane without changing its core logic."""
 
 import os
 
-from agent_bus import BusClient, PythonAgentAdapter, WorkerRuntime
+from logplane import BusClient, PythonAgentAdapter, WorkerRuntime
 
 from examples.python_agent.agent import ExistingAgent
 
@@ -11,7 +11,7 @@ def main():
     name = "minimal-python-agent"
     runtime = WorkerRuntime(
         BusClient(
-            os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765"),
+            os.environ.get("LOGPLANE_URL", "http://127.0.0.1:8765"),
             actor=name,
         ),
         name=name,

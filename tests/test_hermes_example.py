@@ -10,8 +10,8 @@ from unittest.mock import ANY, Mock, patch
 
 from examples.hermes.hermes_executor import HermesExecutor
 from examples.hermes import live_smoke, run_worker
-from artifacts import ArtifactStore
-from executors import (
+from logplane.artifacts import ArtifactStore
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -105,7 +105,7 @@ class HermesExecutorTests(unittest.TestCase):
             **overrides,
         )
 
-    def test_all_agent_bus_outcomes_are_supported(self):
+    def test_all_logplane_outcomes_are_supported(self):
         cases = (
             (
                 {"status": "completed", "summary": "done", "result": {"value": 1}},
@@ -151,7 +151,7 @@ class HermesExecutorTests(unittest.TestCase):
         args = recorded["argv"]
         prompt = args[args.index("-z") + 1]
         self.assertIn('"assignment_id": "task:7:attempt:1"', prompt)
-        self.assertIn("agent-bus owns assignment", prompt)
+        self.assertIn("logplane owns assignment", prompt)
         self.assertIn("decisions array contains authoritative human responses", prompt)
         self.assertEqual("clarify", args[args.index("--toolsets") + 1])
         self.assertIn("--safe-mode", args)

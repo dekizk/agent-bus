@@ -1,4 +1,4 @@
-"""Deterministic, read-only operational views over agent-bus history."""
+"""Deterministic, read-only operational views over logplane history."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 from collections import Counter
 from typing import Iterable, Optional
 
-from projection import (
+from logplane.projection import (
     ACTIVE_TASK_STATUSES,
     DEPENDENCY_TERMINAL_STATUSES,
     TASK_TERMINAL_STATUSES,
@@ -34,7 +34,7 @@ def retries_remaining(task: TaskRecord) -> Optional[int]:
 
 def operator_next_action(task: TaskRecord, *, now=None) -> list[str]:
     """Copyable command templates, never automatically executed."""
-    base = ['agent-bus']
+    base = ['logplane']
     if (now is not None and task.deadline_at is not None and now >= task.deadline_at
             and task.status not in TASK_TERMINAL_STATUSES):
         return base + ['explain', str(task.task_id)]
@@ -84,7 +84,7 @@ def discovery_view(state, *, kind, now, lease_seconds, limit=50, after_task_id=0
                        assignment_id=task.assignment_id, reason=task.block_reason,
                        response_allowed=task.deadline_at is None or now < task.deadline_at)
             if not row['response_allowed']:
-                row['next_action'] = ['agent-bus', 'explain', str(task.task_id)]
+                row['next_action'] = ['logplane', 'explain', str(task.task_id)]
         rows.append(row)
     return {kind: rows, 'next_after_task_id': rows[-1]['task_id'] if len(candidates) > limit else None}
 

@@ -2,11 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import bus
-from artifacts import ArtifactStore
-from executors import AssignmentContext
-from telemetry import BusTelemetrySink, ProducerIdentity
-from topics import COORDINATION_TOPICS, TELEMETRY_TOPICS
+from logplane import bus
+from logplane.artifacts import ArtifactStore
+from logplane.executors import AssignmentContext
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity
+from logplane.topics import COORDINATION_TOPICS, TELEMETRY_TOPICS
 
 
 def assignment(**overrides) -> AssignmentContext:

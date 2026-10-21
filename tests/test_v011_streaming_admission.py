@@ -1,10 +1,10 @@
 import unittest
 
 import httpx
-import bus
-from client import BusClient, BusProtocolError
-from runtime import WorkerRuntime
-from projection import PMState, apply_event
+from logplane import bus
+from logplane.client import BusClient, BusProtocolError
+from logplane.runtime import WorkerRuntime
+from logplane.projection import PMState, apply_event
 from tests.test_pm_agent import registered, created, assigned
 from tests.test_v010_admission import PollingWorkerBus, RecordingExecutor
 from tests import test_v010_phase3_accounting as accounting

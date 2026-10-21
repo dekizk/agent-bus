@@ -1,10 +1,10 @@
-"""Stable public integration SDK for agent-bus.
+"""Stable public integration SDK for logplane.
 
 Application code should prefer imports from this package. The repository's
 flat modules remain available for backward compatibility with pre-v0.9 users.
 """
 
-from adoption import (
+from logplane.adoption import (
     AdoptionBridge,
     AdoptionMode,
     CanarySelector,
@@ -13,20 +13,20 @@ from adoption import (
     OwnershipDecision,
     decide_ownership,
 )
-from artifacts import (
+from logplane.artifacts import (
     ArtifactError,
     ArtifactIntegrityError,
     ArtifactStore,
     validate_artifact_ref,
 )
-from client import BusClient, BusProtocolError
-from conformance import (
+from logplane.client import BusClient, BusProtocolError
+from logplane.conformance import (
     ConformanceCheck,
     ConformanceReport,
     check_executor,
     probe_assignment,
 )
-from executor_protocol import (
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     PROTOCOL_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -36,7 +36,7 @@ from executor_protocol import (
     parse_assignment_message,
     parse_outcome_message,
 )
-from executors import (
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -45,7 +45,7 @@ from executors import (
     PermanentFailure,
     RetryableFailure,
 )
-from integration import (
+from logplane.integration import (
     CliAgentAdapter,
     CliAgentConfig,
     HttpAgentAdapter,
@@ -54,13 +54,13 @@ from integration import (
     PythonAgentAdapter,
     load_python_target,
 )
-from runtime import WorkerRuntime
-from scheduling import (
+from logplane.runtime import WorkerRuntime
+from logplane.scheduling import (
     DEFAULT_TASK_PRIORITY,
     TASK_PRIORITY_CLASSES,
     validate_task_priority,
 )
-from telemetry import BusTelemetrySink, ProducerIdentity, TelemetrySink
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity, TelemetrySink
 
 
 __all__ = [

@@ -9,10 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-import bus
-from agent_bus_cli import main
-from local_config import initialize_local_config, LocalConfig
-from projection import replay_events
+from logplane import bus
+from logplane.cli import main
+from logplane.local_config import initialize_local_config, LocalConfig
+from logplane.projection import replay_events
 
 
 class TaskIndexTests(unittest.TestCase):
@@ -106,11 +106,11 @@ class TaskIndexTests(unittest.TestCase):
         before = self.rows("task_identity")
         result = subprocess.run([
             sys.executable, "-c",
-            "import os, sys, bus; from pathlib import Path; "
-            "bus.DB_PATH=Path(sys.argv[1]); "
-            "bus._backfill_task_identity=lambda conn: os._exit(77); "
-            "bus.rebuild_task_index()", str(bus.DB_PATH),
-        ], cwd=Path(bus.__file__).parent, capture_output=True, timeout=10)
+            "import os, sys; import logplane.bus; from pathlib import Path; "
+            "logplane.bus.DB_PATH=Path(sys.argv[1]); "
+            "logplane.bus._backfill_task_identity=lambda conn: os._exit(77); "
+            "logplane.bus.rebuild_task_index()", str(bus.DB_PATH),
+        ], cwd=Path(bus.__file__).parents[1], capture_output=True, timeout=10)
         self.assertEqual(77, result.returncode, result.stderr)
         bus.init_db()
         self.assertEqual(before, self.rows("task_identity"))

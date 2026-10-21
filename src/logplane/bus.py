@@ -1,5 +1,5 @@
 """
-agent-bus: an append-only event bus for local multi-agent orchestration.
+logplane: an append-only event bus for local multi-agent orchestration.
 
 Events are immutable SQLite rows. Consumers rebuild state by replaying the log,
 then follow the same ordered stream over SSE. Versioned contracts protect known
@@ -26,7 +26,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from limits import (
+from logplane.legacy import check_legacy_environment
+from logplane.limits import (
     MAX_ARTIFACT_BYTES,
     MAX_TELEMETRY_ARTIFACT_REFS,
     MAX_TELEMETRY_OBJECT_BYTES,
@@ -35,35 +36,39 @@ from limits import (
     MAX_INLINE_RESULT_BYTES,
     MAX_TASK_DEPENDENCIES,
 )
-from scheduling import DEFAULT_TASK_PRIORITY, validate_task_priority
-from topics import KNOWN_TOPICS, TELEMETRY_TOPICS
-from version import VERSION
+from logplane.scheduling import DEFAULT_TASK_PRIORITY, validate_task_priority
+from logplane.topics import KNOWN_TOPICS, TELEMETRY_TOPICS
+from logplane.version import VERSION
 
-DB_PATH = Path(os.environ.get("AGENT_BUS_DB_PATH", Path.cwd() / "events.db"))
+DB_PATH = Path(os.environ.get("LOGPLANE_DB_PATH", Path.cwd() / "events.db"))
 CURRENT_SCHEMA_VERSION = 2
 MAX_CORRELATION_ID_LENGTH = 128
 MAX_PRODUCER_FIELD_LENGTH = 128
 
 
 def _read_default_max_retries() -> int:
-    raw_value = os.environ.get("AGENT_BUS_MAX_RETRIES", "2")
+    raw_value = os.environ.get("LOGPLANE_MAX_RETRIES", "2")
     try:
         value = int(raw_value)
     except ValueError as exc:
         raise RuntimeError(
-            "AGENT_BUS_MAX_RETRIES must be a non-negative integer"
+            "LOGPLANE_MAX_RETRIES must be a non-negative integer"
         ) from exc
     if value < 0:
-        raise RuntimeError("AGENT_BUS_MAX_RETRIES must be a non-negative integer")
+        raise RuntimeError("LOGPLANE_MAX_RETRIES must be a non-negative integer")
     return value
 
 
 DEFAULT_MAX_RETRIES = _read_default_max_retries()
 
-# Optional perimeter auth: when AGENT_BUS_TOKEN is set, every data route
+# Refuse to start with pre-0.13 AGENT_BUS_* settings: an ignored
+# AGENT_BUS_TOKEN would otherwise leave the bus unauthenticated.
+check_legacy_environment()
+
+# Optional perimeter auth: when LOGPLANE_TOKEN is set, every data route
 # requires "Authorization: Bearer <token>". Actor strings are still
 # self-reported — this authenticates clients, not identities.
-API_TOKEN = os.environ.get("AGENT_BUS_TOKEN")
+API_TOKEN = os.environ.get("LOGPLANE_TOKEN")
 
 
 async def require_token(request: Request) -> None:
@@ -1910,7 +1915,7 @@ _shutting_down = False
 def begin_shutdown() -> None:
     """Ask open event streams to finish so the server can stop promptly.
 
-    Called by `agent-bus serve` when it receives a stop signal. Clients see
+    Called by `logplane serve` when it receives a stop signal. Clients see
     the stream end and reconnect with their normal backoff.
     """
     global _shutting_down
@@ -1927,7 +1932,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="agent-bus", version=VERSION, lifespan=lifespan)
+app = FastAPI(title="logplane", version=VERSION, lifespan=lifespan)
 
 
 class PublishRequest(BaseModel):

@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from executors import (
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -193,7 +193,7 @@ class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
 
     def test_process_creation_failure_is_reported_as_start_failure(self):
         executor = SubprocessExecutor(["missing-agent"])
-        with patch("executors.subprocess.Popen", side_effect=OSError("missing")):
+        with patch("logplane.executors.subprocess.Popen", side_effect=OSError("missing")):
             result = executor.execute(assignment())
         self.assertIsInstance(result, PermanentFailure)
         self.assertEqual("subprocess_start_failed", result.code)
@@ -233,7 +233,7 @@ class SubprocessConformanceTests(ExecutorConformanceMixin, unittest.TestCase):
                 self.returncode = -9
 
         executor = SubprocessExecutor(["agent"])
-        with patch("executors.subprocess.Popen", return_value=StartedProcess()):
+        with patch("logplane.executors.subprocess.Popen", return_value=StartedProcess()):
             result = executor.execute(assignment())
         self.assertIsInstance(result, RetryableFailure)
         self.assertEqual("subprocess_io_failed", result.code)

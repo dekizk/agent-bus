@@ -13,7 +13,7 @@ from typing import Mapping
 
 from fastapi import FastAPI, Header, HTTPException
 
-from executor_protocol import (
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     PROTOCOL_NAME,
     outcome_message,
@@ -21,7 +21,7 @@ from executor_protocol import (
 )
 
 
-app = FastAPI(title="agent-bus HTTP agent example")
+app = FastAPI(title="logplane HTTP agent example")
 
 
 class _ExampleState:

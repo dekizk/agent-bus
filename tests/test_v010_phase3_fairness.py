@@ -2,10 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import bus
-from operations import explain_task, task_view, workflow_view
-from pm_agent import OrderedProjectionCursor, PM_TOPICS, PMState, reconcile
-from projection import apply_event, replay_events
+from logplane import bus
+from logplane.operations import explain_task, task_view, workflow_view
+from logplane.pm_agent import OrderedProjectionCursor, PM_TOPICS, PMState, reconcile
+from logplane.projection import apply_event, replay_events
 
 
 class DirectPMBus:

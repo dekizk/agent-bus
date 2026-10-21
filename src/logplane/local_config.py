@@ -1,4 +1,4 @@
-"""Local onboarding configuration shared by agent-bus process commands."""
+"""Local onboarding configuration shared by logplane process commands."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Mapping, Optional
 
 
 LOCAL_CONFIG_VERSION = 1
-DEFAULT_LOCAL_CONFIG = "agent-bus.local.json"
+DEFAULT_LOCAL_CONFIG = "logplane.local.json"
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,13 @@ class LocalConfig:
         try:
             value = json.loads(config_path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
+            from logplane.legacy import legacy_config_hint
+
+            hint = legacy_config_hint(config_path)
+            if hint:
+                raise ValueError(f"local config not found: {config_path}; {hint}") from exc
             raise ValueError(
-                f"local config not found: {config_path}; run agent-bus init first"
+                f"local config not found: {config_path}; run logplane init first"
             ) from exc
         except json.JSONDecodeError as exc:
             raise ValueError(f"local config is not valid JSON: {exc}") from exc
@@ -178,28 +183,28 @@ class LocalConfig:
 
     def apply_environment(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        os.environ["AGENT_BUS_URL"] = self.bus_url
-        os.environ["AGENT_BUS_DB_PATH"] = str(self.database_path)
-        os.environ["AGENT_BUS_WORKER_LEASE_SECONDS"] = str(self.worker_lease_seconds)
-        os.environ["AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"] = (
+        os.environ["LOGPLANE_URL"] = self.bus_url
+        os.environ["LOGPLANE_DB_PATH"] = str(self.database_path)
+        os.environ["LOGPLANE_WORKER_LEASE_SECONDS"] = str(self.worker_lease_seconds)
+        os.environ["LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"] = (
             str(self.default_workflow_max_active_assignments)
             if self.default_workflow_max_active_assignments is not None
             else "unbounded"
         )
         optional_values = {
-            "AGENT_BUS_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS": (
+            "LOGPLANE_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS": (
                 self.default_agent_max_active_assignments
             ),
-            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS": (
+            "LOGPLANE_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS": (
                 self.default_workflow_max_total_tokens
             ),
-            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD": (
+            "LOGPLANE_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD": (
                 self.default_workflow_max_total_cost_usd
             ),
-            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ATTEMPTS": (
+            "LOGPLANE_DEFAULT_WORKFLOW_MAX_ATTEMPTS": (
                 self.default_workflow_max_attempts
             ),
-            "AGENT_BUS_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS": (
+            "LOGPLANE_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS": (
                 self.default_workflow_max_wall_clock_seconds
             ),
         }
@@ -208,10 +213,10 @@ class LocalConfig:
                 str(configured) if configured is not None else "unbounded"
             )
         os.environ[
-            "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT"
+            "LOGPLANE_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT"
         ] = str(self.default_workflow_reserve_tokens_per_assignment)
         os.environ[
-            "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT"
+            "LOGPLANE_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT"
         ] = str(self.default_workflow_reserve_cost_usd_per_assignment)
 
 
@@ -224,7 +229,7 @@ def initialize_local_config(directory: str | Path) -> Path:
         "bus": {
             "host": "127.0.0.1",
             "port": 8765,
-            "database_path": ".agent-bus/events.db",
+            "database_path": ".logplane/events.db",
         },
         "worker_lease_seconds": 20,
         "default_workflow_max_active_assignments": 4,
@@ -242,5 +247,5 @@ def initialize_local_config(directory: str | Path) -> Path:
             target.write(encoded)
     except FileExistsError as exc:
         raise ValueError(f"refusing to overwrite existing local config: {path}") from exc
-    (root / ".agent-bus").mkdir(exist_ok=True)
+    (root / ".logplane").mkdir(exist_ok=True)
     return path

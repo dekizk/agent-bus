@@ -4,8 +4,8 @@ from __future__ import annotations
 import copy
 import json
 
-from operations import ProjectionLookupError
-from projection import PMState, PROJECTION_TOPICS, apply_event
+from logplane.operations import ProjectionLookupError
+from logplane.projection import PMState, PROJECTION_TOPICS, apply_event
 
 
 def canonical(value):
@@ -96,6 +96,6 @@ def intervene(observer, publish, *, command, task_id, reason=None, anchor=None,
         duplicate = False
     return {'recorded': True, 'accepted': bool(accepted), 'duplicate': duplicate,
             'event': event, 'observed_through_id': head, 'task_status': task.status,
-            'next_action': ['agent-bus', 'task', str(task_id)],
+            'next_action': ['logplane', 'task', str(task_id)],
             'message': ('Intent accepted by ordered replay; inspect the task for subsequent PM progress.'
                         if accepted else 'Intent remains in history but replay rejected it as stale or inapplicable.')}

@@ -1,4 +1,4 @@
-"""Blocking client library for agent-bus."""
+"""Blocking client library for logplane."""
 
 import fcntl
 import hashlib
@@ -34,7 +34,7 @@ class BusClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.actor = actor
-        token = token if token is not None else os.environ.get("AGENT_BUS_TOKEN")
+        token = token if token is not None else os.environ.get("LOGPLANE_TOKEN")
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         offset_dir.mkdir(parents=True, exist_ok=True)
         consumer_name = offset_name or actor

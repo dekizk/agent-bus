@@ -1,6 +1,6 @@
 """An ordinary Python agent whose core logic knows nothing about the bus."""
 
-from agent_bus import Completed
+from logplane import Completed
 
 
 class ExistingAgent:

@@ -1,9 +1,9 @@
 import json
 import unittest
 
-import pm_agent
-import projection
-from operations import (
+from logplane import pm_agent
+from logplane import projection
+from logplane.operations import (
     ProjectionLookupError,
     build_projection,
     explain_task,
@@ -12,7 +12,7 @@ from operations import (
     worker_views,
     workflow_view,
 )
-from projection import CoordinationProjection, TaskRecord, WorkerRecord
+from logplane.projection import CoordinationProjection, TaskRecord, WorkerRecord
 
 
 def event(event_id, topic, actor, payload, *, ts=100.0, caused_by=None, correlation_id="flow-1"):

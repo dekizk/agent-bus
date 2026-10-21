@@ -86,7 +86,7 @@ def run_adapter_check(*, python_target: str | None = None,
     Library callers with already-created executors still use the synchronous
     conformance.check_executor(). This internal helper loads CLI targets afresh.
     """
-    from conformance import ConformanceCheck, ConformanceReport
+    from logplane.conformance import ConformanceCheck, ConformanceReport
 
     if bool(python_target) == bool(integration_config):
         raise ValueError('choose exactly one Python target or integration config')
@@ -102,9 +102,9 @@ def run_adapter_check(*, python_target: str | None = None,
     main_thread = threading.current_thread() is threading.main_thread()
     previous = signal.getsignal(signal.SIGTERM) if main_thread else None
     process = None
-    with tempfile.TemporaryDirectory(prefix='agent-bus-adapter-check-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='logplane-adapter-check-') as tmp:
         report_path = Path(tmp) / 'report.json'
-        args = [sys.executable, str(Path(__file__).resolve()), '--report', str(report_path)]
+        args = [sys.executable, '-m', 'logplane.adapter_check', '--report', str(report_path)]
         # Resolve/read the adapter configuration only in the timed child.
         args += (['--python-target', python_target] if python_target
                  else ['--config', str(integration_config)])
@@ -175,8 +175,8 @@ def run_adapter_check(*, python_target: str | None = None,
 def _child(args) -> None:
     # All adapter-controlled hooks, including imports and constructors, stay
     # within this process and therefore within the parent's deadline.
-    from conformance import check_executor
-    from integration import IntegrationConfig, PythonAgentAdapter, load_python_target
+    from logplane.conformance import check_executor
+    from logplane.integration import IntegrationConfig, PythonAgentAdapter, load_python_target
 
     try:
         if args.config:

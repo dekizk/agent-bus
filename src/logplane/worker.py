@@ -5,18 +5,19 @@ import os
 import threading
 import time
 
-from client import BusClient
-from executors import (
+from logplane.client import BusClient
+from logplane.legacy import check_legacy_environment
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
     PermanentFailure,
     RetryableFailure,
 )
-from runtime import WorkerRuntime
+from logplane.runtime import WorkerRuntime
 
-BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
-HEARTBEAT_SECONDS = float(os.environ.get("AGENT_BUS_HEARTBEAT_SECONDS", "5"))
+BUS_URL = os.environ.get("LOGPLANE_URL", "http://127.0.0.1:8765")
+HEARTBEAT_SECONDS = float(os.environ.get("LOGPLANE_HEARTBEAT_SECONDS", "5"))
 
 
 class DemoExecutor:
@@ -66,7 +67,7 @@ class DemoExecutor:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a demo agent-bus worker")
+    parser = argparse.ArgumentParser(description="Run a demo logplane worker")
     parser.add_argument("name")
     outcome = parser.add_mutually_exclusive_group()
     outcome.add_argument("--block", type=int, help="block this task once")
@@ -98,6 +99,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    check_legacy_environment()
     args = parse_args()
     executor = DemoExecutor(
         args.name,

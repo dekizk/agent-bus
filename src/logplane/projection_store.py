@@ -15,10 +15,9 @@ from dataclasses import MISSING, dataclass, fields, is_dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import projection
-import scheduling
-import topics
-
+from logplane import projection
+from logplane import scheduling
+from logplane import topics
 FORMAT_VERSION = 1
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 RECORDS = {cls.__name__: cls for cls in (

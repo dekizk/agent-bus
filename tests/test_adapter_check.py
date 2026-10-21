@@ -12,8 +12,8 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-import agent_bus_cli
-from adapter_check import run_adapter_check, _stop_group
+from logplane import cli as logplane_cli
+from logplane.adapter_check import run_adapter_check, _stop_group
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,9 +28,9 @@ class GroupCleanupTests(unittest.TestCase):
                     process.poll.return_value = -15
                     signals = ([PermissionError()] if denied_signal == signal.SIGTERM
                                else [None, PermissionError()])
-                    with patch('adapter_check.sys.platform', 'darwin'), \
-                            patch('adapter_check.os.killpg', side_effect=signals) as kill, \
-                            patch('adapter_check.subprocess.run', return_value=
+                    with patch('logplane.adapter_check.sys.platform', 'darwin'), \
+                            patch('logplane.adapter_check.os.killpg', side_effect=signals) as kill, \
+                            patch('logplane.adapter_check.subprocess.run', return_value=
                                   subprocess.CompletedProcess([], 0, listing, '')) as inspect:
                         _stop_group(process)
                     self.assertEqual(denied_signal, kill.call_args.args[1])
@@ -51,9 +51,9 @@ class GroupCleanupTests(unittest.TestCase):
                 process = Mock(pid=123)
                 process.poll.return_value = 0
                 kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
-                with patch('adapter_check.sys.platform', 'darwin'), \
-                        patch('adapter_check.os.killpg', side_effect=PermissionError()), \
-                        patch('adapter_check.subprocess.run', **kwargs):
+                with patch('logplane.adapter_check.sys.platform', 'darwin'), \
+                        patch('logplane.adapter_check.os.killpg', side_effect=PermissionError()), \
+                        patch('logplane.adapter_check.subprocess.run', **kwargs):
                     with self.assertRaisesRegex(PermissionError, 'child processes may remain'):
                         _stop_group(process)
 
@@ -62,9 +62,9 @@ class GroupCleanupTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 process = Mock(pid=123)
                 process.poll.return_value = returncode
-                with patch('adapter_check.sys.platform', platform), \
-                        patch('adapter_check.os.killpg', side_effect=PermissionError()), \
-                        patch('adapter_check.subprocess.run') as inspect:
+                with patch('logplane.adapter_check.sys.platform', platform), \
+                        patch('logplane.adapter_check.os.killpg', side_effect=PermissionError()), \
+                        patch('logplane.adapter_check.subprocess.run') as inspect:
                     with self.assertRaises(PermissionError):
                         _stop_group(process)
                     inspect.assert_not_called()
@@ -88,13 +88,13 @@ class AdapterCheckTests(unittest.TestCase):
         if json_output:
             args.append('--json')
         start = time.monotonic()
-        code = agent_bus_cli.main(args, stdout=out, stderr=err)
+        code = logplane_cli.main(args, stdout=out, stderr=err)
         self.assertLess(time.monotonic() - start, 8, 'probe did not return within bounded cleanup')
         return code, out.getvalue(), err.getvalue()
 
     def test_normal_probe_keeps_stdout_json_clean(self):
         code, out, err = self.invoke(
-            "import sys\nfrom agent_bus import Completed\n"
+            "import sys\nfrom logplane import Completed\n"
             "print('import chatter')\n"
             "class Agent:\n"
             " def execute(self, assignment):\n"
@@ -114,8 +114,8 @@ class AdapterCheckTests(unittest.TestCase):
             'constructor': "import time\nclass Agent:\n def __init__(self): time.sleep(60)\n",
             'execute': "import time\nclass Agent:\n def execute(self,a): time.sleep(60)\n",
             'ignores-term': "import signal,time\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\nclass Agent:\n def execute(self,a): time.sleep(60)\n",
-            'close': "import time\nfrom agent_bus import Completed\nclass Agent:\n def execute(self,a): return Completed('done')\n def close(self): time.sleep(60)\n",
-            'exit': "import time,atexit\nfrom agent_bus import Completed\natexit.register(lambda: time.sleep(60))\nclass Agent:\n def execute(self,a): return Completed('done')\n",
+            'close': "import time\nfrom logplane import Completed\nclass Agent:\n def execute(self,a): return Completed('done')\n def close(self): time.sleep(60)\n",
+            'exit': "import time,atexit\nfrom logplane import Completed\natexit.register(lambda: time.sleep(60))\nclass Agent:\n def execute(self,a): return Completed('done')\n",
         }
         for phase, source in sources.items():
             with self.subTest(phase=phase):
@@ -183,7 +183,7 @@ class AdapterCheckTests(unittest.TestCase):
                  "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
                  "Path('descendant.pid').write_text(str(os.getpid())); time.sleep(60)")
         return (
-            "import subprocess,sys,time\nfrom pathlib import Path\nfrom agent_bus import Completed\n"
+            "import subprocess,sys,time\nfrom pathlib import Path\nfrom logplane import Completed\n"
             "class Agent:\n def execute(self,a):\n"
             f"  subprocess.Popen([sys.executable,'-c',{child!r}])\n"
             "  while not Path('descendant.pid').exists(): time.sleep(.01)\n"
@@ -206,7 +206,7 @@ class AdapterCheckTests(unittest.TestCase):
                 path = self.root / 'descendant.pid'
                 path.unlink(missing_ok=True)
                 proc = subprocess.Popen(
-                    [sys.executable, str(REPO / 'agent_bus_cli.py'), 'adapter', 'check',
+                    [sys.executable, '-m', 'logplane', 'adapter', 'check',
                      '--python-target', 'trial_adapter:Agent', '--timeout', '20'],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
                 try:
@@ -288,7 +288,7 @@ class AdapterCheckTests(unittest.TestCase):
     def test_timeout_validation_rejects_nonpositive_and_nonfinite_values(self):
         for value in ('0','-1','nan','inf'):
             with self.subTest(value=value), self.assertRaises(SystemExit) as error:
-                agent_bus_cli.build_parser().parse_args(
+                logplane_cli.build_parser().parse_args(
                     ['adapter','check','--python-target','x:Agent','--timeout',value])
             self.assertEqual(2, error.exception.code)
 

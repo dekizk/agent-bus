@@ -11,16 +11,16 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import agent_bus
-import agent_bus_cli
-import bus
-from executors import outcome_from_dict
-from observer import ObserverClient
-from operator_controls import intervene
-from pm_agent import plan_next_emission
-from projection import replay_events
-from projection_store import load_projection, save_projection
-from runtime import WorkerRuntime
+import logplane
+from logplane import cli as logplane_cli
+from logplane import bus
+from logplane.executors import outcome_from_dict
+from logplane.observer import ObserverClient
+from logplane.operator_controls import intervene
+from logplane.pm_agent import plan_next_emission
+from logplane.projection import replay_events
+from logplane.projection_store import load_projection, save_projection
+from logplane.runtime import WorkerRuntime
 
 
 FIXTURE = Path(__file__).parent / 'fixtures/compatibility/v0.11.0-upgrade'
@@ -128,7 +128,7 @@ class ReleasedUpgradeTests(unittest.TestCase):
         for case in EXPECTED['cli']:
             with self.subTest(argv=case['argv']):
                 out, err = io.StringIO(), io.StringIO()
-                code = agent_bus_cli.main(case['argv'], stdout=out, stderr=err,
+                code = logplane_cli.main(case['argv'], stdout=out, stderr=err,
                     clock=lambda: 1001.0, client_factory=lambda *a, **k: self.observer,
                     local_config_path=Path(self.temp.name) / 'no-config.json')
                 self.assertEqual(case['exit'], code, err.getvalue())
@@ -145,7 +145,7 @@ class ReleasedUpgradeTests(unittest.TestCase):
                          assigned['payload']['dependency_refs'])
         resolved = WorkerRuntime._resolve_dependency_refs(
             SimpleNamespace(bus=SimpleNamespace(get_event=bus.fetch_event)), assigned)
-        assignment = agent_bus.AssignmentContext.from_event(resolved)
+        assignment = logplane.AssignmentContext.from_event(resolved)
         self.assertEqual(42, assignment.dependencies[0]['result']['value'])
         self.append('task.completed', 'fixture-worker', {'task_id': 2,
             'assignment_id': assignment.assignment_id, 'worker_instance_id': 'release-instance',
@@ -196,14 +196,14 @@ class ReleasedUpgradeTests(unittest.TestCase):
 
     def test_released_assignment_outcome_and_cancellation_wire_contracts(self):
         for case in EXPECTED['assignments']:
-            assignment = agent_bus.AssignmentContext.from_event(bus.fetch_event(case['event_id']))
-            self.assert_additive(case['message'], agent_bus.assignment_message(assignment.to_dict(), 1))
+            assignment = logplane.AssignmentContext.from_event(bus.fetch_event(case['event_id']))
+            self.assert_additive(case['message'], logplane.assignment_message(assignment.to_dict(), 1))
             self.assertEqual(case['effect_id'], assignment.effect_id('publish'))
         for message, typename in zip(EXPECTED['outcomes_v1'], EXPECTED['outcome_types']):
-            decoded = agent_bus.parse_outcome_message(message, 1)
+            decoded = logplane.parse_outcome_message(message, 1)
             self.assertEqual(typename, type(outcome_from_dict(decoded)).__name__)
-            self.assertEqual(message, agent_bus.outcome_message(decoded, 1))
-        self.assertEqual(EXPECTED['cancellation_v1'], agent_bus.cancellation_message('task:7:attempt:1'))
+            self.assertEqual(message, logplane.outcome_message(decoded, 1))
+        self.assertEqual(EXPECTED['cancellation_v1'], logplane.cancellation_message('task:7:attempt:1'))
 
 
 if __name__ == '__main__':

@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import httpx
 
-import bus
-from local_config import initialize_local_config
+from logplane import bus
+from logplane.local_config import initialize_local_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,8 +121,8 @@ def free_port():
 
 
 def serve_environment():
-    environment = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_BUS_")}
-    environment["PYTHONPATH"] = str(ROOT)
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("LOGPLANE_")}
+    environment["PYTHONPATH"] = str(ROOT / "src")
     return environment
 
 
@@ -141,7 +141,7 @@ class ServeStartupFailureTests(unittest.TestCase):
             holder.listen()
             config = config_on_port(directory, holder.getsockname()[1])
             result = subprocess.run(
-                [sys.executable, "-m", "agent_bus_cli", "serve", "--config", str(config)],
+                [sys.executable, "-m", "logplane.cli", "serve", "--config", str(config)],
                 cwd=directory, env=serve_environment(), capture_output=True, text=True,
                 timeout=30,
             )
@@ -159,7 +159,7 @@ class ServeShutdownTests(unittest.TestCase):
             log = Path(directory, "serve.log")
             with log.open("w") as handle:
                 server = subprocess.Popen(
-                    [sys.executable, "-m", "agent_bus_cli", "serve", "--config", str(config)],
+                    [sys.executable, "-m", "logplane.cli", "serve", "--config", str(config)],
                     cwd=directory, env=environment, stdout=handle, stderr=subprocess.STDOUT,
                 )
             try:

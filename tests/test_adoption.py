@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import bus
-from adoption import (
+from logplane import bus
+from logplane.adoption import (
     AdoptionBridge,
     AdoptionMode,
     CanarySelector,
@@ -11,7 +11,7 @@ from adoption import (
     ExternalOrigin,
     decide_ownership,
 )
-from topics import COORDINATION_TOPICS, INTEGRATION_TOPICS
+from logplane.topics import COORDINATION_TOPICS, INTEGRATION_TOPICS
 
 
 class DirectClient:

@@ -3,7 +3,7 @@
 import json
 import sys
 
-from agent_bus import CURRENT_PROTOCOL_VERSION, outcome_message, parse_assignment_message
+from logplane import CURRENT_PROTOCOL_VERSION, outcome_message, parse_assignment_message
 
 
 def main():

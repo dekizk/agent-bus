@@ -7,9 +7,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 
-from artifacts import ArtifactStore
-from executors import AssignmentContext
-from topics import TELEMETRY_TOPICS
+from logplane.artifacts import ArtifactStore
+from logplane.executors import AssignmentContext
+from logplane.topics import TELEMETRY_TOPICS
 
 
 @dataclass(frozen=True)
