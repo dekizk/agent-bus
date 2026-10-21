@@ -5,7 +5,7 @@ crashes, holds risky actions for human approval, and enforces cost caps, and
 it drives all of it from an append-only event log instead of a mutable task
 board.
 
-![logplane demo recovery: a worker and the coordinator are killed mid-task, then a new worker finishes the workflow from the log](docs/demo-recovery.gif)
+![logplane demo recovery: a worker and the coordinator are killed mid-task, then a new worker finishes the workflow from the log](https://raw.githubusercontent.com/dekizk/logplane/main/docs/demo-recovery.gif)
 
 Agent workflows fail in ordinary ways. A worker crashes mid-task, the
 coordinator restarts, two runners pick up the same job, an agent needs a human
@@ -36,14 +36,14 @@ logplane data.
 <details>
 <summary>Watch <code>logplane demo approval</code>: an agent asks before an irreversible tool call</summary>
 
-![logplane demo approval: a support agent blocks before calling issue_refund, a human approves, and the refund runs once](docs/demo-approval.gif)
+![logplane demo approval: a support agent blocks before calling issue_refund, a human approves, and the refund runs once](https://raw.githubusercontent.com/dekizk/logplane/main/docs/demo-approval.gif)
 
 </details>
 
 <details>
 <summary>Watch <code>logplane demo budget</code>: a cost cap stops a runaway bill</summary>
 
-![logplane demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](docs/demo-budget.gif)
+![logplane demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](https://raw.githubusercontent.com/dekizk/logplane/main/docs/demo-budget.gif)
 
 </details>
 
@@ -92,13 +92,13 @@ attempt), and `instance_id` (one worker process). The normal lifecycle is
 `task.created → task.assigned → task.started → task.completed`; recovery,
 human input, cancellation, and pauses are explicit events too.
 
-[How logplane works](docs/architecture.md) covers the full lifecycle,
+[How logplane works](https://github.com/dekizk/logplane/blob/main/docs/architecture.md) covers the full lifecycle,
 components, invariants, crash recovery, and trust model.
 
 ## Install
 
 Use macOS or Linux with Python 3.10+; native Windows is not supported (see the
-[tested-platform policy](COMPATIBILITY.md#supported-deployment-target)).
+[tested-platform policy](https://github.com/dekizk/logplane/blob/main/COMPATIBILITY.md#supported-deployment-target)).
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate   # python3 --version must be 3.10+
@@ -188,7 +188,7 @@ print("PASS: workflow reports one completed task")
 
 If the task is still `assigned` or `started`, wait briefly and check again. If
 `logplane doctor` keeps warning, the PM, worker, or bus is probably using a
-different URL; see [connecting to the bus](docs/operations.md#connecting-to-the-bus).
+different URL; see [connecting to the bus](https://github.com/dekizk/logplane/blob/main/docs/operations.md#connecting-to-the-bus).
 If `logplane` is not found, check that `.venv` is activated in that terminal
 before reinstalling. `logplane tasks` and
 `logplane workflows` find IDs again if you lose them, and
@@ -242,9 +242,9 @@ the task correctly ends `failed`.
 | `logplane policy` / `agent-policy` | Set workflow concurrency and budgets, or per-agent limits |
 | `logplane workers` / `doctor` | Check worker leases and overall bus health |
 | `logplane adapter check` / `adapter run` | Verify and run an existing agent as a worker |
-| `logplane backup` / `verify-backup` / `restore` | Verified local backups ([recovery operations](RECOVERY.md)) |
+| `logplane backup` / `verify-backup` / `restore` | Verified local backups ([recovery operations](https://github.com/dekizk/logplane/blob/main/RECOVERY.md)) |
 
-Finite commands accept `--json` for scripts. [Operating logplane](docs/operations.md)
+Finite commands accept `--json` for scripts. [Operating logplane](https://github.com/dekizk/logplane/blob/main/docs/operations.md)
 covers every command, scheduling, fairness, budgets, and controls in detail.
 
 ## Connect your own agent
@@ -282,22 +282,22 @@ logplane adapter check --python-target my_package.agent:ExistingAgent
 
 CLI and HTTP agents use the same versioned protocol through a small JSON
 config. Use `assignment.effect_id(...)` for any irreversible external effect so
-a retry cannot repeat it. [Integrating agents](docs/integration.md) covers the
+a retry cannot repeat it. [Integrating agents](https://github.com/dekizk/logplane/blob/main/docs/integration.md) covers the
 adapters, the safety contract, telemetry, and safe adoption alongside an
-existing system; [`examples/`](examples/README.md) has copyable Python, CLI,
+existing system; [`examples/`](https://github.com/dekizk/logplane/blob/main/examples/README.md) has copyable Python, CLI,
 HTTP, and real-agent integrations.
 
 ## Documentation
 
 | Page | Contents |
 |---|---|
-| [How logplane works](docs/architecture.md) | Event log, identities, lifecycle, components, invariants, crash recovery, trust model |
-| [Operating logplane](docs/operations.md) | Commands, decisions, retries, cancellation, pauses, DAGs, scheduling, fairness, budgets |
-| [Integrating agents](docs/integration.md) | Python, CLI, and HTTP adapters, safety contract, telemetry, adoption modes |
-| [Event contracts and the HTTP API](docs/events.md) | Envelope, topics, limits, reading and publishing events |
-| [Local recovery operations](RECOVERY.md) | Artifact audits, backup and restore, task-index rebuilds, PM snapshots |
-| [Compatibility and support](COMPATIBILITY.md) | Platforms, versioned surfaces, upgrades, release checks |
-| [Roadmap](ROADMAP.md) and [release notes](RELEASE_NOTES.md) | Direction, remaining v1.0 gates, and what changed in each release |
+| [How logplane works](https://github.com/dekizk/logplane/blob/main/docs/architecture.md) | Event log, identities, lifecycle, components, invariants, crash recovery, trust model |
+| [Operating logplane](https://github.com/dekizk/logplane/blob/main/docs/operations.md) | Commands, decisions, retries, cancellation, pauses, DAGs, scheduling, fairness, budgets |
+| [Integrating agents](https://github.com/dekizk/logplane/blob/main/docs/integration.md) | Python, CLI, and HTTP adapters, safety contract, telemetry, adoption modes |
+| [Event contracts and the HTTP API](https://github.com/dekizk/logplane/blob/main/docs/events.md) | Envelope, topics, limits, reading and publishing events |
+| [Local recovery operations](https://github.com/dekizk/logplane/blob/main/RECOVERY.md) | Artifact audits, backup and restore, task-index rebuilds, PM snapshots |
+| [Compatibility and support](https://github.com/dekizk/logplane/blob/main/COMPATIBILITY.md) | Platforms, versioned surfaces, upgrades, release checks |
+| [Roadmap](https://github.com/dekizk/logplane/blob/main/ROADMAP.md) and [release notes](https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md) | Direction, remaining v1.0 gates, and what changed in each release |
 
 ## Trust and scope
 
@@ -311,7 +311,7 @@ logplane is for local, single-user orchestration on one trusted host:
 - **It is not distributed.** Run one PM per bus and one uvicorn worker; the PM
   lock is per machine and event wake-ups are per process.
 
-See the [trust model and scope](docs/architecture.md#trust-model) for details.
+See the [trust model and scope](https://github.com/dekizk/logplane/blob/main/docs/architecture.md#trust-model) for details.
 
 ## Development
 
@@ -324,15 +324,15 @@ python -m build
 The suite focuses on orchestration failures (restarts, stale attempts, retry
 exhaustion, races, DAG propagation, adapter contracts, telemetry isolation)
 and includes live runs of every demo. See
-[running the release checks](COMPATIBILITY.md#running-the-release-checks) for
+[running the release checks](https://github.com/dekizk/logplane/blob/main/COMPATIBILITY.md#running-the-release-checks) for
 the full pre-release procedure.
 
 ## Status and license
 
 logplane was called agent-bus before v0.13.0; if you used it under that name,
-follow the [migration steps](RELEASE_NOTES.md#migrating-from-agent-bus).
+follow the [migration steps](https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md#migrating-from-agent-bus).
 
-Current release: **v0.13.0**, the rename to logplane and a `src/` layout. See the
-[release notes](RELEASE_NOTES.md) and the [roadmap](ROADMAP.md) for the path to
-v1.0. Licensed under the [MIT License](LICENSE). Copyright (c) 2026 deki. See
-[credits and acknowledgements](CONTRIBUTORS.md).
+Current release: **v0.13.1**, the rename to logplane and a `src/` layout. See the
+[release notes](https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md) and the [roadmap](https://github.com/dekizk/logplane/blob/main/ROADMAP.md) for the path to
+v1.0. Licensed under the [MIT License](https://github.com/dekizk/logplane/blob/main/LICENSE). Copyright (c) 2026 deki. See
+[credits and acknowledgements](https://github.com/dekizk/logplane/blob/main/CONTRIBUTORS.md).

@@ -1,5 +1,15 @@
 # Release notes
 
+## v0.13.1 — 2026-10-21
+
+Fixes the project page on PyPI. No code changes.
+
+- README images and links use absolute GitHub URLs, so the demo animations
+  and documentation links work on pypi.org as well as on GitHub. A test keeps
+  relative links out of the README.
+- The PyPI description now shows the `pip install logplane` instructions;
+  v0.13.0's still said to install from a clone.
+
 ## v0.13.0 — 2026-10-21
 
 agent-bus is now **logplane**, and the code moves to a `src/` layout. This is
