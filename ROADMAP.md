@@ -575,7 +575,7 @@ The current retention promise is safe reachability reporting, not automatic GC.
 - [x] move every module into `src/logplane/`;
 - [x] keep stored and wire identifiers (`agent-bus` owner, effect salts,
   protocol name, HTTP headers, probe key, backup kinds) unchanged;
-- [ ] publish `logplane` to PyPI through trusted publishing.
+- [x] publish `logplane` to PyPI through trusted publishing.
 
 ## v0.12 — demonstrations and operator ergonomics
 

@@ -18,9 +18,8 @@ nothing and every state can be explained.
 ### See it in a minute
 
 ```sh
-git clone https://github.com/dekizk/logplane.git && cd logplane
 python3 -m venv .venv && . .venv/bin/activate   # Python 3.10+
-python -m pip install -e .
+python -m pip install logplane
 
 logplane demo recovery       # kill the worker and the coordinator mid-task
 logplane demo approval       # an agent asks before an irreversible tool call
@@ -102,26 +101,33 @@ Use macOS or Linux with Python 3.10+; native Windows is not supported (see the
 [tested-platform policy](COMPATIBILITY.md#supported-deployment-target)).
 
 ```sh
-git clone --branch v0.13.0 https://github.com/dekizk/logplane.git
-cd logplane
 python3 -m venv .venv && . .venv/bin/activate   # python3 --version must be 3.10+
-python -m pip install -e .
+python -m pip install logplane
 logplane init
 ```
 
-Use `--branch main` instead for the latest development version, and follow
-the README for the version you installed. If you already have a checkout, use
-it rather than cloning over it, and record `git rev-parse HEAD` when reporting
-trial results. Create the environment in `.venv`, not in the repository root.
-If your default `python3` is older than 3.10, create `.venv` with a supported
-interpreter such as `python3.11`. The editable install keeps this checkout as
-the source of the `logplane` command, so after pulling changes that add
-modules (for example `demo.py`), rerun `python -m pip install -e .`. logplane is not yet
-published on PyPI.
+`logplane init` writes `logplane.local.json` and a `.logplane/` data directory
+in the current directory, so run it in the folder that should keep the bus's
+history. If your default `python3` is older than 3.10, create `.venv` with a
+supported interpreter such as `python3.11`.
+
+To run the examples or work on logplane itself, install from source instead:
+
+```sh
+git clone https://github.com/dekizk/logplane.git && cd logplane
+python3 -m venv .venv && . .venv/bin/activate
+python -m pip install -e .
+```
+
+Create the environment in `.venv`, not in the repository root. The editable
+install keeps this checkout as the source of the `logplane` command, so rerun
+`python -m pip install -e .` after pulling changes that add modules. Record
+`git rev-parse HEAD` when reporting trial results.
 
 ## Run your own bus
 
-Run these in four terminals from the checkout, with `.venv` activated in each.
+Run these in four terminals from the folder where you ran `logplane init`,
+with `.venv` activated in each.
 The generated configuration binds only to loopback and keeps runtime data in
 the ignored `.logplane/` directory.
 
@@ -183,8 +189,8 @@ print("PASS: workflow reports one completed task")
 If the task is still `assigned` or `started`, wait briefly and check again. If
 `logplane doctor` keeps warning, the PM, worker, or bus is probably using a
 different URL; see [connecting to the bus](docs/operations.md#connecting-to-the-bus).
-If `logplane` is not found, check that the terminal is in the checkout with
-`.venv` activated before reinstalling. `logplane tasks` and
+If `logplane` is not found, check that `.venv` is activated in that terminal
+before reinstalling. `logplane tasks` and
 `logplane workflows` find IDs again if you lose them, and
 `logplane workflow "$CORRELATION_ID" --mermaid` prints the workflow as a
 Mermaid flowchart: another projection over the log, never an editable board.

@@ -9,7 +9,7 @@ format changes, and existing history replays unchanged.
 ### Changes
 
 - The PyPI distribution, import package, and command are `logplane`.
-  `pip install logplane` (once published), `import logplane`, and
+  `pip install logplane`, `import logplane`, and
   `logplane demo recovery` replace their agent-bus equivalents.
 - All implementation modules live in `src/logplane/` and import as
   `logplane.<module>` (for example `logplane.bus`, `logplane.cli`). The flat
@@ -44,9 +44,9 @@ adapters, so they keep their original spelling:
 ### Migrating from agent-bus
 
 1. Stop the bus, PM, and workers.
-2. Reinstall from the new name: `python -m pip uninstall agent-bus` and then
-   `python -m pip install -e .` in an updated checkout (or
-   `pip install logplane` once it is on PyPI).
+2. Reinstall under the new name: `python -m pip uninstall agent-bus`, then
+   `python -m pip install logplane` (or `python -m pip install -e .` in an
+   updated checkout).
 3. Rename `agent-bus.local.json` to `logplane.local.json`. Its
    `database_path` can keep pointing at `.agent-bus/events.db`; to tidy up,
    move that directory to `.logplane/` and update the path.
