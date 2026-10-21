@@ -3,9 +3,9 @@ requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-bus"
+name = "logplane"
 dynamic = ["version"]
-description = "Local, event-driven orchestration and operations for interchangeable agents"
+description = "A local control plane for AI agents, built on an append-only event log"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -18,41 +18,35 @@ dependencies = [
     "uvicorn>=0.30,<1",
 ]
 
-[project.scripts]
-agent-bus = "agent_bus_cli:main"
-
-[tool.setuptools]
-py-modules = [
-    "adapter_check",
-    "adoption",
-    "agent_bus_cli",
-    "artifacts",
-    "bus",
-    "client",
-    "conformance",
-    "demo",
-    "executor_protocol",
-    "executors",
-    "integration",
-    "limits",
-    "local_config",
-    "observer",
-    "operations",
-    "operator_controls",
-    "pm_agent",
-    "projection",
-    "projection_store",
-    "recovery",
-    "runtime",
-    "scheduling",
-    "telemetry",
-    "topics",
-    "version",
-    "worker",
+keywords = ["ai-agents", "orchestration", "control-plane", "event-sourcing", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 
+[project.urls]
+Homepage = "https://github.com/dekizk/logplane"
+Documentation = "https://github.com/dekizk/logplane#documentation"
+Changelog = "https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md"
+Issues = "https://github.com/dekizk/logplane/issues"
+
+[project.scripts]
+logplane = "logplane.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
-include = ["agent_bus*"]
+where = ["src"]
+include = ["logplane*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "version.VERSION"}
+version = {attr = "logplane.version.VERSION"}
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]

@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import agent_bus_cli
-import bus
-from local_config import LocalConfig, initialize_local_config
-from operations import explain_task, workflow_view
-from pm_agent import OrderedProjectionCursor, PM_TOPICS, PMState, reconcile
-from projection import replay_events
+from logplane import cli as logplane_cli
+from logplane import bus
+from logplane.local_config import LocalConfig, initialize_local_config
+from logplane.operations import explain_task, workflow_view
+from logplane.pm_agent import OrderedProjectionCursor, PM_TOPICS, PMState, reconcile
+from logplane.projection import replay_events
 
 
 class DirectPMBus:
@@ -397,7 +397,7 @@ class WorkflowPolicyLocalSurfaceTests(unittest.TestCase):
                 self.assertEqual(
                     "4",
                     os.environ[
-                        "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"
+                        "LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"
                     ],
                 )
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -410,7 +410,7 @@ class WorkflowPolicyLocalSurfaceTests(unittest.TestCase):
                 self.assertEqual(
                     "unbounded",
                     os.environ[
-                        "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"
+                        "LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS"
                     ],
                 )
 
@@ -423,11 +423,11 @@ class WorkflowPolicyLocalSurfaceTests(unittest.TestCase):
                 "correlation_id": "flow",
                 "payload": {"max_active_assignments": 2},
             }
-            with patch("client.BusClient") as client_type:
+            with patch("logplane.client.BusClient") as client_type:
                 client_type.return_value.set_workflow_policy.return_value = event
                 stdout = io.StringIO()
                 stderr = io.StringIO()
-                code = agent_bus_cli.main(
+                code = logplane_cli.main(
                     [
                         "policy",
                         "flow",

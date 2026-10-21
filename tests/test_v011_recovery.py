@@ -7,11 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import bus
-from artifacts import ArtifactStore
-from agent_bus_cli import main
-from projection_store import load_projection, save_projection
-from recovery import RecoveryError, audit, backup, restore, verify_bundle
+from logplane import bus
+from logplane.artifacts import ArtifactStore
+from logplane.cli import main
+from logplane.projection_store import load_projection, save_projection
+from logplane.recovery import RecoveryError, audit, backup, restore, verify_bundle
 
 
 class RecoveryTests(unittest.TestCase):
@@ -128,7 +128,7 @@ class RecoveryTests(unittest.TestCase):
             backup(self.database, self.bundle, [self.store.root])
 
     def test_interrupted_copy_leaves_unusable_marked_bundle(self):
-        with patch('recovery._copy', side_effect=OSError('injected disk failure')):
+        with patch('logplane.recovery._copy', side_effect=OSError('injected disk failure')):
             with self.assertRaises(OSError):
                 backup(self.database, self.bundle, [self.store.root])
         self.assertTrue((self.bundle / '.incomplete').exists())

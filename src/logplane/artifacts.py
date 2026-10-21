@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from limits import MAX_ARTIFACT_BYTES
+from logplane.limits import MAX_ARTIFACT_BYTES
 
 
 class ArtifactError(ValueError):

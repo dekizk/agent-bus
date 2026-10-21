@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Mapping
 
 
+# Wire identifier shared with external adapters; it predates the logplane
+# name and stays unchanged so existing adapters keep negotiating.
 PROTOCOL_NAME = "agent-bus.executor"
 LEGACY_PROTOCOL_VERSION = 0
 CURRENT_PROTOCOL_VERSION = 1
@@ -96,7 +98,7 @@ def _validate_protocol_header(value: object, version: int, *, request: bool) -> 
     if set(value) != expected:
         raise ValueError("protocol header has an invalid shape")
     if value.get("name") != PROTOCOL_NAME:
-        raise ValueError("adapter protocol name does not match agent-bus")
+        raise ValueError("adapter protocol name does not match logplane")
     if value.get("version") != version:
         raise ValueError(
             f"adapter selected protocol version {value.get('version')!r}; expected {version}"

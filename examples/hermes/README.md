@@ -1,11 +1,11 @@
 # Hermes Agent example
 
 This optional example runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-as an interchangeable agent-bus executor. Hermes performs one assignment;
-agent-bus remains responsible for ownership, worker leases, retry policy,
+as an interchangeable logplane executor. Hermes performs one assignment;
+logplane remains responsible for ownership, worker leases, retry policy,
 capacity, and lifecycle events.
 
-Nothing in the agent-bus core imports this directory. Hermes is not added to
+Nothing in the logplane core imports this directory. Hermes is not added to
 the project requirements, and the standard tests use a fake command rather than
 credentials or paid inference.
 
@@ -21,7 +21,7 @@ guardrails:
 - an explicit toolset, defaulting to `clarify` only;
 - an existing working directory selected by the operator;
 - bounded stdout, stderr, prompt, result, usage metadata, and wall-clock time;
-- process-group cancellation when agent-bus revokes an assignment;
+- process-group cancellation when logplane revokes an assignment;
 - rejection of `all`, `todo`, `delegation`, and `cronjob` toolsets.
 
 Hermes v0.20 does not expose a maximum-turn option on its pure `-z` interface.
@@ -68,7 +68,7 @@ python -m examples.hermes.live_smoke \
   --provider YOUR_PROVIDER \
   --model YOUR_MODEL \
   --capture-content \
-  --artifact-directory /tmp/agent-bus-hermes-v06-smoke-artifacts
+  --artifact-directory /tmp/logplane-hermes-v06-smoke-artifacts
 ```
 
 The command fails unless it finds and integrity-checks exactly one model-input
@@ -81,11 +81,11 @@ Start the bus and PM as documented in the root README. Create a disposable
 working directory, then start the example worker:
 
 ```sh
-mkdir -p /tmp/agent-bus-hermes-trial
+mkdir -p /tmp/logplane-hermes-trial
 
 python -m examples.hermes.run_worker \
   --name hermes \
-  --working-directory /tmp/agent-bus-hermes-trial \
+  --working-directory /tmp/logplane-hermes-trial \
   --provider YOUR_PROVIDER \
   --model YOUR_MODEL \
   --toolsets clarify \
@@ -113,7 +113,7 @@ curl -X POST http://127.0.0.1:8765/events \
     "payload":{
       "title":"Summarize the supplied note",
       "context":{
-        "text":"agent-bus coordinates work while agents remain replaceable"
+        "text":"logplane coordinates work while agents remain replaceable"
       },
       "required_capabilities":["hermes"],
       "retry_policy":{"max_retries":1}
@@ -138,10 +138,10 @@ With the v0.8 editable install, the normal inspection path no longer requires
 raw event JSON:
 
 ```sh
-agent-bus workflow YOUR_CORRELATION_ID
-agent-bus task YOUR_TASK_ID
-agent-bus explain YOUR_TASK_ID
-agent-bus --json workflow YOUR_CORRELATION_ID
+logplane workflow YOUR_CORRELATION_ID
+logplane task YOUR_TASK_ID
+logplane explain YOUR_TASK_ID
+logplane --json workflow YOUR_CORRELATION_ID
 ```
 
 The workflow view combines the derived DAG state with token, cost, duration,
@@ -153,13 +153,13 @@ non-sensitive trial only, explicitly enable content-addressed capture:
 ```sh
 python -m examples.hermes.run_worker \
   --name hermes \
-  --working-directory /tmp/agent-bus-hermes-trial \
+  --working-directory /tmp/logplane-hermes-trial \
   --provider YOUR_PROVIDER \
   --model YOUR_MODEL \
   --toolsets clarify \
   --capability hermes \
   --capture-content \
-  --artifact-directory /tmp/agent-bus-hermes-artifacts
+  --artifact-directory /tmp/logplane-hermes-artifacts
 ```
 
 SQLite receives only immutable SHA-256 references. The referenced local files
@@ -185,7 +185,7 @@ For a disposable read-only-style repository review, you may explicitly enable
 Hermes one-shot mode bypasses approvals, and both toolsets can mutate the host.
 Use a disposable copy and an external sandbox. The example intentionally does
 not offer Hermes task-board, scheduler, or delegation toolsets because those
-would create a second orchestration owner alongside agent-bus.
+would create a second orchestration owner alongside logplane.
 
 `--unsafe-user-config` disables Hermes safe mode and permits the user's normal
 rules/plugins/hooks. It is an explicit escape hatch for later experiments, not

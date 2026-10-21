@@ -8,8 +8,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-import demo
-from executors import AssignmentContext, Blocked, Completed
+from logplane import demo
+from logplane.executors import AssignmentContext, Blocked, Completed
 
 
 def assignment(task_id, *, attempt=1, context=None, dependencies=(), decisions=()):
@@ -192,11 +192,11 @@ class ReadingPauseTests(unittest.TestCase):
 
     def test_narration_waits_only_when_asked(self):
         with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("demo.time.sleep") as sleep:
+                unittest.mock.patch("logplane.demo.time.sleep") as sleep:
             self.harness(directory, False).say("one two three four five six seven eight")
             sleep.assert_not_called()
         with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("demo.time.sleep") as sleep:
+                unittest.mock.patch("logplane.demo.time.sleep") as sleep:
             pausing = self.harness(directory, True)
             pausing.say("one two three four five six seven eight nine ten eleven twelve")
             pausing.say("short")
@@ -208,7 +208,7 @@ class NarrationWrapTests(unittest.TestCase):
     def test_narration_wraps_at_word_boundaries(self):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("demo.shutil.get_terminal_size",
+                unittest.mock.patch("logplane.demo.shutil.get_terminal_size",
                                     return_value=os.terminal_size((50, 24))):
             demo.Harness(Path(directory), out=out).say(
                 "The log hasn't been told that alice died, and nothing guesses. "
@@ -222,7 +222,7 @@ class NarrationWrapTests(unittest.TestCase):
     def test_recap_bullets_wrap_at_word_boundaries(self):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("demo.shutil.get_terminal_size",
+                unittest.mock.patch("logplane.demo.shutil.get_terminal_size",
                                     return_value=os.terminal_size((50, 24))):
             demo.Harness(Path(directory), out=out).recap([
                 "An approved refund is keyed by assignment.effect_id, so a retry after a "

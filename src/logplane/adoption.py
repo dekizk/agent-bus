@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable, Mapping, Optional
 
-from client import BusClient
-from scheduling import validate_task_priority
+from logplane.client import BusClient
+from logplane.scheduling import validate_task_priority
 
 
 class AdoptionMode(str, Enum):
@@ -20,6 +20,8 @@ class AdoptionMode(str, Enum):
 
 
 class ExecutionOwner(str, Enum):
+    # Stored in event history under the pre-0.13 project name; keep the
+    # value unchanged so existing logs replay with the same ownership.
     AGENT_BUS = "agent-bus"
     EXTERNAL = "external"
 

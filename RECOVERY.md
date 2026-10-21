@@ -2,7 +2,7 @@
 
 Artifact audits, verified backup and restore, task-index rebuilds, and PM
 replay snapshots. For how processes recover from crashes by replay, see
-[how agent-bus works](docs/architecture.md#crash-recovery-guarantees).
+[how logplane works](docs/architecture.md#crash-recovery-guarantees).
 
 These tools preserve immutable event history. They do not
 repair damaged events, delete history, or promise exactly-once external effects.
@@ -15,7 +15,7 @@ Use the actual content-addressed store directories configured by your adapters.
 Repeat `--artifact-root` if multiple stores serve the same bus:
 
 ```sh
-agent-bus storage-audit --config agent-bus.local.json \
+logplane storage-audit --config logplane.local.json \
   --artifact-root /path/to/your/artifacts --min-age-days 7 --json
 ```
 
@@ -42,9 +42,9 @@ their tasks completed. No secure-erasure guarantee is made.
 
 ```sh
 mkdir -p ./backups
-agent-bus backup ./backups/checkpoint-001 --config agent-bus.local.json \
+logplane backup ./backups/checkpoint-001 --config logplane.local.json \
   --artifact-root /path/to/your/artifacts
-agent-bus verify-backup ./backups/checkpoint-001
+logplane verify-backup ./backups/checkpoint-001
 ```
 
 SQLite's backup API takes a consistent database copy, including committed WAL
@@ -72,7 +72,7 @@ open the backup as a live bus database; restore it into a new location first.
 ## Restore without overwriting anything
 
 ```sh
-agent-bus restore ./backups/checkpoint-001 ./recovered-bus
+logplane restore ./backups/checkpoint-001 ./recovered-bus
 ```
 
 `./recovered-bus` must not already exist, even as an empty directory. No existing
@@ -111,7 +111,7 @@ database without the index. Task/event identities and event payloads do not chan
 To repair an incomplete index on an existing initialized local database:
 
 ```sh
-agent-bus rebuild-task-index --config agent-bus.local.json
+logplane rebuild-task-index --config logplane.local.json
 ```
 
 The command reads immutable history and atomically replaces only the derived
@@ -134,14 +134,14 @@ For long-running local logs, an **opt-in** disposable coordination snapshot
 speeds up PM startup. To build or discard it using the configured database:
 
 ```sh
-agent-bus snapshot build --config agent-bus.local.json
-agent-bus snapshot clear --config agent-bus.local.json
+logplane snapshot build --config logplane.local.json
+logplane snapshot clear --config logplane.local.json
 ```
 
 To use it when starting the PM (stop the previous PM first):
 
 ```sh
-agent-bus pm --config agent-bus.local.json --snapshot
+logplane pm --config logplane.local.json --snapshot
 ```
 
 Without `--snapshot`, the PM follows its existing HTTP replay path. With it, the

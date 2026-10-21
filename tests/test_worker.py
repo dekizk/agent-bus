@@ -2,8 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import worker
-from executors import (
+from logplane import worker
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -33,7 +33,7 @@ class DemoExecutorTests(unittest.TestCase):
             fail_once=2,
             fail_permanently_once=3,
         )
-        with patch("worker.time.sleep", return_value=None):
+        with patch("logplane.worker.time.sleep", return_value=None):
             self.assertIsInstance(executor.execute(assignment(1)), Blocked)
             self.assertIsInstance(executor.execute(assignment(1)), Completed)
             self.assertIsInstance(executor.execute(assignment(2)), RetryableFailure)
@@ -56,9 +56,9 @@ class WorkerMainTests(unittest.TestCase):
         fake_runtime = Mock()
 
         with (
-            patch("worker.parse_args", return_value=args),
-            patch("worker.BusClient", return_value=fake_bus) as client_class,
-            patch("worker.WorkerRuntime", return_value=fake_runtime) as runtime_class,
+            patch("logplane.worker.parse_args", return_value=args),
+            patch("logplane.worker.BusClient", return_value=fake_bus) as client_class,
+            patch("logplane.worker.WorkerRuntime", return_value=fake_runtime) as runtime_class,
         ):
             worker.main()
 

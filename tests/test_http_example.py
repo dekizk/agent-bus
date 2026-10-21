@@ -5,14 +5,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from executor_protocol import (
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     assignment_message,
     cancellation_message,
     parse_outcome_message,
 )
-from executors import AssignmentContext
-from integration import IntegrationConfig
+from logplane.executors import AssignmentContext
+from logplane.integration import IntegrationConfig
 from examples.http_agent.agent import app, reset_state, snapshot_state
 
 

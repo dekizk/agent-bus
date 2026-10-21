@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 import httpx
 
-import agent_bus
-import agent_bus_cli
-from conformance import check_executor
-from executor_protocol import (
+import logplane
+from logplane import cli as logplane_cli
+from logplane.conformance import check_executor
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     PROTOCOL_NAME,
     assignment_message,
@@ -20,15 +20,15 @@ from executor_protocol import (
     parse_assignment_message,
     parse_outcome_message,
 )
-from executors import AssignmentContext, Completed, PermanentFailure, RetryableFailure
-from integration import (
+from logplane.executors import AssignmentContext, Completed, PermanentFailure, RetryableFailure
+from logplane.integration import (
     CliAgentConfig,
     HttpAgentConfig,
     IntegrationConfig,
     PythonAgentAdapter,
 )
-from local_config import LocalConfig, initialize_local_config
-from operations import workflow_mermaid
+from logplane.local_config import LocalConfig, initialize_local_config
+from logplane.operations import workflow_mermaid
 
 
 def assignment():
@@ -65,15 +65,15 @@ class ProtocolTests(unittest.TestCase):
             parse_outcome_message(response, 1)
 
     def test_public_package_exposes_the_integration_contract(self):
-        self.assertIs(agent_bus.AssignmentContext, AssignmentContext)
-        self.assertIs(agent_bus.PythonAgentAdapter, PythonAgentAdapter)
-        self.assertIs(agent_bus.BusProtocolError, __import__("client").BusProtocolError)
-        self.assertEqual(1, agent_bus.CURRENT_PROTOCOL_VERSION)
+        self.assertIs(logplane.AssignmentContext, AssignmentContext)
+        self.assertIs(logplane.PythonAgentAdapter, PythonAgentAdapter)
+        self.assertIs(logplane.BusProtocolError, __import__("logplane.client", fromlist=["BusProtocolError"]).BusProtocolError)
+        self.assertEqual(1, logplane.CURRENT_PROTOCOL_VERSION)
         self.assertEqual(
             ("low", "normal", "high", "urgent"),
-            agent_bus.TASK_PRIORITY_CLASSES,
+            logplane.TASK_PRIORITY_CLASSES,
         )
-        self.assertEqual("normal", agent_bus.DEFAULT_TASK_PRIORITY)
+        self.assertEqual("normal", logplane.DEFAULT_TASK_PRIORITY)
 
     def test_supported_versions_allows_future_capabilities_with_v1_selected(self):
         request = assignment_message(assignment().to_dict(), 1)
@@ -88,10 +88,10 @@ class ProtocolTests(unittest.TestCase):
 
 class AdapterTests(unittest.TestCase):
     def test_python_target_loader_imports_from_console_working_directory(self):
-        from integration import load_python_target
+        from logplane.integration import load_python_target
 
         with tempfile.TemporaryDirectory() as directory:
-            module_name = "local_adapter_for_agent_bus_test"
+            module_name = "local_adapter_for_logplane_test"
             Path(directory, f"{module_name}.py").write_text(
                 "class ExistingAgent:\n    pass\n",
                 encoding="utf-8",
@@ -266,7 +266,7 @@ class AdapterTests(unittest.TestCase):
             HttpAgentConfig(
                 "https://agent.example/execute",
                 allow_remote=True,
-                token_env="AGENT_BUS_TEST_MISSING_TOKEN",
+                token_env="LOGPLANE_TEST_MISSING_TOKEN",
             ).build()
 
 
@@ -278,9 +278,9 @@ class OnboardingTests(unittest.TestCase):
             stderr = io.StringIO()
             with patch.dict(
                 "os.environ",
-                {"AGENT_BUS_URL": "http://127.0.0.1:8875"},
+                {"LOGPLANE_URL": "http://127.0.0.1:8875"},
             ):
-                code = agent_bus_cli.main(
+                code = logplane_cli.main(
                     ["doctor"],
                     stdout=stdout,
                     stderr=stderr,
@@ -302,9 +302,9 @@ class OnboardingTests(unittest.TestCase):
 
             with patch.dict(
                 "os.environ",
-                {"AGENT_BUS_URL": "http://127.0.0.1:8875"},
+                {"LOGPLANE_URL": "http://127.0.0.1:8875"},
             ):
-                code = agent_bus_cli.main(
+                code = logplane_cli.main(
                     ["doctor", "--url", "http://127.0.0.1:8875"],
                     stdout=io.StringIO(),
                     stderr=io.StringIO(),
@@ -319,7 +319,7 @@ class OnboardingTests(unittest.TestCase):
             config = LocalConfig.from_file(path)
             self.assertEqual("http://127.0.0.1:8765", config.bus_url)
             self.assertEqual(
-                (Path(directory) / ".agent-bus" / "events.db").resolve(),
+                (Path(directory) / ".logplane" / "events.db").resolve(),
                 config.database_path,
             )
             with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
@@ -335,7 +335,7 @@ class OnboardingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout = io.StringIO()
             stderr = io.StringIO()
-            code = agent_bus_cli.main(
+            code = logplane_cli.main(
                 ["init", directory, "--json"], stdout=stdout, stderr=stderr
             )
             self.assertEqual(0, code, stderr.getvalue())
@@ -343,7 +343,7 @@ class OnboardingTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        code = agent_bus_cli.main(
+        code = logplane_cli.main(
             [
                 "adapter",
                 "check",
@@ -358,7 +358,7 @@ class OnboardingTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        code = agent_bus_cli.main(
+        code = logplane_cli.main(
             ["adapter", "check", "--python-target", "missing_package:Agent"],
             stdout=stdout,
             stderr=stderr,
@@ -371,8 +371,8 @@ class OnboardingTests(unittest.TestCase):
             config = initialize_local_config(directory)
             stdout = io.StringIO()
             stderr = io.StringIO()
-            with patch("client.httpx.post", side_effect=httpx.ConnectError("down")):
-                code = agent_bus_cli.main(
+            with patch("logplane.client.httpx.post", side_effect=httpx.ConnectError("down")):
+                code = logplane_cli.main(
                     ["submit", "demo", "--config", str(config)],
                     stdout=stdout,
                     stderr=stderr,

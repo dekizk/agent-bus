@@ -10,12 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import bus
-from agent_bus_cli import main
-from local_config import initialize_local_config, LocalConfig
-from pm_agent import initial_cursor, plan_next_emission
-from projection import replay_events, PROJECTION_TOPICS, apply_event
-from projection_store import (load_projection, save_projection, clear_projection,
+from logplane import bus
+from logplane.cli import main
+from logplane.local_config import initialize_local_config, LocalConfig
+from logplane.pm_agent import initial_cursor, plan_next_emission
+from logplane.projection import replay_events, PROJECTION_TOPICS, apply_event
+from logplane.projection_store import (load_projection, save_projection, clear_projection,
                               encode_state, decode_state)
 from tests.test_pm_agent import registered, created, assigned, event
 
@@ -86,7 +86,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(plan_next_emission(expected, now=102), plan_next_emission(warmed.state, now=102))
 
     def test_codec_preserves_usage_tuples_decisions_and_agent_policies(self):
-        from projection import AgentPolicyRecord
+        from logplane.projection import AgentPolicyRecord
         self.seed()
         state = load_projection(self.path).state
         self.assertIn("task:1:attempt:1", state.assignment_accounting)
@@ -150,7 +150,7 @@ class SnapshotTests(unittest.TestCase):
                 appended = True
                 bus.append_event("task.created", "human", {"title": "racing publish"})
             return original(state, ev)
-        with patch("projection_store.projection.apply_event", side_effect=during_replay):
+        with patch("logplane.projection_store.projection.apply_event", side_effect=during_replay):
             result = load_projection(self.path, use_snapshot=False)
         self.assertEqual(6, result.last_event_id)
         self.assertEqual(2, len(result.state.tasks))
@@ -160,7 +160,7 @@ class SnapshotTests(unittest.TestCase):
         self.assert_equivalent(recovered)
 
     def test_http_identity_and_anchor_round_trip(self):
-        from client import BusClient
+        from logplane.client import BusClient
         from fastapi.testclient import TestClient
         self.seed()
         with patch.dict(os.environ, {}, clear=False), TestClient(bus.app) as server:
@@ -168,7 +168,7 @@ class SnapshotTests(unittest.TestCase):
             def get(url, **kwargs):
                 kwargs.pop("timeout", None)  # TestClient has no real network timeout.
                 return server.get(url, **kwargs)
-            with patch("client.httpx.get", side_effect=get):
+            with patch("logplane.client.httpx.get", side_effect=get):
                 cursor = initial_cursor(remote, self.path)
         self.assertEqual(6, cursor.last_event_id)
         self.assertEqual(vars(load_projection(self.path).state), vars(cursor.state))
@@ -196,10 +196,10 @@ class SnapshotTests(unittest.TestCase):
         self.seed()
         save_projection(self.path, load_projection(self.path))
         child = subprocess.run([sys.executable, "-c",
-            "from pathlib import Path; import sys; from projection_store import load_projection; "
+            "from pathlib import Path; import sys; from logplane.projection_store import load_projection; "
             "r=load_projection(Path(sys.argv[1])); print(r.cache_note); "
             "assert r.snapshot_event_id==6, r.cache_note", str(self.path)],
-            cwd=Path(bus.__file__).parent, capture_output=True, timeout=10)
+            cwd=Path(bus.__file__).parents[1], capture_output=True, timeout=10)
         self.assertEqual(0, child.returncode, child.stdout + child.stderr)
 
     def test_pm_checks_bus_identity_and_survives_cache_write_failure(self):
@@ -210,7 +210,7 @@ class SnapshotTests(unittest.TestCase):
                 return result.database_id
             def get_event(self, event_id):
                 return bus.fetch_event(event_id)
-        with patch("projection_store.save_projection", side_effect=sqlite3.OperationalError("locked")):
+        with patch("logplane.projection_store.save_projection", side_effect=sqlite3.OperationalError("locked")):
             cursor = initial_cursor(Remote(), self.path)
         self.assertEqual(6, cursor.last_event_id)
         self.assert_equivalent(result)

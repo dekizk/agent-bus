@@ -16,20 +16,20 @@ python -m uvicorn examples.http_agent.agent:app \
 ```
 
 Run this from the repository root. When launching from another directory, set
-`--app-dir` to the absolute path of the agent-bus checkout. During editable
+`--app-dir` to the absolute path of the logplane checkout. During editable
 development, rerun `python -m pip install -e .` after adding a new top-level
 module so console entry points can import it.
 
 In another terminal, verify its contract without a bus or PM:
 
 ```sh
-agent-bus adapter check --config examples/http_agent/adapter.json
+logplane adapter check --config examples/http_agent/adapter.json
 ```
 
 With the bus and PM running, connect it as a controlled worker:
 
 ```sh
-agent-bus adapter run examples/http_agent/adapter.json
+logplane adapter run examples/http_agent/adapter.json
 ```
 
 Tasks requiring `http-example` may set `context.trial_mode` to `normal`,
@@ -47,6 +47,6 @@ cooperates with the adapter's `/cancel` request.
 The effect ledger is intentionally in memory so the behavior is easy to see.
 A production HTTP agent must keep its idempotency/effect records in durable
 storage and make the effect record and external operation atomic where the
-downstream system permits it. Agent-bus owns assignment authority and suppresses
+downstream system permits it. logplane owns assignment authority and suppresses
 late lifecycle output; the external agent still owns safe execution of any
 irreversible effects it performs.

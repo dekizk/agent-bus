@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import bus
-from version import VERSION
+from logplane import bus
+from logplane.version import VERSION
 from fastapi.testclient import TestClient
 
 

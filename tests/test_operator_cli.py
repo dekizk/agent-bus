@@ -7,12 +7,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import agent_bus_cli
-from observer import ObserverClient
-from operator_controls import intervene, read_snapshot
-from operations import discovery_view
-from pm_agent import plan_next_emission
-from projection import replay_events
+from logplane import cli as logplane_cli
+from logplane.observer import ObserverClient
+from logplane.operator_controls import intervene, read_snapshot
+from logplane.operations import discovery_view
+from logplane.pm_agent import plan_next_emission
+from logplane.projection import replay_events
 from tests.test_pm_agent import registered, created, assigned, event
 
 
@@ -214,7 +214,7 @@ class DiscoveryTests(unittest.TestCase):
                 os.chdir(tmp)
                 for name in ('tasks','workflows','decisions'):
                     out,err=io.StringIO(),io.StringIO()
-                    code = agent_bus_cli.main([name,'--json','--url','http://test'],stdout=out,stderr=err,
+                    code = logplane_cli.main([name,'--json','--url','http://test'],stdout=out,stderr=err,
                         client_factory=lambda *args,**kwargs:log,clock=lambda:101)
                     self.assertEqual(0,code,err.getvalue())
                     self.assertIn(name,json.loads(out.getvalue()))
@@ -232,8 +232,8 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual('http://test/events',url)
             return Response(log.publish(json))
         out,err=io.StringIO(),io.StringIO()
-        with patch('agent_bus_cli.httpx.post',side_effect=post):
-            code=agent_bus_cli.main(['cancel','1','--reason','stop','--json','--url','http://test'],
+        with patch('logplane.cli.httpx.post',side_effect=post):
+            code=logplane_cli.main(['cancel','1','--reason','stop','--json','--url','http://test'],
                 stdout=out,stderr=err,client_factory=lambda *args,**kwargs:log,clock=lambda:101)
         self.assertEqual(0,code,err.getvalue())
         self.assertTrue(json.loads(out.getvalue())['accepted'])

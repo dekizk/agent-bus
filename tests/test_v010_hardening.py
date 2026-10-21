@@ -5,18 +5,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-import bus
-from executors import Completed
-from operations import explain_task
-from pm_agent import (
+from logplane import bus
+from logplane.executors import Completed
+from logplane.operations import explain_task
+from logplane.pm_agent import (
     PM_TOPICS,
     OrderedProjectionCursor,
     PMState,
     plan_next_emission,
     reconcile,
 )
-from projection import apply_event, replay_events
-from runtime import WorkerRuntime
+from logplane.projection import apply_event, replay_events
+from logplane.runtime import WorkerRuntime
 from tests.test_pm_agent import assigned, created, event, registered
 from tests.test_runtime import FakeBus as RuntimeFakeBus, RuntimeTestCase, assigned_event
 

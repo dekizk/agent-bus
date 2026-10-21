@@ -1,17 +1,17 @@
-# Operating agent-bus
+# Operating logplane
 
-Submitting, inspecting, and steering work from the CLI: finding work, human decisions, retries, cancellation, pausing, workflows and dependencies, scheduling, concurrency, fairness, and budgets. Every command here is a view over, or an event appended to, the immutable log. See [how agent-bus works](architecture.md) for the underlying model.
+Submitting, inspecting, and steering work from the CLI: finding work, human decisions, retries, cancellation, pausing, workflows and dependencies, scheduling, concurrency, fairness, and budgets. Every command here is a view over, or an event appended to, the immutable log. See [how logplane works](architecture.md) for the underlying model.
 
 ## Connecting to the bus
 
 Every command finds the bus the same way: an explicit `--url` first, then
-`agent-bus.local.json` in the current directory, then `AGENT_BUS_URL`, and
+`logplane.local.json` in the current directory, then `LOGPLANE_URL`, and
 finally the loopback default. Intervention commands also accept `--config`. If
 the local file and the environment disagree, the CLI stops with both values
-instead of silently connecting to the wrong bus; unset `AGENT_BUS_URL` or pass
-`--url` deliberately. `AGENT_BUS_TOKEN` and `AGENT_BUS_WORKER_LEASE_SECONDS`
+instead of silently connecting to the wrong bus; unset `LOGPLANE_URL` or pass
+`--url` deliberately. `LOGPLANE_TOKEN` and `LOGPLANE_WORKER_LEASE_SECONDS`
 remain environment defaults, with `--token` and `--lease-seconds` available for
-one invocation. Persistent warnings from `agent-bus doctor` usually mean the
+one invocation. Persistent warnings from `logplane doctor` usually mean the
 PM, worker, or bus is not using the same URL.
 
 ## Submitting work
@@ -21,7 +21,7 @@ an `assignment_id`; the worker includes that assignment and its process
 `instance_id` in every subsequent lifecycle event. The server also generates a
 `correlation_id` for the root task and propagates it through the resulting
 event chain. New tasks store their retry policy in the event itself.
-`agent-bus submit` defaults to no automatic retries unless `--max-retries` is
+`logplane submit` defaults to no automatic retries unless `--max-retries` is
 supplied; direct event publishers retain the server default. New tasks also
 materialize immutable `normal` priority unless the publisher selects another
 class. Before assigning the first task in a new workflow, the PM records the
@@ -33,10 +33,10 @@ Workers advertise capabilities and capacity, and a task can require
 capabilities and carry inline context into every assignment:
 
 ```sh
-agent-bus demo-worker coder --capacity 2 --capability python --capability testing
-agent-bus submit "Run the Python test suite" \
+logplane demo-worker coder --capacity 2 --capability python --capability testing
+logplane submit "Run the Python test suite" \
   --capability python --capability testing \
-  --context '{"repository": "agent-bus", "suite": "integration"}'
+  --context '{"repository": "logplane", "suite": "integration"}'
 ```
 
 Raw publishers set the same `required_capabilities` and `context` fields on
@@ -46,17 +46,17 @@ adapters declare capabilities in their `worker` block.
 Context and each final structured result are limited to 16 KiB of encoded JSON.
 Resolved dependency input is limited to 32 KiB in aggregate.
 They are coordination data, not storage for prompts, transcripts, or large
-artifacts. agent-bus keeps that content out of SQLite by default and can store
+artifacts. logplane keeps that content out of SQLite by default and can store
 explicitly opted-in captures in a separate content-addressed artifact store.
 
 ## Finding and inspecting work
 
 ```sh
-agent-bus tasks
-agent-bus tasks --status failed --limit 20
-agent-bus tasks --workflow YOUR_CORRELATION_ID
-agent-bus workflows
-agent-bus decisions
+logplane tasks
+logplane tasks --status failed --limit 20
+logplane tasks --workflow YOUR_CORRELATION_ID
+logplane workflows
+logplane decisions
 ```
 
 Lists show IDs, projected state, and a next-command template. Replace any
@@ -80,12 +80,12 @@ create consumer offsets, cache a mutable projection, or participate in
 scheduling:
 
 ```sh
-agent-bus doctor
-agent-bus workers
-agent-bus task 1
-agent-bus explain 1
-agent-bus workflow YOUR_CORRELATION_ID
-agent-bus tail YOUR_CORRELATION_ID
+logplane doctor
+logplane workers
+logplane task 1
+logplane explain 1
+logplane workflow YOUR_CORRELATION_ID
+logplane tail YOUR_CORRELATION_ID
 ```
 
 `task` shows current state, attempt ownership, dependencies, retry allowance,
@@ -98,8 +98,8 @@ misleading zero.
 All finite commands accept `--json` before or after the command for scripts:
 
 ```sh
-agent-bus task 1 --json
-agent-bus --json workflow YOUR_CORRELATION_ID
+logplane task 1 --json
+logplane --json workflow YOUR_CORRELATION_ID
 ```
 
 `doctor` reports bus/schema health, replay counts, worker lease health, safely ignored stale
@@ -110,11 +110,11 @@ events, and tasks that appear to be waiting for PM reconciliation.
 Use the real IDs returned by the views in these templates:
 
 ```sh
-agent-bus cancel TASK_ID --reason 'No longer needed'
-agent-bus retry TASK_ID --failed-event FAILURE_EVENT_ID --additional-retries 1 --reason 'Underlying issue fixed'
-agent-bus decide TASK_ID --decision-event DECISION_EVENT_ID --value '"staging"'
+logplane cancel TASK_ID --reason 'No longer needed'
+logplane retry TASK_ID --failed-event FAILURE_EVENT_ID --additional-retries 1 --reason 'Underlying issue fixed'
+logplane decide TASK_ID --decision-event DECISION_EVENT_ID --value '"staging"'
 # A decision can also be an object:
-agent-bus decide TASK_ID --decision-event DECISION_EVENT_ID --value '{"release_target":"staging"}'
+logplane decide TASK_ID --decision-event DECISION_EVENT_ID --value '{"release_target":"staging"}'
 ```
 
 Retry targets the exact `task.failed` event; it grants the specified number of
@@ -149,10 +149,10 @@ effects.
 ## Human decisions
 
 When a worker emits `task.blocked`, the PM deterministically emits one
-`decision.needed` for that assignment. `agent-bus decisions` lists pending
-questions with a ready-to-edit `agent-bus decide` command; the
+`decision.needed` for that assignment. `logplane decisions` lists pending
+questions with a ready-to-edit `logplane decide` command; the
 [raw-event equivalent](events.md#publishing-raw-events) is also available.
-`agent-bus demo approval` shows the whole flow.
+`logplane demo approval` shows the whole flow.
 
 The PM accepts the response only for the current pending decision, records it
 in its replay projection, reopens the logical task, and creates a new assignment
@@ -169,14 +169,14 @@ telemetry only as compact references.
 Every new `task.created` records a replayable retry policy:
 
 ```sh
-agent-bus submit "Run integration tests" --max-retries 2
+logplane submit "Run integration tests" --max-retries 2
 ```
 
 Raw publishers set `payload.retry_policy`, for example `{"max_retries": 2}`.
 
 `max_retries` counts retries after the initial assignment. A value of `0`
 allows only the initial attempt. The server materializes
-`AGENT_BUS_MAX_RETRIES` (default `2`) when the caller omits the policy, so a
+`LOGPLANE_MAX_RETRIES` (default `2`) when the caller omits the policy, so a
 later process configuration change cannot alter replayed task behavior.
 Historical tasks that predate this field remain unlimited rather than being
 silently assigned a new policy.
@@ -191,7 +191,7 @@ To revive a failed task, record a retry against its latest `task.failed` event
 caused by that failure):
 
 ```sh
-agent-bus retry 2 --failed-event 21 --additional-retries 1 \
+logplane retry 2 --failed-event 21 --additional-retries 1 \
   --reason "The dependency is healthy again"
 ```
 
@@ -208,7 +208,7 @@ Cancellation and deadlines are durable controls without mutable task state.
 Cancellation is a command event followed by a PM-derived terminal event:
 
 ```sh
-agent-bus cancel 1 --reason "superseded by a new request"
+logplane cancel 1 --reason "superseded by a new request"
 ```
 
 Python publishers can call `BusClient.cancel_task(task_id, reason=...)`, which
@@ -271,10 +271,10 @@ ordered event cursor as every other command, so live state and fresh replay
 cannot observe those events in different orders.
 
 ```sh
-agent-bus pause task 12 --reason "hold during maintenance"
-agent-bus resume task 12 --reason "maintenance complete"
-agent-bus pause workflow 01abc... --reason "freeze this rollout"
-agent-bus resume workflow 01abc... --reason "continue rollout"
+logplane pause task 12 --reason "hold during maintenance"
+logplane resume task 12 --reason "maintenance complete"
+logplane pause workflow 01abc... --reason "freeze this rollout"
+logplane resume workflow 01abc... --reason "continue rollout"
 ```
 
 A workflow pause is a correlation-scoped gate. It revokes active assignments,
@@ -296,7 +296,7 @@ Supersession records changed intent by creating a replacement task. It never
 edits the old task or its dependency edges:
 
 ```sh
-agent-bus supersede 12 "Deploy the revised release" \
+logplane supersede 12 "Deploy the revised release" \
   --reason "release requirements changed" \
   --priority high
 ```
@@ -361,7 +361,7 @@ A task declares dependency edges when it is created:
 }
 ```
 
-From the command line, `agent-bus submit "Plan fixes from the audit"
+From the command line, `logplane submit "Plan fixes from the audit"
 --depends-on 4 --capability hermes` publishes the same event.
 
 Every dependency must already exist, appear only once, and belong to the same
@@ -422,12 +422,12 @@ event or idle reconciliation after the boundary rather than at sub-second
 timer precision.
 
 ```sh
-agent-bus submit "Run the release checks" \
+logplane submit "Run the release checks" \
   --priority high \
   --not-before 2000000000
 ```
 
-`agent-bus task`, `workflow`, and `explain` show the immutable policy. Before
+`logplane task`, `workflow`, and `explain` show the immutable policy. Before
 reconciliation, explanations identify a higher-priority or earlier-created
 eligible task considered first; after assignment consumes capacity, they name
 the active tasks occupying compatible workers. These answers are rebuilt from
@@ -437,7 +437,7 @@ the event log and current worker leases—there is no hidden queue table.
 
 Workflow-specific concurrency policy lives in the same event log as the work
 it governs. The PM materializes
-`default_workflow_max_active_assignments` from `agent-bus.local.json` before a
+`default_workflow_max_active_assignments` from `logplane.local.json` before a
 workflow's first assignment. Older configuration files without this optional
 field materialize an unbounded default, preserving their previous behavior.
 Restarting with a different default does not alter a workflow that already has
@@ -446,12 +446,12 @@ a policy event.
 An operator can append a later policy event without editing history:
 
 ```sh
-agent-bus policy "$CORRELATION_ID" \
+logplane policy "$CORRELATION_ID" \
   --max-active-assignments 2 \
   --reason "bound this workflow's fan-out"
 
 # Explicitly return the workflow to unbounded concurrency:
-agent-bus policy "$CORRELATION_ID" \
+logplane policy "$CORRELATION_ID" \
   --unbounded \
   --reason "dedicated capacity is now available"
 ```
@@ -501,7 +501,7 @@ and next workflow without a scheduler side database. Historical assignments
 without `fairness` remain replayable and seed the cursor in event order;
 historical uncorrelated tasks retain their original global priority ordering.
 
-`agent-bus task`, `agent-bus explain`, and `agent-bus workflow` expose the
+`logplane task`, `logplane explain`, and `logplane workflow` expose the
 policy and predecessor event, so an operator can distinguish capacity,
 workflow-concurrency, priority, and fairness waits. This is assignment fairness,
 not runtime time-slicing: it does not preempt active work or revoke a long
@@ -515,18 +515,18 @@ of the two. A later decrease does not revoke work already running; it prevents
 new assignments until active work falls below the new limit:
 
 ```sh
-agent-bus agent-policy hermes \
+logplane agent-policy hermes \
   --max-active-assignments 1 \
   --reason "canary one assignment at a time"
 ```
 
 Workflow policy also supports token, cost, attempt, and elapsed wall-clock
-budgets (`agent-bus demo budget` shows a cost cap in action). Token and cost limits use an explicit per-assignment reservation so
+budgets (`logplane demo budget` shows a cost cap in action). Token and cost limits use an explicit per-assignment reservation so
 the PM does not admit several concurrent attempts against the same remaining
 budget:
 
 ```sh
-agent-bus policy "$CORRELATION_ID" \
+logplane policy "$CORRELATION_ID" \
   --max-tokens 100000 \
   --reserve-tokens-per-assignment 20000 \
   --max-cost 5 \
@@ -552,8 +552,8 @@ budgets count accepted assignments. Wall-clock budgets begin at the first
 controls, not hard provider billing cutoffs: an in-flight model call can exceed
 its reservation, and late valid usage is still reconciled into the log.
 
-`agent-bus task`, `agent-bus workflow`, `agent-bus workers`, and
-`agent-bus explain` expose effective limits, charges, missing reports,
+`logplane task`, `logplane workflow`, `logplane workers`, and
+`logplane explain` expose effective limits, charges, missing reports,
 reservations, blocking resources, and the relevant policy/accounting event
 IDs. Deployment defaults are materialized once as policy events. Restarting
 the PM with different defaults therefore cannot silently change an existing

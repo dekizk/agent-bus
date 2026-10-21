@@ -1,4 +1,4 @@
-"""Explicitly run one paid, disposable Hermes assignment through agent-bus."""
+"""Explicitly run one paid, disposable Hermes assignment through logplane."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ import tempfile
 import time
 from pathlib import Path
 
-import bus
-from artifacts import ArtifactStore
+from logplane import bus
+from logplane.artifacts import ArtifactStore
 from examples.hermes.hermes_executor import HermesExecutor
-from pm_agent import OrderedProjectionCursor, PMState, PM_TOPICS, reconcile
-from runtime import WorkerRuntime
-from telemetry import BusTelemetrySink, ProducerIdentity
+from logplane.pm_agent import OrderedProjectionCursor, PMState, PM_TOPICS, reconcile
+from logplane.runtime import WorkerRuntime
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity
 
 
 class DirectClient:
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.artifact_directory is not None and not args.capture_content:
         raise SystemExit("--artifact-directory requires --capture-content")
-    with tempfile.TemporaryDirectory(prefix="agent-bus-hermes-live-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="logplane-hermes-live-") as temp_dir:
         original_db_path = bus.DB_PATH
         bus.DB_PATH = Path(temp_dir) / "events.db"
         try:
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
                     "title": "Summarize a short integration note",
                     "context": {
                         "text": (
-                            "agent-bus owns orchestration while Hermes performs "
+                            "logplane owns orchestration while Hermes performs "
                             "one bounded assignment as an interchangeable executor."
                         )
                     },

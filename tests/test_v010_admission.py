@@ -9,12 +9,12 @@ from unittest.mock import patch
 
 import httpx
 
-import bus
-from executors import AssignmentContext, Completed
-from pm_agent import PM_TOPICS, plan_next_emission, reconcile
-from projection import replay_events
-from runtime import WorkerRuntime
-from telemetry import BusTelemetrySink, ProducerIdentity
+from logplane import bus
+from logplane.executors import AssignmentContext, Completed
+from logplane.pm_agent import PM_TOPICS, plan_next_emission, reconcile
+from logplane.projection import replay_events
+from logplane.runtime import WorkerRuntime
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity
 from tests import test_v010_phase3_accounting as accounting
 from tests.test_v010_phase3_accounting import (
     DirectPMBus,
@@ -192,7 +192,7 @@ class AdmissionAgreementTests(unittest.TestCase):
         state, cursor = self.fixture._projection()
         planned = plan_next_emission(state, task["ts"] + 0.5)
         self.assertEqual("task.assigned", planned["topic"])
-        with patch("bus.time.time", return_value=task["ts"] + 2):
+        with patch("logplane.bus.time.time", return_value=task["ts"] + 2):
             stale = bus.append_event(planned["topic"], "pm", planned["payload"],
                                      caused_by=planned["caused_by"], idempotency_key=planned["idempotency_key"])
         # A separate admission reader sees exactly the same timestamp boundary.

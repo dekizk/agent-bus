@@ -1,1 +1,1 @@
-"""Optional integrations demonstrating the public agent-bus contracts."""
+"""Optional integrations demonstrating the public logplane contracts."""

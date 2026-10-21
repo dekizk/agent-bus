@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from client import BusClient, BusProtocolError
+from logplane.client import BusClient, BusProtocolError
 
 
 class OffsetTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class OffsetTests(unittest.TestCase):
             )
             for line in ('data: {broken', 'data: {"topic":"task.created"}'):
                 with self.subTest(line=line), patch(
-                    "client.httpx.stream", return_value=FakeResponse(line)
+                    "logplane.client.httpx.stream", return_value=FakeResponse(line)
                 ):
                     with self.assertRaises(BusProtocolError):
                         list(client._stream_once(None, 0))
@@ -48,7 +48,7 @@ class OffsetTests(unittest.TestCase):
                 actor="human",
                 offset_dir=Path(directory),
             )
-            with patch("client.httpx.post", return_value=response) as post:
+            with patch("logplane.client.httpx.post", return_value=response) as post:
                 self.assertEqual(
                     {"id": 7},
                     client.cancel_task(4, reason=" superseded "),
@@ -70,7 +70,7 @@ class OffsetTests(unittest.TestCase):
                 actor="worker",
                 offset_dir=Path(directory),
             )
-            with patch("client.httpx.stream") as stream:
+            with patch("logplane.client.httpx.stream") as stream:
                 self.assertEqual([], list(client.subscribe(stop_event=stop)))
         stream.assert_not_called()
 
@@ -116,7 +116,7 @@ class OffsetTests(unittest.TestCase):
                 offset_dir=Path(directory),
             )
             with patch(
-                "client.httpx.stream", return_value=FakeResponse()
+                "logplane.client.httpx.stream", return_value=FakeResponse()
             ) as stream_request:
                 events = list(
                     client._stream_once(
@@ -145,7 +145,7 @@ class OffsetTests(unittest.TestCase):
                 actor="agent",
                 offset_dir=Path(directory),
             )
-            with patch("client.httpx.post", return_value=response) as post:
+            with patch("logplane.client.httpx.post", return_value=response) as post:
                 client.publish(
                     "custom.tick",
                     {},
@@ -156,7 +156,7 @@ class OffsetTests(unittest.TestCase):
                         "version": None,
                     },
                 )
-            with patch("client.httpx.get", return_value=response) as get:
+            with patch("logplane.client.httpx.get", return_value=response) as get:
                 client.query(correlation_id="workflow-one")
 
         self.assertEqual(
@@ -182,7 +182,7 @@ class OffsetTests(unittest.TestCase):
                 actor="worker",
                 offset_dir=Path(directory),
             )
-            with patch("client.httpx.get", return_value=response) as get:
+            with patch("logplane.client.httpx.get", return_value=response) as get:
                 self.assertEqual({"id": 7}, client.get_event(7))
         self.assertEqual("http://127.0.0.1:8765/events/7", get.call_args.args[0])
         with self.assertRaises(ValueError):

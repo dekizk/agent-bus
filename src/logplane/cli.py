@@ -1,4 +1,4 @@
-"""Approachable operations, onboarding, and integration CLI for agent-bus."""
+"""Approachable operations, onboarding, and integration CLI for logplane."""
 
 from __future__ import annotations
 
@@ -15,9 +15,10 @@ from typing import Optional, TextIO
 
 import httpx
 
-from client import BusProtocolError
-from observer import ObserverClient
-from operations import (
+from logplane.client import BusProtocolError
+from logplane.legacy import legacy_environment_error
+from logplane.observer import ObserverClient
+from logplane.operations import (
     ProjectionLookupError,
     build_projection,
     explain_task,
@@ -28,10 +29,10 @@ from operations import (
     workflow_mermaid,
     workflow_view,
 )
-from projection import CoordinationProjection, PROJECTION_TOPICS, apply_event
-from scheduling import DEFAULT_TASK_PRIORITY, TASK_PRIORITY_CLASSES
-from topics import TELEMETRY_TOPICS
-from version import VERSION
+from logplane.projection import CoordinationProjection, PROJECTION_TOPICS, apply_event
+from logplane.scheduling import DEFAULT_TASK_PRIORITY, TASK_PRIORITY_CLASSES
+from logplane.topics import TELEMETRY_TOPICS
+from logplane.version import VERSION
 
 
 DEFAULT_URL = "http://127.0.0.1:8765"
@@ -40,7 +41,7 @@ DEFAULT_LEASE_SECONDS = 20.0
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent-bus",
+        prog="logplane",
         description="Understand agent work from immutable event history.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -112,21 +113,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(tail)
 
     init = commands.add_parser(
-        "init", help="create a safe local agent-bus configuration"
+        "init", help="create a safe local logplane configuration"
     )
     init.add_argument("directory", nargs="?", default=".")
     _add_output_option(init)
 
     serve = commands.add_parser("serve", help="run the local event bus")
-    serve.add_argument("--config", default="agent-bus.local.json")
+    serve.add_argument("--config", default="logplane.local.json")
 
     pm = commands.add_parser("pm", help="run the local orchestration manager")
-    pm.add_argument("--config", default="agent-bus.local.json")
+    pm.add_argument("--config", default="logplane.local.json")
     pm.add_argument("--snapshot", action="store_true", help="use a disposable local replay snapshot")
 
     for name in ("storage-audit", "backup"):
         command = commands.add_parser(name, help="audit local artifacts without deleting" if name == "storage-audit" else "create a verified database/artifact recovery bundle")
-        command.add_argument("--config", default="agent-bus.local.json")
+        command.add_argument("--config", default="logplane.local.json")
         command.add_argument("--artifact-root", action="append", default=[])
         if name == "backup":
             command.add_argument("destination")
@@ -142,20 +143,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot = commands.add_parser("snapshot", help="build or clear the local coordination replay cache")
     snapshot.add_argument("action", choices=["build", "clear"])
-    snapshot.add_argument("--config", default="agent-bus.local.json")
+    snapshot.add_argument("--config", default="logplane.local.json")
     _add_output_option(snapshot)
 
     rebuild = commands.add_parser(
         "rebuild-task-index", help="rebuild local task lookup from immutable history"
     )
-    rebuild.add_argument("--config", default="agent-bus.local.json")
+    rebuild.add_argument("--config", default="logplane.local.json")
     _add_output_option(rebuild)
 
     demo = commands.add_parser(
         "demo-worker", help="run a bounded worker for the local quick start"
     )
     demo.add_argument("name")
-    demo.add_argument("--config", default="agent-bus.local.json")
+    demo.add_argument("--config", default="logplane.local.json")
     demo.add_argument("--capacity", type=_positive_int, default=1)
     demo.add_argument("--capability", action="append", default=[])
     demo_outcome = demo.add_mutually_exclusive_group()
@@ -204,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     submit = commands.add_parser("submit", help="submit one controlled local task")
     submit.add_argument("title")
-    submit.add_argument("--config", default="agent-bus.local.json")
+    submit.add_argument("--config", default="logplane.local.json")
     submit.add_argument("--context", default="{}", help="JSON object passed to the agent")
     submit.add_argument("--capability", action="append", default=[])
     submit.add_argument(
@@ -237,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
         control.add_argument("scope", choices=("task", "workflow"))
         control.add_argument("target", help="task id or workflow correlation id")
         control.add_argument("--reason", required=True)
-        control.add_argument("--config", default="agent-bus.local.json")
+        control.add_argument("--config", default="logplane.local.json")
         control.add_argument("--idempotency-key")
         _add_output_option(control)
 
@@ -247,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     supersede.add_argument("task_id", type=_positive_int)
     supersede.add_argument("title", help="title for the replacement task")
     supersede.add_argument("--reason", required=True)
-    supersede.add_argument("--config", default="agent-bus.local.json")
+    supersede.add_argument("--config", default="logplane.local.json")
     supersede.add_argument("--context", default="{}")
     supersede.add_argument("--capability", action="append", default=[])
     supersede.add_argument("--max-retries", type=_nonnegative_int, default=0)
@@ -317,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
     )
     policy.add_argument("--reason", required=True)
-    policy.add_argument("--config", default="agent-bus.local.json")
+    policy.add_argument("--config", default="logplane.local.json")
     policy.add_argument("--idempotency-key")
     _add_output_option(policy)
 
@@ -333,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--unbounded", action="store_true"
     )
     agent_policy.add_argument("--reason", required=True)
-    agent_policy.add_argument("--config", default="agent-bus.local.json")
+    agent_policy.add_argument("--config", default="logplane.local.json")
     agent_policy.add_argument("--idempotency-key")
     _add_output_option(agent_policy)
 
@@ -357,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adapter_run.add_argument("integration_config")
     adapter_run.add_argument(
-        "--local-config", default="agent-bus.local.json"
+        "--local-config", default="logplane.local.json"
     )
     return parser
 
@@ -368,14 +369,14 @@ def _add_common_options(parser: argparse.ArgumentParser, *, defaults: bool = Fal
         "--url",
         default=(None if defaults else default),
         help=(
-            "bus URL (default: local config, then AGENT_BUS_URL, then "
+            "bus URL (default: local config, then LOGPLANE_URL, then "
             "http://127.0.0.1:8765)"
         ),
     )
     parser.add_argument(
         "--token",
-        default=(os.environ.get("AGENT_BUS_TOKEN") if defaults else default),
-        help="bearer token (default: AGENT_BUS_TOKEN)",
+        default=(os.environ.get("LOGPLANE_TOKEN") if defaults else default),
+        help="bearer token (default: LOGPLANE_TOKEN)",
     )
     parser.add_argument(
         "--lease-seconds",
@@ -410,9 +411,12 @@ def main(
     local_config_path: Optional[str | Path] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    legacy_error = legacy_environment_error()
+    if legacy_error:
+        print(f"logplane: {legacy_error}", file=stderr)
+        return 2
     if args.command == "demo":
-        import demo
-
+        from logplane import demo
         return demo.run(
             args.scenario,
             out=stdout,
@@ -430,10 +434,10 @@ def main(
         try:
             return _run_local_command(args, stdout=stdout, stderr=stderr)
         except httpx.HTTPError as exc:
-            print(f"agent-bus: could not reach local bus: {_friendly_error(exc)}", file=stderr)
+            print(f"logplane: could not reach local bus: {_friendly_error(exc)}", file=stderr)
             return 2
         except (OSError, json.JSONDecodeError, ValueError, BusProtocolError) as exc:
-            print(f"agent-bus: {exc}", file=stderr)
+            print(f"logplane: {exc}", file=stderr)
             return 2
         except KeyboardInterrupt:
             return 130
@@ -444,13 +448,13 @@ def main(
             local_config_path=getattr(args, 'config', None) or local_config_path,
         )
     except ValueError as exc:
-        print(f"agent-bus: {exc}", file=stderr)
+        print(f"logplane: {exc}", file=stderr)
         return 2
 
     client = client_factory(args.url, token=args.token)
     try:
         if args.command in {'tasks', 'workflows', 'decisions'}:
-            from operator_controls import read_snapshot
+            from logplane.operator_controls import read_snapshot
             state, head, _, _, _ = read_snapshot(client)
             value = discovery_view(state, kind=args.command, now=clock(), lease_seconds=args.lease_seconds,
                                    limit=args.limit, after_task_id=getattr(args, 'after_task_id', 0),
@@ -459,7 +463,7 @@ def main(
             value['observed_through_id'] = head
             _render_simple(value, args, stdout, _format_discovery(value, args.command))
         elif args.command in {'cancel', 'retry', 'decide'}:
-            from operator_controls import intervene
+            from logplane.operator_controls import intervene
 
             def publish(intent):
                 headers = {'Authorization': f'Bearer {args.token}'} if args.token else {}
@@ -515,7 +519,7 @@ def main(
             _render(value, args, stdout, _format_explanation)
         elif args.command == "workflow":
             if args.mermaid and args.json:
-                print("agent-bus: --mermaid and --json cannot be combined", file=stderr)
+                print("logplane: --mermaid and --json cannot be combined", file=stderr)
                 return 2
             state, _ = _coordination_snapshot(client)
             telemetry = (
@@ -541,14 +545,14 @@ def main(
             return _tail(client, args, stdout)
         return 0
     except ProjectionLookupError as exc:
-        print(f"agent-bus: {exc}", file=stderr)
+        print(f"logplane: {exc}", file=stderr)
         return 3
     except (httpx.HTTPError, BusProtocolError, json.JSONDecodeError, ValueError) as exc:
         if args.command in {'cancel', 'retry', 'decide'}:
-            print(f"agent-bus: intervention failed: {_friendly_error(exc)}. If publication was interrupted, "
+            print(f"logplane: intervention failed: {_friendly_error(exc)}. If publication was interrupted, "
                   "retry the identical command/key; do not assume it was not recorded.", file=stderr)
         else:
-            print(f"agent-bus: could not read {args.url}: {_friendly_error(exc)}", file=stderr)
+            print(f"logplane: could not read {args.url}: {_friendly_error(exc)}", file=stderr)
         return 2
     except KeyboardInterrupt:
         return 130
@@ -568,20 +572,20 @@ def _resolve_observer_url(
             raise ValueError("--url must be a non-empty string")
         return explicit_url.rstrip("/")
 
-    from local_config import DEFAULT_LOCAL_CONFIG, LocalConfig
+    from logplane.local_config import DEFAULT_LOCAL_CONFIG, LocalConfig
 
     path = (
         Path(local_config_path).expanduser()
         if local_config_path is not None
         else Path.cwd() / DEFAULT_LOCAL_CONFIG
     )
-    environment_url = os.environ.get("AGENT_BUS_URL")
+    environment_url = os.environ.get("LOGPLANE_URL")
     if path.exists():
         configured_url = LocalConfig.from_file(path).bus_url.rstrip("/")
         if environment_url and environment_url.rstrip("/") != configured_url:
             raise ValueError(
-                f"AGENT_BUS_URL ({environment_url}) conflicts with local config "
-                f"({configured_url}); unset AGENT_BUS_URL or pass --url explicitly"
+                f"LOGPLANE_URL ({environment_url}) conflicts with local config "
+                f"({configured_url}); unset LOGPLANE_URL or pass --url explicitly"
             )
         return configured_url
     if environment_url:
@@ -598,8 +602,8 @@ def _run_local_command(
     """Run onboarding and integration commands before creating an observer."""
     if args.command in {"storage-audit", "backup", "verify-backup", "restore"}:
         import sqlite3
-        from recovery import audit, backup, verify_bundle, restore
-        from local_config import LocalConfig
+        from logplane.recovery import audit, backup, verify_bundle, restore
+        from logplane.local_config import LocalConfig
 
         try:
             if args.command == "verify-backup":
@@ -619,15 +623,15 @@ def _run_local_command(
         return 0 if value.get("ok") else 4
 
     if args.command == "init":
-        from local_config import initialize_local_config
+        from logplane.local_config import initialize_local_config
 
         path = initialize_local_config(args.directory)
         value = {"ok": True, "config": str(path)}
-        _render_simple(value, args, stdout, f"Created {path}\nNext: agent-bus serve --config {path}")
+        _render_simple(value, args, stdout, f"Created {path}\nNext: logplane serve --config {path}")
         return 0
 
     if args.command == "adapter" and args.adapter_command == "check":
-        from adapter_check import run_adapter_check
+        from logplane.adapter_check import run_adapter_check
 
         report = run_adapter_check(python_target=args.python_target,
                                    integration_config=args.integration_config,
@@ -641,7 +645,7 @@ def _run_local_command(
         _render_simple(value, args, stdout, "\n".join(lines))
         return 0 if report.ok else 4
 
-    from local_config import LocalConfig
+    from logplane.local_config import LocalConfig
 
     local_path = (
         args.local_config
@@ -653,7 +657,7 @@ def _run_local_command(
 
     if args.command == "snapshot":
         import sqlite3
-        from projection_store import load_projection, save_projection, clear_projection
+        from logplane.projection_store import load_projection, save_projection, clear_projection
 
         try:
             if args.action == "clear":
@@ -674,7 +678,7 @@ def _run_local_command(
         return 0
 
     if args.command == "rebuild-task-index":
-        import bus
+        from logplane import bus
         import sqlite3
 
         if not local.database_path.is_file():
@@ -696,8 +700,7 @@ def _run_local_command(
     if args.command == "serve":
         import uvicorn
 
-        import bus
-
+        from logplane import bus
         class BusServer(uvicorn.Server):
             """uvicorn server that ends open event streams on the first stop signal."""
 
@@ -705,7 +708,7 @@ def _run_local_command(
                 bus.begin_shutdown()
                 super().handle_exit(sig, frame)
 
-        server = BusServer(uvicorn.Config("bus:app", host=local.host, port=local.port))
+        server = BusServer(uvicorn.Config("logplane.bus:app", host=local.host, port=local.port))
         startup_failure = ValueError(
             f"the bus could not start on {local.bus_url}; check the log above "
             "(is the port already in use?)"
@@ -724,14 +727,13 @@ def _run_local_command(
     if args.command == "pm":
         # Import only after the local environment is selected: pm_agent reads
         # its authoritative URL and lease settings at import time.
-        import pm_agent
-
+        from logplane import pm_agent
         pm_agent.main(snapshot_path=local.database_path if args.snapshot else None)
         return 0
     if args.command == "demo-worker":
-        from client import BusClient
-        from runtime import WorkerRuntime
-        from worker import DemoExecutor
+        from logplane.client import BusClient
+        from logplane.runtime import WorkerRuntime
+        from logplane.worker import DemoExecutor
 
         runtime = WorkerRuntime(
             BusClient(local.bus_url, actor=args.name),
@@ -749,7 +751,7 @@ def _run_local_command(
         runtime.run()
         return 0
     if args.command == "submit":
-        from client import BusClient
+        from logplane.client import BusClient
 
         context = json.loads(args.context)
         if not isinstance(context, dict):
@@ -781,7 +783,7 @@ def _run_local_command(
         )
         return 0
     if args.command in {"pause", "resume"}:
-        from client import BusClient
+        from logplane.client import BusClient
 
         bus = BusClient(local.bus_url, actor="human")
         method_name = f"{args.command}_{args.scope}"
@@ -808,7 +810,7 @@ def _run_local_command(
         )
         return 0
     if args.command == "supersede":
-        from client import BusClient
+        from logplane.client import BusClient
 
         context = json.loads(args.context)
         if not isinstance(context, dict):
@@ -837,7 +839,7 @@ def _run_local_command(
         )
         return 0
     if args.command == "policy":
-        from client import BusClient
+        from logplane.client import BusClient
 
         field_names = (
             "max_active_assignments",
@@ -872,7 +874,7 @@ def _run_local_command(
         )
         return 0
     if args.command == "agent-policy":
-        from client import BusClient
+        from logplane.client import BusClient
 
         limit = None if args.unbounded else args.max_active_assignments
         event = BusClient(local.bus_url, actor="human").set_agent_policy(
@@ -890,9 +892,9 @@ def _run_local_command(
         )
         return 0
     if args.command == "adapter" and args.adapter_command == "run":
-        from client import BusClient
-        from integration import IntegrationConfig
-        from runtime import WorkerRuntime
+        from logplane.client import BusClient
+        from logplane.integration import IntegrationConfig
+        from logplane.runtime import WorkerRuntime
 
         integration = IntegrationConfig.from_file(args.integration_config)
         runtime = WorkerRuntime(
@@ -904,7 +906,7 @@ def _run_local_command(
         )
         runtime.run()
         return 0
-    print("agent-bus: unsupported command", file=stderr)
+    print("logplane: unsupported command", file=stderr)
     return 2
 
 
@@ -1251,7 +1253,7 @@ def _friendly_error(exc: Exception) -> str:
         return "the bus is not reachable; start the server or check --url"
     if isinstance(exc, httpx.HTTPStatusError):
         if exc.response.status_code == 401:
-            return "authentication failed; set AGENT_BUS_TOKEN or pass --token"
+            return "authentication failed; set LOGPLANE_TOKEN or pass --token"
         return f"server returned HTTP {exc.response.status_code}"
     return str(exc)
 
@@ -1288,7 +1290,7 @@ def _nonnegative_number(value: str) -> float:
 
 
 def _lease_default() -> float:
-    raw = os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS")
+    raw = os.environ.get("LOGPLANE_WORKER_LEASE_SECONDS")
     if raw is None:
         return DEFAULT_LEASE_SECONDS
     try:

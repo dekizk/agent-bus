@@ -10,12 +10,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from scheduling import (
+from logplane.scheduling import (
     DEFAULT_TASK_PRIORITY,
     task_schedule_key,
     validate_task_priority,
 )
-from topics import COORDINATION_TOPICS
+from logplane.topics import COORDINATION_TOPICS
 
 ACTIVE_TASK_STATUSES = {"assigned", "started"}
 DEPENDENCY_TERMINAL_STATUSES = {
@@ -113,6 +113,7 @@ class TaskRecord:
     context: dict = field(default_factory=dict)
     external_origin: Optional[dict] = None
     ownership_mode: str = "controlled"
+    # Owner value stored in event history; see adoption.ExecutionOwner.
     ownership_owner: str = "agent-bus"
 
 

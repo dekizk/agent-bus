@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import agent_bus_cli
-import bus
-from client import BusClient
-from executors import Completed
-from operations import explain_task, workflow_view
-from pm_agent import PMState, plan_next_emission
-from projection import apply_event
-from runtime import WorkerRuntime
+from logplane import cli as logplane_cli
+from logplane import bus
+from logplane.client import BusClient
+from logplane.executors import Completed
+from logplane.operations import explain_task, workflow_view
+from logplane.pm_agent import PMState, plan_next_emission
+from logplane.projection import apply_event
+from logplane.runtime import WorkerRuntime
 from tests.test_pm_agent import assigned, created, event, registered
 from tests.test_runtime import FakeBus as RuntimeFakeBus, RuntimeTestCase, assigned_event
 
@@ -517,7 +517,7 @@ class PhaseTwoRuntimeTests(RuntimeTestCase):
 
 
 class PhaseTwoClientAndCliTests(unittest.TestCase):
-    @patch("client.httpx.post")
+    @patch("logplane.client.httpx.post")
     def test_client_helpers_publish_versioned_control_shapes(self, post):
         response = MagicMock()
         response.raise_for_status.return_value = None
@@ -550,7 +550,7 @@ class PhaseTwoClientAndCliTests(unittest.TestCase):
             self.assertEqual(3, body["payload"]["supersedes_task_id"])
 
     def test_cli_exposes_task_workflow_and_supersession_controls(self):
-        parser = agent_bus_cli.build_parser()
+        parser = logplane_cli.build_parser()
         task_pause = parser.parse_args(
             ["pause", "task", "3", "--reason", "hold"]
         )

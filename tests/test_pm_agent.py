@@ -6,10 +6,10 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
-import bus
-import pm_agent
-from pm_agent import PMState, apply_event, plan_next_emission, reconcile
-from topics import COORDINATION_TOPICS, INTEGRATION_TOPICS, TELEMETRY_TOPICS
+from logplane import bus
+from logplane import pm_agent
+from logplane.pm_agent import PMState, apply_event, plan_next_emission, reconcile
+from logplane.topics import COORDINATION_TOPICS, INTEGRATION_TOPICS, TELEMETRY_TOPICS
 
 
 def event(
@@ -1344,8 +1344,8 @@ class PMMainTests(unittest.TestCase):
 
         fake_bus = MainBus()
         with (
-            patch("pm_agent.single_pm_lock", return_value=nullcontext()),
-            patch("pm_agent.BusClient", return_value=fake_bus),
+            patch("logplane.pm_agent.single_pm_lock", return_value=nullcontext()),
+            patch("logplane.pm_agent.BusClient", return_value=fake_bus),
         ):
             pm_agent.main()
 

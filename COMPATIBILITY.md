@@ -6,7 +6,7 @@ Release status and outstanding evidence live in [ROADMAP.md](ROADMAP.md).
 
 ## Supported deployment target
 
-Agent-bus targets one trusted local host running macOS or Linux, using CPython
+logplane targets one trusted local host running macOS or Linux, using CPython
 3.10 or newer. The CI matrix covers 3.10, 3.13, and 3.14; results for a new
 matrix entry must pass before that entry is treated as verified. Other Python
 versions are not verified merely because package metadata permits installation.
@@ -23,8 +23,8 @@ require a passing package-install smoke, not just tests in an editable checkout.
 
 | Surface | Current baseline | Compatibility boundary |
 | --- | --- | --- |
-| Package | `0.12.0` release | Pre-1.0 changes must be documented; do not infer a 1.x guarantee yet |
-| Python integration | Names exported by `agent_bus`, `agent_bus.adapters`, `agent_bus.protocol` | Documented constructors, methods, typed outcomes, and effect identity |
+| Package | `0.13.0` release | Pre-1.0 changes must be documented; do not infer a 1.x guarantee yet |
+| Python integration | Names exported by `logplane`, `logplane.adapters`, `logplane.protocol` | Documented constructors, methods, typed outcomes, and effect identity |
 | Executor wire format | `agent-bus.executor` v1 | Selected envelope version is explicit; headers are strict |
 | Event envelope | Built-in writes use schema v2 | History is immutable; acceptance and replay semantics are part of the contract |
 | Local/adapter configuration | Each uses schema v1 | Version and supported keys must match that component |
@@ -32,12 +32,13 @@ require a passing package-install smoke, not just tests in an editable checkout.
 | Database indexes / PM snapshots | Derived local caches | No public table layout or snapshot-file compatibility promise |
 | Recovery bundles | Versioned verified local format | Unsupported formats must fail safely; hashes are integrity checks, not signatures |
 
-Flat implementation modules remain importable for existing integrations, but
-new code should use `agent_bus`. Private helpers, reducer dataclass internals,
+Implementation modules live under `logplane.*` (for example `logplane.bus`),
+but integrations should import from `logplane`, `logplane.adapters`, and
+`logplane.protocol`. Private helpers, reducer dataclass internals,
 SQLite tables, test fixtures, and benchmark output are not public integration
-APIs. The `demo` module behind `agent-bus demo` is a CLI implementation detail,
-not an integration API. Keeping legacy modules importable is not a promise to freeze all their
-private members. Repository examples are source assets, not installed packages.
+APIs. The `demo` module behind `logplane demo` is a CLI implementation detail,
+not an integration API. Importable implementation modules are not a promise
+to freeze their private members. Repository examples are source assets, not installed packages.
 
 ### Additions and unknown values
 
@@ -122,6 +123,19 @@ and changes no event, executor, configuration, or `--json` field contract.
 It adds no schema migration and does not certify physical WAL recovery, every
 historical release, or downgrades. See the [fixture provenance](tests/fixtures/compatibility/v0.11.0-upgrade/README.md).
 
+v0.13.0 renames the project from agent-bus to logplane: the distribution,
+import package, `logplane` command, `LOGPLANE_*` environment variables, and
+`logplane.local.json` config file. The pre-0.13 flat modules and the
+`agent_bus` package are removed, and old `AGENT_BUS_*` variables or an
+`agent-bus.local.json` without a `logplane.local.json` fail with a rename
+message instead of being ignored. Identifiers stored in history or shared with
+external adapters keep their original spelling, so existing databases,
+backups, and adapters work unchanged: the `agent-bus` ownership owner, the
+effect-key salts behind `effect_id()`, the `agent-bus.executor` protocol name,
+the `X-Agent-Bus-*` HTTP headers, the `agent_bus_conformance_probe` context
+key, and the backup bundle kinds. See the
+[migration steps](RELEASE_NOTES.md#migrating-from-agent-bus).
+
 The owner-approved v1.0 upgrade baseline is **v0.11.0**: this is the oldest
 starting release for a supported direct upgrade to v1.0. Direct upgrades from
 earlier releases are not promised. Any intervening release included in the
@@ -156,9 +170,10 @@ From a development checkout with a supported Python:
 
 ```sh
 python -m pip install -r requirements-dev.txt
+python -m pip install -e .
 python -m pytest -q
 python -m build
-python scripts/check_release.py --wheel dist/agent_bus-0.12.0-py3-none-any.whl
+python scripts/check_release.py --wheel dist/logplane-0.13.0-py3-none-any.whl
 ```
 
 Use the wheel filename produced by the build if its version differs. The build

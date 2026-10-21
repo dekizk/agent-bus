@@ -7,8 +7,8 @@ from pathlib import Path
 
 import httpx
 
-import agent_bus_cli
-from observer import ObserverClient
+from logplane import cli as logplane_cli
+from logplane.observer import ObserverClient
 from tests.test_operations import completed_workflow_events, event, terminal_model
 
 
@@ -62,7 +62,7 @@ class CliTests(unittest.TestCase):
     def run_cli(self, argv):
         stdout = io.StringIO()
         stderr = io.StringIO()
-        code = agent_bus_cli.main(
+        code = logplane_cli.main(
             argv,
             stdout=stdout,
             stderr=stderr,
@@ -82,7 +82,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual("", stderr)
 
     def test_submit_accepts_immutable_scheduling_policy(self):
-        args = agent_bus_cli.build_parser().parse_args(
+        args = logplane_cli.build_parser().parse_args(
             [
                 "submit",
                 "scheduled work",

@@ -1,6 +1,6 @@
-"""Scripted, self-contained demonstrations of agent-bus.
+"""Scripted, self-contained demonstrations of logplane.
 
-``agent-bus demo <scenario>`` starts a real bus, PM, and workers as separate
+``logplane demo <scenario>`` starts a real bus, PM, and workers as separate
 processes in a fresh directory, narrates a short story against them, and keeps
 the resulting event history for inspection. Crashes are genuine SIGKILLs of
 those processes, and every view is the normal CLI projection over the log.
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, TextIO
 
-from executors import AssignmentContext, Blocked, Completed
+from logplane.executors import AssignmentContext, Blocked, Completed
 
 # --------------------------------------------------------------------------
 # Scenario agents (these run inside the worker subprocesses)
@@ -268,7 +268,7 @@ class ScenarioExecutor:
                 return Blocked(question)
             severity = normalize_choice(decision, SEVERITIES)
             if severity is None:
-                # An answer from `agent-bus decide` is free-form: ask again.
+                # An answer from `logplane decide` is free-form: ask again.
                 return Blocked(f"{question} ({json.dumps(decision)} is not one of: "
                                f"{', '.join(SEVERITIES)}.)")
         for finding in findings:
@@ -337,8 +337,8 @@ def read_inbox_effects(path: Path) -> set[str]:
 
 
 def _worker_main(argv: list[str]) -> int:
-    from client import BusClient
-    from runtime import WorkerRuntime
+    from logplane.client import BusClient
+    from logplane.runtime import WorkerRuntime
 
     parser = argparse.ArgumentParser(prog="demo worker")
     parser.add_argument("--url", required=True)
@@ -350,13 +350,13 @@ def _worker_main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     import uuid
 
-    from telemetry import BusTelemetrySink, ProducerIdentity
-    from version import VERSION
+    from logplane.telemetry import BusTelemetrySink, ProducerIdentity
+    from logplane.version import VERSION
 
     bus = BusClient(args.url, actor=args.name)
     instance_id = uuid.uuid4().hex
     telemetry = BusTelemetrySink(bus, producer=ProducerIdentity(
-        implementation="agent-bus-demo", instance_id=instance_id, version=VERSION))
+        implementation="logplane-demo", instance_id=instance_id, version=VERSION))
     runtime = WorkerRuntime(
         bus,
         name=args.name,
@@ -408,8 +408,8 @@ def _free_port() -> int:
 
 def _child_environment() -> dict[str, str]:
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith("AGENT_BUS_")}
-    source = str(Path(__file__).resolve().parent)
+                   if not key.startswith("LOGPLANE_")}
+    source = str(Path(__file__).resolve().parents[1])  # the directory containing logplane/
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
     environment["PYTHONUNBUFFERED"] = "1"
@@ -478,7 +478,7 @@ class Harness:
 
     # -- setup ------------------------------------------------------------
     def _write_config(self) -> Path:
-        from local_config import initialize_local_config
+        from logplane.local_config import initialize_local_config
 
         path = initialize_local_config(self.workdir)
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -498,9 +498,9 @@ class Harness:
         return process
 
     def start_bus(self) -> None:
-        from observer import ObserverClient
+        from logplane.observer import ObserverClient
 
-        self._spawn("bus", ["-m", "agent_bus_cli", "serve", "--config", str(self.config_path)])
+        self._spawn("bus", ["-m", "logplane.cli", "serve", "--config", str(self.config_path)])
         observer = ObserverClient(self.url)
         try:
             self.wait_until(lambda: _healthy(observer), 20, "the bus to start")
@@ -509,10 +509,10 @@ class Harness:
         self._start_tail()
 
     def start_pm(self) -> None:
-        self._spawn("pm", ["-m", "agent_bus_cli", "pm", "--config", str(self.config_path)])
+        self._spawn("pm", ["-m", "logplane.cli", "pm", "--config", str(self.config_path)])
 
     def start_worker(self, name: str, capabilities: Iterable[str] = (), capacity: int = 1) -> None:
-        argv = ["-m", "demo", "_worker", "--url", self.url, "--name", name,
+        argv = ["-m", "logplane.demo", "_worker", "--url", self.url, "--name", name,
                 "--workdir", str(self.workdir), "--capacity", str(capacity),
                 "--heartbeat", str(self.heartbeat_seconds)]
         for capability in capabilities:
@@ -548,7 +548,7 @@ class Harness:
 
     # -- reading state ----------------------------------------------------
     def events(self, topics: Optional[list[str]] = None, after: int = 0) -> list[dict]:
-        from observer import ObserverClient
+        from logplane.observer import ObserverClient
 
         observer = ObserverClient(self.url)
         try:
@@ -557,7 +557,7 @@ class Harness:
             observer.close()
 
     def last_event_id(self) -> int:
-        from observer import ObserverClient
+        from logplane.observer import ObserverClient
 
         observer = ObserverClient(self.url)
         try:
@@ -646,12 +646,12 @@ class Harness:
     # -- running the real CLI ---------------------------------------------
     def view(self, args: list[str], *, show: bool = True, shown_as: Optional[list[str]] = None):
         """Run a read-only CLI view in-process against this demo's bus."""
-        import agent_bus_cli
+        from logplane import cli as logplane_cli
 
         if show:
-            self.command(["agent-bus", *(shown_as or args)])
+            self.command(["logplane", *(shown_as or args)])
         stdout, stderr = io.StringIO(), io.StringIO()
-        code = agent_bus_cli.main([*args, "--url", self.url], stdout=stdout, stderr=stderr)
+        code = logplane_cli.main([*args, "--url", self.url], stdout=stdout, stderr=stderr)
         output = stdout.getvalue() if code == 0 else stderr.getvalue()
         if show:
             self.block(output)
@@ -661,13 +661,13 @@ class Harness:
             show_output: bool = True, quiet: bool = False) -> str:
         """Run a writing CLI command as a separate process, as a user would."""
         if not quiet:
-            self.command(["agent-bus", *(shown_as or args)])
+            self.command(["logplane", *(shown_as or args)])
         completed = subprocess.run(
-            [sys.executable, "-m", "agent_bus_cli", *args, "--config", str(self.config_path)],
+            [sys.executable, "-m", "logplane.cli", *args, "--config", str(self.config_path)],
             cwd=self.workdir, env=self.environment, capture_output=True, text=True, timeout=60,
         )
         if completed.returncode != 0:
-            raise DemoError(f"agent-bus {' '.join(args)} failed: {completed.stderr.strip()}")
+            raise DemoError(f"logplane {' '.join(args)} failed: {completed.stderr.strip()}")
         if show_output and not quiet:
             self.block(completed.stdout)
         return completed.stdout
@@ -697,7 +697,7 @@ class Harness:
         self._tail_thread.start()
 
     def _tail(self) -> None:
-        from observer import ObserverClient
+        from logplane.observer import ObserverClient
 
         observer = ObserverClient(self.url)
         self._tail_observer = observer
@@ -869,7 +869,7 @@ def scenario_budget(h: Harness) -> None:
     first, workflow = h.submit("Summarise paper 1", context=work, quiet=True)
     for number in range(2, 11):
         h.submit(f"Summarise paper {number}", context=work, correlation_id=workflow, quiet=True)
-    h.command(["agent-bus", "submit", "Summarise paper N", "--correlation-id", workflow])
+    h.command(["logplane", "submit", "Summarise paper N", "--correlation-id", workflow])
     h.emit(f"  Submitted tasks {first}–{first + 9} (one workflow)")
     h.cli(["policy", workflow, "--max-cost", "2", "--reserve-cost-per-assignment", "0.5",
            "--reason", "nightly research budget"])
@@ -1021,20 +1021,20 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
         read_pauses: bool = False) -> int:
     if scenario_name is None or scenario_name not in SCENARIOS:
         if scenario_name is not None:
-            print(f"agent-bus: unknown demo scenario: {scenario_name}", file=out)
+            print(f"logplane: unknown demo scenario: {scenario_name}", file=out)
         print("Scenarios:", file=out)
         for scenario in SCENARIOS.values():
             print(f"  {scenario.name:<14} {scenario.summary}", file=out)
-        print("\nRun one with: agent-bus demo recovery", file=out)
+        print("\nRun one with: logplane demo recovery", file=out)
         return 0 if scenario_name is None else 2
     if directory:
         workdir = Path(directory).expanduser().resolve()
         if workdir.exists() and any(workdir.iterdir()):
-            print(f"agent-bus: demo directory must be new or empty: {workdir}", file=out)
+            print(f"logplane: demo directory must be new or empty: {workdir}", file=out)
             return 2
         workdir.mkdir(parents=True, exist_ok=True)
     else:
-        workdir = Path(tempfile.mkdtemp(prefix=f"agent-bus-demo-{scenario_name}-")).resolve()
+        workdir = Path(tempfile.mkdtemp(prefix=f"logplane-demo-{scenario_name}-")).resolve()
     tty = hasattr(stdin, "isatty") and stdin.isatty() and hasattr(out, "isatty") and out.isatty()
     interactive = tty and not assume_yes
     color = hasattr(out, "isatty") and out.isatty() and "NO_COLOR" not in os.environ
@@ -1051,13 +1051,13 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
         if keep_running:
             harness.say(f"The bus is still running at {harness.url}. Explore it from another "
                         "terminal, for example:")
-            harness.block(f"agent-bus --url {harness.url} workflows\n"
-                          f"agent-bus --url {harness.url} tasks")
+            harness.block(f"logplane --url {harness.url} workflows\n"
+                          f"logplane --url {harness.url} tasks")
             harness._tail_stop.set()
             with contextlib.suppress(EOFError):
                 input("  Press Enter to stop the demo. ")
     except DemoError as exc:
-        harness.emit(f"\nagent-bus demo: {exc}")
+        harness.emit(f"\nlogplane demo: {exc}")
         code = 1
     except KeyboardInterrupt:
         code = 130
@@ -1065,7 +1065,7 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
         harness.stop_all()
     harness.emit()
     harness.emit(f"History is kept in {workdir}. To reopen it later:")
-    harness.emit(f"  agent-bus serve --config {harness.config_path}")
+    harness.emit(f"  logplane serve --config {harness.config_path}")
     return code
 
 

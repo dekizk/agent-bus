@@ -1,6 +1,6 @@
 """Public adapter imports kept separate for discoverability."""
 
-from integration import (
+from logplane.integration import (
     CliAgentAdapter,
     CliAgentConfig,
     HttpAgentAdapter,

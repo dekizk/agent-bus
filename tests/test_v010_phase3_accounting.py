@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import agent_bus_cli
-import bus
-from client import BusClient
-from executors import AssignmentContext
-from local_config import LocalConfig, initialize_local_config
-from operations import explain_task, worker_views, workflow_view
-from pm_agent import (
+from logplane import cli as logplane_cli
+from logplane import bus
+from logplane.client import BusClient
+from logplane.executors import AssignmentContext
+from logplane.local_config import LocalConfig, initialize_local_config
+from logplane.operations import explain_task, worker_views, workflow_view
+from logplane.pm_agent import (
     OrderedProjectionCursor,
     PM_TOPICS,
     PMState,
@@ -20,8 +20,8 @@ from pm_agent import (
     _optional_positive_env,
     reconcile,
 )
-from projection import replay_events
-from telemetry import BusTelemetrySink, ProducerIdentity
+from logplane.projection import replay_events
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity
 
 
 class DirectPMBus:
@@ -458,7 +458,7 @@ class Phase3CLocalSurfaceTests(unittest.TestCase):
     def test_pm_environment_defaults_reject_invalid_values(self):
         with patch.dict(
             os.environ,
-            {"AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS": "4"},
+            {"LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS": "4"},
             clear=True,
         ):
             self.assertEqual(4, _default_workflow_max_active_assignments())
@@ -486,10 +486,10 @@ class Phase3CLocalSurfaceTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 legacy.apply_environment()
                 self.assertEqual(
-                    "unbounded", os.environ["AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS"]
+                    "unbounded", os.environ["LOGPLANE_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS"]
                 )
                 self.assertEqual(
-                    "0", os.environ["AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT"]
+                    "0", os.environ["LOGPLANE_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT"]
                 )
 
     def test_client_and_cli_policy_surfaces_are_typed(self):
@@ -520,10 +520,10 @@ class Phase3CLocalSurfaceTests(unittest.TestCase):
                 "topic": "workflow.policy_set",
                 "payload": {},
             }
-            with patch("client.BusClient") as client_type:
+            with patch("logplane.client.BusClient") as client_type:
                 client_type.return_value.set_workflow_policy.return_value = response
                 stdout = io.StringIO()
-                code = agent_bus_cli.main(
+                code = logplane_cli.main(
                     [
                         "policy",
                         "flow",

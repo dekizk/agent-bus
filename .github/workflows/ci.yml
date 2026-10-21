@@ -41,6 +41,7 @@ jobs:
           else
             python -m pip install -r requirements-dev.txt
           fi
+          python -m pip install --no-deps -e .
       - name: Preserve resolved dependencies
         if: always()
         run: python -m pip freeze > .ci-results/dependencies.txt

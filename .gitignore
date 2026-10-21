@@ -25,5 +25,8 @@ events.db-shm
 .offsets/
 pm_agent.lock
 artifacts/
+.logplane/
+logplane.local.json
+# pre-0.13 names, still ignored so old local state is never committed
 .agent-bus/
 agent-bus.local.json

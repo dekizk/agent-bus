@@ -4,11 +4,11 @@ import time
 import unittest
 from pathlib import Path
 
-import bus
-from adoption import AdoptionBridge, AdoptionMode, ExternalOrigin
-from executors import Blocked, Completed, InProcessExecutor
-from pm_agent import PMState, PM_TOPICS, apply_event, reconcile
-from runtime import WorkerRuntime
+from logplane import bus
+from logplane.adoption import AdoptionBridge, AdoptionMode, ExternalOrigin
+from logplane.executors import Blocked, Completed, InProcessExecutor
+from logplane.pm_agent import PMState, PM_TOPICS, apply_event, reconcile
+from logplane.runtime import WorkerRuntime
 
 
 class DirectClient:

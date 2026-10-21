@@ -12,13 +12,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
 
-from executor_protocol import (
+from logplane.executor_protocol import (
     LEGACY_PROTOCOL_VERSION,
     assignment_message,
     parse_outcome_message,
     validate_protocol_version,
 )
-from limits import MAX_TASK_DEPENDENCIES
+from logplane.limits import MAX_TASK_DEPENDENCIES
 
 DEFAULT_MAX_PROTOCOL_BYTES = 64 * 1024
 
@@ -173,6 +173,7 @@ class AssignmentContext:
     assignee: str = ""
     worker_instance_id: str = ""
     ownership_mode: str = "controlled"
+    # Owner value stored in event history; see adoption.ExecutionOwner.
     ownership_owner: str = "agent-bus"
     external_origin: Optional[Mapping[str, Any]] = None
     decisions: tuple[Mapping[str, Any], ...] = ()
@@ -253,7 +254,7 @@ class AssignmentContext:
         if self.ownership_mode not in {"controlled", "canary"}:
             raise ValueError("assigned work must use controlled or canary mode")
         if self.ownership_owner != "agent-bus":
-            raise ValueError("assigned work must be owned by agent-bus")
+            raise ValueError("assigned work must be owned by logplane")
         object.__setattr__(
             self,
             "context",
@@ -362,6 +363,9 @@ class AssignmentContext:
     @property
     def effect_scope(self) -> str:
         """Stable identity for external effects across delivery attempts."""
+        # The "agent-bus.*" salts predate the logplane name. Changing them
+        # would change every effect key, so a retried task could repeat an
+        # external effect that already happened.
         material = json.dumps(
             ["agent-bus.effect-scope.v1", self.correlation_id, self.task_id],
             ensure_ascii=False,

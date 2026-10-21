@@ -12,11 +12,11 @@ import time
 import tracemalloc
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import bus
-from client import BusClient
-from runtime import WorkerRuntime
-from projection_store import load_projection, save_projection
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from logplane import bus
+from logplane.client import BusClient
+from logplane.runtime import WorkerRuntime
+from logplane.projection_store import load_projection, save_projection
 
 
 def timed(fn):
@@ -46,7 +46,7 @@ def workload(size, shape, worker_count, heartbeat_count):
 def run(size, shape, workers, heartbeats):
     previous = bus.DB_PATH
     try:
-        with tempfile.TemporaryDirectory(prefix="agent-bus-replay-") as directory:
+        with tempfile.TemporaryDirectory(prefix="logplane-replay-") as directory:
             bus.DB_PATH = Path(directory) / "events.db"
             bus.init_db()
             rows = workload(size, shape, workers, heartbeats)

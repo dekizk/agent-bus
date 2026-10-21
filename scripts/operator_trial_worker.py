@@ -2,7 +2,7 @@
 import argparse
 from pathlib import Path
 
-from agent_bus import BusClient, WorkerRuntime, Completed, Blocked, PermanentFailure
+from logplane import BusClient, WorkerRuntime, Completed, Blocked, PermanentFailure
 
 
 class TrialExecutor:

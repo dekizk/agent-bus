@@ -1,6 +1,6 @@
 # Audit triage pipeline
 
-A smart-contract audit workflow coordinated by agent-bus: a lead agent scopes
+A smart-contract audit workflow coordinated by logplane: a lead agent scopes
 the audit, reviewer agents split the contracts, duplicate findings are merged,
 a human makes the contested severity call, and the lead writes the report and
 submits each finding to a contest platform exactly once.
@@ -9,11 +9,11 @@ Run it end to end with deterministic stand-in agents (no model, network, or
 credentials):
 
 ```sh
-agent-bus demo audit-triage
+logplane demo audit-triage
 ```
 
 The demo starts its own bus, PM, and workers in a fresh directory and on a
-free port, so it never touches your `.agent-bus/` history or a bus you already
+free port, so it never touches your `.logplane/` history or a bus you already
 run. It kills one reviewer mid-review and the lead mid-submission with
 `SIGKILL`, so both recoveries are real. Add `--yes` to accept the default
 severity, or `--pace 0.5` to run faster.
@@ -30,7 +30,7 @@ severity, or `--pace 0.5` to run faster.
 | Submit findings | report | `lead` | appends to `contest-inbox.jsonl` | submit to the contest platform |
 
 The stand-ins live in `demo.py` (`ScenarioExecutor`). Each stage reads
-`context.stage` and the upstream `result` objects that agent-bus delivers in
+`context.stage` and the upstream `result` objects that logplane delivers in
 `assignment.dependencies`.
 
 ## What each part demonstrates
@@ -40,7 +40,7 @@ The stand-ins live in `demo.py` (`ScenarioExecutor`). Each stage reads
 - **Worker loss.** When a reviewer dies, its lease expires, the attempt is
   recorded as `task.assignment_expired`, and the review is reassigned.
 - **Human decisions.** The triage agent returns `Blocked(question)`. The PM
-  records `decision.needed`. Your `agent-bus decide` answer reaches the next
+  records `decision.needed`. Your `logplane decide` answer reaches the next
   attempt through `assignment.decisions`.
 - **Exactly-once external effects.** The submitter keys every submission with
   `assignment.effect_id("submit-finding:<id>")`. The key is the same on every
@@ -51,7 +51,7 @@ The stand-ins live in `demo.py` (`ScenarioExecutor`). Each stage reads
 
 ## Using real agents
 
-Build the same graph on your own bus with `agent-bus submit` and run your
+Build the same graph on your own bus with `logplane submit` and run your
 agents as workers with the matching capabilities (`lead`, `review`). Wrap an
 existing CLI or HTTP agent with the adapter configs in
 [`../cli_agent/`](../cli_agent/) or [`../http_agent/`](../http_agent/) and

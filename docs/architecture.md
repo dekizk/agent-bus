@@ -1,6 +1,6 @@
-# How agent-bus works
+# How logplane works
 
-The model behind agent-bus: the event log, identities, lifecycle, components, invariants, crash recovery, and trust boundaries. For day-to-day commands see [operating agent-bus](operations.md); for connecting agents see [integrating agents](integration.md); for schemas and the HTTP API see [event contracts](events.md).
+The model behind logplane: the event log, identities, lifecycle, components, invariants, crash recovery, and trust boundaries. For day-to-day commands see [operating logplane](operations.md); for connecting agents see [integrating agents](integration.md); for schemas and the HTTP API see [event contracts](events.md).
 
 ## The event log is the source of truth
 
@@ -9,7 +9,7 @@ immutable SQLite event. The project manager (PM) derives current state by
 replaying those events, then reconciles any effects that are missing. Processes
 can therefore restart without relying on hidden in-memory ownership state.
 
-Existing agents remain bounded executors while agent-bus retains ownership, recovery, and immutable history.
+Existing agents remain bounded executors while logplane retains ownership, recovery, and immutable history.
 
 ## Identity model
 
@@ -79,6 +79,9 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 
 ## Components
 
+Source files live in the `logplane` package under `src/logplane/`; the last
+two rows are runtime data in the directory where you run logplane.
+
 | File | Role |
 |---|---|
 | `bus.py` | FastAPI, SQLite event storage, validation, queries, and SSE streaming |
@@ -88,9 +91,9 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 | `operations.py` | Task explanations, worker health, DAG views, and telemetry totals |
 | `observer.py` | GET-only history and SSE client with no offsets or local state |
 | `scheduling.py` | Shared priority classes and deterministic immutable ordering key |
-| `agent_bus_cli.py` | Human-friendly `agent-bus` operations command with JSON output |
+| `cli.py` | Human-friendly `logplane` operations command with JSON output |
 | `executors.py` | Immutable assignment/outcome contract and Python/subprocess adapters |
-| `agent_bus/` | Stable public integration imports for application and adapter authors |
+| `__init__.py`, `adapters.py`, `protocol.py` | Stable public integration imports for application and adapter authors |
 | `executor_protocol.py` | Strict, versioned CLI and HTTP assignment/outcome envelopes |
 | `integration.py` | Python, configured CLI, and guarded HTTP adapter wrappers |
 | `conformance.py` | Synchronous library adapter contract probe |
@@ -102,8 +105,8 @@ workflow.pause_requested -> workflow.paused -> workflow.resume_requested
 | `artifacts.py` | Atomic, content-addressed local storage for opt-in captured content |
 | `topics.py` | Canonical coordination, integration, and telemetry topic groups |
 | `worker.py` | Demo executor wired through the reusable runtime |
-| `demo.py` | Scripted `agent-bus demo` scenarios with real processes in a throwaway directory |
-| `.agent-bus/events.db` | Append-only event log and task-id counter (path set in `agent-bus.local.json`) |
+| `demo.py` | Scripted `logplane demo` scenarios with real processes in a throwaway directory |
+| `.logplane/events.db` | Append-only event log and task-id counter (path set in `logplane.local.json`) |
 | `.offsets/` | Optional durable resume points for stable consumer identities |
 
 ## Architecture and invariants
@@ -221,10 +224,10 @@ new task or heartbeat arriving after a worker dies.
 Defaults can be changed with:
 
 ```sh
-AGENT_BUS_HEARTBEAT_SECONDS=5
-AGENT_BUS_WORKER_LEASE_SECONDS=20
-AGENT_BUS_MAX_RETRIES=2
-AGENT_BUS_URL=http://127.0.0.1:8765
+LOGPLANE_HEARTBEAT_SECONDS=5
+LOGPLANE_WORKER_LEASE_SECONDS=20
+LOGPLANE_MAX_RETRIES=2
+LOGPLANE_URL=http://127.0.0.1:8765
 ```
 
 Lease decisions are emitted into the log as `task.assignment_expired`, so task
@@ -236,7 +239,7 @@ retryable worker failure share the same bounded recovery policy.
 The bus is designed for local, single-user orchestration. Two boundaries to
 understand before exposing it any wider:
 
-- **Perimeter auth is opt-in.** Set `AGENT_BUS_TOKEN` in the bus's environment
+- **Perimeter auth is opt-in.** Set `LOGPLANE_TOKEN` in the bus's environment
   and every data route requires an `Authorization: Bearer <token>` header;
   `BusClient` picks the same variable up automatically (or accepts `token=`).
   `/health` stays open. Without the variable, anyone who can reach the port can
@@ -247,7 +250,7 @@ understand before exposing it any wider:
   per-actor credentials, which is out of scope for a local bus.
 
 The PM's single-instance lock is per user, per machine, per bus URL (a lock
-file in the user's runtime directory keyed by a hash of `AGENT_BUS_URL`), so
+file in the user's runtime directory keyed by a hash of `LOGPLANE_URL`), so
 two checkouts on one machine exclude each other. The lock file is opened
 without following symlinks, verified as owned by the current user, and made
 user-only. It is not distributed leadership: PMs on different machines or
@@ -255,7 +258,7 @@ under different OS users are not excluded and must not coordinate the same bus.
 
 ## Scope and next boundaries
 
-agent-bus is a trusted, single-process, single-host runtime. Actor names are
+logplane is a trusted, single-process, single-host runtime. Actor names are
 asserted by clients, not authenticated identities. The PM lock and SSE wake-up
 condition are process-local mechanisms; do not run the FastAPI app with
 multiple uvicorn workers. Before distributing the bus, add authenticated actor

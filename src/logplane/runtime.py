@@ -10,8 +10,8 @@ from typing import Callable, Iterable, Optional
 
 import httpx
 
-from client import BusClient
-from executors import (
+from logplane.client import BusClient
+from logplane.executors import (
     AssignmentContext,
     Blocked,
     Completed,
@@ -22,8 +22,8 @@ from executors import (
     json_size,
     mutable_json,
 )
-from limits import MAX_INLINE_DEPENDENCY_BYTES, MAX_INLINE_RESULT_BYTES
-from projection import PMState, PROJECTION_TOPICS, apply_event
+from logplane.limits import MAX_INLINE_DEPENDENCY_BYTES, MAX_INLINE_RESULT_BYTES
+from logplane.projection import PMState, PROJECTION_TOPICS, apply_event
 
 DEFAULT_HEARTBEAT_SECONDS = 5.0
 DEFAULT_PUBLISH_RETRY_SECONDS = 1.0

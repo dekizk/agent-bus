@@ -11,11 +11,11 @@ from scripts.check_release import clean_environment, stop_process, check
 
 class ReleaseCheckTests(unittest.TestCase):
     def test_environment_does_not_inherit_developer_bus_or_import_targets(self):
-        with patch.dict(os.environ, {'AGENT_BUS_URL': 'http://production',
-                                    'AGENT_BUS_TOKEN': 'secret', 'PYTHONPATH': '/checkout',
+        with patch.dict(os.environ, {'LOGPLANE_URL': 'http://production',
+                                    'LOGPLANE_TOKEN': 'secret', 'PYTHONPATH': '/checkout',
                                     'PIP_TARGET': '/checkout', 'VIRTUAL_ENV': '/host'}):
             env = clean_environment()
-        for key in ('AGENT_BUS_URL', 'AGENT_BUS_TOKEN', 'PYTHONPATH', 'PIP_TARGET', 'VIRTUAL_ENV'):
+        for key in ('LOGPLANE_URL', 'LOGPLANE_TOKEN', 'PYTHONPATH', 'PIP_TARGET', 'VIRTUAL_ENV'):
             self.assertNotIn(key, env)
         self.assertIn('127.0.0.1', env['NO_PROXY'])
         self.assertEqual(env['NO_PROXY'], env['no_proxy'])

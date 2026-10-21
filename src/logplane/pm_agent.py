@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from client import BusClient
-from projection import (
+from logplane.client import BusClient
+from logplane.legacy import check_legacy_environment
+from logplane.projection import (
     ACTIVE_TASK_STATUSES,
     DEPENDENCY_TERMINAL_STATUSES,
     PMState,
@@ -33,7 +34,7 @@ from projection import (
     retry_budget_exhausted,
 )
 
-BUS_URL = os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765")
+BUS_URL = os.environ.get("LOGPLANE_URL", "http://127.0.0.1:8765")
 PM_TOPICS = PROJECTION_TOPICS
 
 
@@ -76,29 +77,29 @@ def _lock_path() -> Path:
     """
     digest = hashlib.sha256(BUS_URL.encode()).hexdigest()[:16]
     base = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
-    return base / f"agent-bus-pm-{getpass.getuser()}-{digest}.lock"
+    return base / f"logplane-pm-{getpass.getuser()}-{digest}.lock"
 
 
 LOCK_PATH = _lock_path()
-WORKER_LEASE_SECONDS = float(os.environ.get("AGENT_BUS_WORKER_LEASE_SECONDS", "20"))
+WORKER_LEASE_SECONDS = float(os.environ.get("LOGPLANE_WORKER_LEASE_SECONDS", "20"))
 _UNSET_POLICY_DEFAULT = object()
 _UNSET_AGENT_POLICY_DEFAULT = object()
 
 
 def _default_workflow_max_active_assignments() -> Optional[int]:
-    raw = os.environ.get("AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS")
+    raw = os.environ.get("LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS")
     if raw is None or raw.strip().lower() in {"", "none", "null", "unbounded"}:
         return None
     try:
         value = int(raw)
     except ValueError as exc:
         raise SystemExit(
-            "[pm] AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
+            "[pm] LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
             "a positive integer or 'unbounded'"
         ) from exc
     if value <= 0:
         raise SystemExit(
-            "[pm] AGENT_BUS_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
+            "[pm] LOGPLANE_DEFAULT_WORKFLOW_MAX_ACTIVE_ASSIGNMENTS must be "
             "a positive integer or 'unbounded'"
         )
     return value
@@ -134,25 +135,25 @@ def _nonnegative_env(name: str, *, integer: bool) -> float | int:
 
 
 DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS = _optional_positive_env(
-    "AGENT_BUS_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS", integer=True
+    "LOGPLANE_DEFAULT_AGENT_MAX_ACTIVE_ASSIGNMENTS", integer=True
 )
 DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS = _optional_positive_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS", integer=True
+    "LOGPLANE_DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS", integer=True
 )
 DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD = _optional_positive_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD", integer=False
+    "LOGPLANE_DEFAULT_WORKFLOW_MAX_TOTAL_COST_USD", integer=False
 )
 DEFAULT_WORKFLOW_MAX_ATTEMPTS = _optional_positive_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_ATTEMPTS", integer=True
+    "LOGPLANE_DEFAULT_WORKFLOW_MAX_ATTEMPTS", integer=True
 )
 DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS = _optional_positive_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS", integer=False
+    "LOGPLANE_DEFAULT_WORKFLOW_MAX_WALL_CLOCK_SECONDS", integer=False
 )
 DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT = _nonnegative_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT", integer=True
+    "LOGPLANE_DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT", integer=True
 )
 DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT = _nonnegative_env(
-    "AGENT_BUS_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT", integer=False
+    "LOGPLANE_DEFAULT_WORKFLOW_RESERVE_COST_USD_PER_ASSIGNMENT", integer=False
 )
 if DEFAULT_WORKFLOW_MAX_TOTAL_TOKENS is not None and not (
     0 < DEFAULT_WORKFLOW_RESERVE_TOKENS_PER_ASSIGNMENT
@@ -828,7 +829,7 @@ def initial_cursor(bus: BusClient, snapshot_path: Optional[Path] = None) -> Orde
         cursor.consume(bus.query_all(after_id=0, topics=list(PM_TOPICS)))
         return cursor
     import sqlite3
-    from projection_store import event_anchor, load_projection, save_projection
+    from logplane.projection_store import event_anchor, load_projection, save_projection
 
     try:
         result = load_projection(snapshot_path)
@@ -852,6 +853,7 @@ def initial_cursor(bus: BusClient, snapshot_path: Optional[Path] = None) -> Orde
 
 
 def main(snapshot_path: Optional[Path] = None):
+    check_legacy_environment()
     with single_pm_lock():
         bus = BusClient(BUS_URL, actor="pm")
         cursor = initial_cursor(bus, snapshot_path)

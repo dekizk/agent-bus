@@ -1,4 +1,4 @@
-"""Run Hermes Agent as an agent-bus worker."""
+"""Run Hermes Agent as a logplane worker."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import os
 import uuid
 from pathlib import Path
 
-from artifacts import ArtifactStore
-from client import BusClient
+from logplane.artifacts import ArtifactStore
+from logplane.client import BusClient
 from examples.hermes.hermes_executor import HermesExecutor, REASONING_LEVELS
-from runtime import WorkerRuntime
-from telemetry import BusTelemetrySink, ProducerIdentity
+from logplane.runtime import WorkerRuntime
+from logplane.telemetry import BusTelemetrySink, ProducerIdentity
 
 HERMES_ADAPTER_VERSION = "0.7.0"
 
@@ -24,7 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--name", default="hermes")
     parser.add_argument(
         "--bus-url",
-        default=os.environ.get("AGENT_BUS_URL", "http://127.0.0.1:8765"),
+        default=os.environ.get("LOGPLANE_URL", "http://127.0.0.1:8765"),
     )
     parser.add_argument("--working-directory", type=Path, required=True)
     parser.add_argument("--model", required=True)
@@ -66,7 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--artifact-directory",
         type=Path,
-        default=Path(os.environ.get("AGENT_BUS_ARTIFACT_DIR", "artifacts")),
+        default=Path(os.environ.get("LOGPLANE_ARTIFACT_DIR", "artifacts")),
         help="local content-addressed store used only with --capture-content",
     )
     return parser.parse_args(argv)
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
         capacity=args.capacity,
         capabilities=args.capabilities or ["hermes"],
         heartbeat_seconds=float(
-            os.environ.get("AGENT_BUS_HEARTBEAT_SECONDS", "5")
+            os.environ.get("LOGPLANE_HEARTBEAT_SECONDS", "5")
         ),
     )
     runtime.run()

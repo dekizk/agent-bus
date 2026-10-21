@@ -1,6 +1,6 @@
 """Public wire-protocol imports."""
 
-from executor_protocol import (
+from logplane.executor_protocol import (
     CURRENT_PROTOCOL_VERSION,
     PROTOCOL_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,

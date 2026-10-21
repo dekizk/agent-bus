@@ -14,7 +14,7 @@ import stat
 import time
 from pathlib import Path
 
-from artifacts import validate_artifact_ref
+from logplane.artifacts import validate_artifact_ref
 
 
 class RecoveryError(ValueError):
@@ -217,6 +217,8 @@ def backup(database, destination, roots=()):
     # Flush the SQLite copy before declaring the bundle complete.
     with (destination / 'events.db').open('rb') as copied:
         os.fsync(copied.fileno())
+    # Bundle kinds predate the logplane name and stay unchanged so backups
+    # made by earlier releases still verify and restore.
     manifest = {'format': 1, 'kind': 'agent-bus-backup', **details,
                 'database_sha256': _hash(destination / 'events.db'),
                 'artifact_count': len(refs), 'created_at': time.time()}
@@ -261,7 +263,7 @@ def restore(bundle, destination):
         _copy(_find(ref, [bundle / 'artifacts']), target)
         _verify_file(target, digest, ref['size_bytes'])
     # Cache/index tables are projections, not backup authority.
-    import bus
+    from logplane import bus
     previous = bus.DB_PATH
     try:
         bus.DB_PATH = destination / 'events.db'
@@ -271,7 +273,7 @@ def restore(bundle, destination):
         bus.init_db()
     finally:
         bus.DB_PATH = previous
-    from projection_store import load_projection
+    from logplane.projection_store import load_projection
     replayed = load_projection(destination / 'events.db', use_snapshot=False)
     result = {'format': 1, 'kind': 'agent-bus-restore', 'database_id': replayed.database_id,
               'through_id': replayed.last_event_id, 'artifact_count': len(refs)}
