@@ -75,6 +75,38 @@ The command fails unless it finds and integrity-checks exactly one model-input
 and one model-output reference. Without `--capture-content`, it instead fails
 if any content reference appears, preserving the default privacy boundary.
 
+## Run the end-to-end workflow
+
+The quickest way to see a real agent under logplane is one command. It starts
+a throwaway bus and coordinator, runs Hermes as one worker and a small Python
+"publisher" agent as another, and submits a three-task chain: Hermes
+summarises what logplane is, Hermes drafts a short announcement from that
+summary, and the publisher writes it to a file only after you approve. The
+two Hermes calls are real, paid inference through your Hermes configuration;
+their tokens and cost appear in `logplane workflow`.
+
+```sh
+python -m examples.hermes.workflow --provider nous --model qwen/qwen3.8-max-0902
+```
+
+Use the provider and model from `hermes config get model` and
+`hermes auth status PROVIDER`. Options: `--yes` approves publishing without
+asking, `--max-cost` sets the workflow cap (default $1.00), `--reasoning`
+forwards a Hermes reasoning level, and `--dir` keeps the history in a chosen
+directory. The run ends with the announcement, the workflow's real usage, and
+the command to reopen its history.
+
+The publisher is the only agent that performs an irreversible action, and it
+is deliberately not a model. It returns `Blocked` until a human answers with
+`logplane decide`, and its write is keyed by `assignment.effect_id`, so a
+retried or overlapping attempt cannot publish twice. The publisher reports no
+model usage, so the workflow's budget line charges each of its attempts the
+configured reservation instead of guessing; the telemetry line shows the
+Hermes usage alone.
+
+`tests/test_hermes_example.py` runs this workflow against a fake Hermes
+executable, so CI covers the whole flow without credentials or paid calls.
+
 ## Run Hermes as a normal worker
 
 Start the bus and PM as documented in the root README. Create a disposable

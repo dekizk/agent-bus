@@ -292,6 +292,11 @@ adapters, the safety contract, telemetry, and safe adoption alongside an
 existing system; [`examples/`](https://github.com/dekizk/logplane/blob/main/examples/README.md) has copyable Python, CLI,
 HTTP, and real-agent integrations.
 
+To see a real model under logplane, the [Hermes workflow](https://github.com/dekizk/logplane/blob/main/examples/hermes/README.md#run-the-end-to-end-workflow)
+runs [Hermes Agent](https://github.com/NousResearch/hermes-agent) and a Python
+approval agent together in one command: two paid model calls with real usage
+in the log, then a human-gated, retry-safe publish step.
+
 ## Documentation
 
 | Page | Contents |

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
 from examples.hermes.hermes_executor import HermesExecutor
-from examples.hermes import live_smoke, run_worker
+from examples.hermes import live_smoke, run_worker, workflow
 from logplane.artifacts import ArtifactStore
 from logplane.executors import (
     AssignmentContext,
@@ -394,6 +395,72 @@ class HermesLiveSmokeTests(unittest.TestCase):
                 live_smoke.verify_artifact_capture(events, store, required=False)
             with self.assertRaisesRegex(RuntimeError, "input and output"):
                 live_smoke.verify_artifact_capture(events[:1], store, required=True)
+
+
+class PublisherExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workdir = Path(self.temp_dir.name)
+        self.executor = workflow.PublisherExecutor(self.workdir)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def publish(self, attempt=1, decision=None, text="Hello\n"):
+        decisions = () if decision is None else (
+            {"event_id": 9, "actor": "human", "assignment_id": f"task:3:attempt:{attempt}",
+             "decision_id": "decision:task:3", "decision": decision},)
+        return self.executor.execute(assignment(
+            task_id=3, attempt=attempt, assignment_id=f"task:3:attempt:{attempt}",
+            context={"stage": "publish"}, decisions=decisions,
+            dependencies=({"task_id": 2, "completion_event_id": 40, "summary": "draft",
+                           "result": {"text": text}},)))
+
+    def test_blocks_until_approved_then_writes_once(self):
+        self.assertIsInstance(self.publish(), Blocked)
+        self.assertIsInstance(self.publish(decision="maybe"), Blocked)
+        first = self.publish(attempt=2, decision="Approve")
+        self.assertEqual("published", first.result["outcome"])
+        self.assertEqual("Hello\n", (self.workdir / workflow.ANNOUNCEMENT_FILE).read_text())
+        again = self.publish(attempt=3, decision="approve", text="Changed\n")
+        self.assertIn("not repeated", again.summary)
+        self.assertEqual("Hello\n", (self.workdir / workflow.ANNOUNCEMENT_FILE).read_text())
+
+    def test_deny_and_bad_input_never_write(self):
+        self.assertEqual("denied", self.publish(decision="deny").result["outcome"])
+        self.assertIsInstance(self.publish(decision="approve", text=""), PermanentFailure)
+        self.assertFalse((self.workdir / workflow.ANNOUNCEMENT_FILE).exists())
+        probe = self.executor.execute(assignment(context={"agent_bus_conformance_probe": True}))
+        self.assertIsInstance(probe, Completed)
+
+
+@unittest.skipIf(os.name != "posix", "the workflow uses POSIX process signals")
+class HermesWorkflowLiveTests(unittest.TestCase):
+    """The whole example end to end against a fake Hermes executable."""
+
+    def test_workflow_runs_hermes_and_the_publisher_under_one_coordinator(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        fake = root / "fake_hermes"
+        fake.write_text(f"#!{sys.executable}\n" + FAKE_HERMES, encoding="utf-8")
+        fake.chmod(0o755)
+        output = json.dumps({"status": "completed", "summary": "drafted",
+                             "result": {"text": "Announcing logplane.\n\npip install logplane"}})
+        usage = json.dumps({"input_tokens": 500, "output_tokens": 50, "total_tokens": 550,
+                            "estimated_cost_usd": 0.002, "model": "fake"})
+        out = io.StringIO()
+        with patch.dict(os.environ, {"FAKE_HERMES_STDOUT": output, "FAKE_HERMES_USAGE": usage}):
+            args = workflow.parse_args([
+                "--provider", "fake", "--model", "fake", "--hermes-command", str(fake),
+                "--yes", "--pace", "0.25", "--dir", str(root / "run"), "--no-keep-running"])
+            code = workflow.run(args, out=out, stdin=io.StringIO())
+        text = out.getvalue()
+        self.assertEqual(0, code, text)
+        self.assertIn("Two real Hermes calls: 1,100 tokens and $0.0040", text)
+        self.assertIn("Published announcement.md after human approval", text)
+        self.assertEqual("Announcing logplane.\n\npip install logplane\n",
+                         (root / "run" / workflow.ANNOUNCEMENT_FILE).read_text())
 
 
 if __name__ == "__main__":
