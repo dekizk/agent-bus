@@ -54,7 +54,7 @@ Every version should preserve these constraints:
 10. **Evidence-driven scope.** Real integrations and failure trials should
     determine which orchestration features are built next.
 
-## Current implementation — v0.13.0
+## Current implementation — v0.13.2
 
 The project already provides the core mechanics needed for a local event-driven
 agent control plane:
@@ -102,7 +102,9 @@ v0.10's scheduling and management policy shipped, and v0.11.0 (2026-09-13)
 added local scale and recovery hardening. v0.12.0 (2026-10-20) released the
 pre-v1.0 readiness checkpoints below together with the demonstration work; see
 the remaining v1.0 gates. v0.13.0 renamed the project from agent-bus to
-logplane and moved the code to a `src/` layout, with no contract changes.
+logplane and moved the code to a `src/` layout, with no contract changes;
+v0.13.1 and v0.13.2 fixed the PyPI page and hardened migration, the demo
+effect receivers, budget wording, and release validation.
 Evidence is recorded in the CLI, HTTP, and Hermes example trial notes; the
 Hermes notes also record credential-free coordination trials.
 
