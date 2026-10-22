@@ -100,7 +100,8 @@ While the reviews run:
   projected total stops new work part-way through; `logplane explain` says
   why, you raise the cap (or `--yes` does), and both policy events carry a
   reason;
-- Hermes merges every chunk's findings into one ranked list of at most ten;
+- Hermes merges every chunk's findings into one ranked list of at most ten,
+  in batches of eight when there are more chunks than that;
 - a Python "filer" agent asks which severities to file, records each chosen
   finding once in `findings.db` under a key that is the same on every attempt
   of the task, and writes `REVIEW.md`.
@@ -111,7 +112,7 @@ totals, a Mermaid chart of the DAG, and the command to reopen the history.
 ### Review your own code
 
 ```sh
-python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0902 \
+caffeinate -i python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0902 \
   --path ~/src/my-service --include '*.py' --max-chunks 40 --workers 6
 ```
 
@@ -126,9 +127,16 @@ python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0
 | `--no-cap` | | skip the cost cap |
 | `--reasoning LEVEL` | Hermes default | forward a Hermes reasoning level such as `high` |
 | `--timeout SECONDS` | 600 | hard limit per model call |
+| `--lease SECONDS` | 30 | how long a worker may go silent before its task is reassigned |
 | `--yes` | | answer every question with its default (raise the cap, file high and medium) |
 | `--dir DIR` | a temp directory | keep the history in a directory of your choice |
 | `--keep-running` | | leave the bus up afterwards so you can explore it with `logplane --url ...` |
+
+A run of the default size takes 10 to 20 minutes. On a laptop, keep the
+machine awake for that long: if it sleeps, every process pauses together, the
+coordinator sees leases that expired minutes ago when it wakes, and after
+three such expiries a task fails. On macOS, prefix the command with
+`caffeinate -i`.
 
 Cost scales with `--max-chunks` and the model. The defaults cost well under
 a dollar on a mid-priced model; a frontier model with `--reasoning high` over

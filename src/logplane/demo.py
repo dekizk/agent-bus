@@ -437,9 +437,12 @@ def _child_environment() -> dict[str, str]:
 
 class Harness:
     def __init__(self, workdir: Path, *, out: TextIO, pace: float = 1.0,
-                 interactive: bool = False, color: bool = False, read_pauses: bool = False):
+                 interactive: bool = False, color: bool = False, read_pauses: bool = False,
+                 lease_seconds: Optional[float] = None):
         if pace <= 0:
             raise ValueError("pace must be positive")
+        if lease_seconds is not None and lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
         self.workdir = workdir
         self.out = out
         self.pace = pace
@@ -448,7 +451,7 @@ class Harness:
         self.read_pauses = read_pauses
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.lease_seconds = max(1.5, 4.0 * pace)
+        self.lease_seconds = lease_seconds if lease_seconds is not None else max(1.5, 4.0 * pace)
         self.heartbeat_seconds = self.lease_seconds / 4
         self.config_path = self._write_config()
         self.logs = workdir / "logs"

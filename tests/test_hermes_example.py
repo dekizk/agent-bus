@@ -468,20 +468,21 @@ class HermesCodeReviewLiveTests(unittest.TestCase):
         source = root / "src"
         source.mkdir()
         for name in ("alpha", "beta", "gamma"):
-            (source / f"{name}.py").write_text(f"# {name}\n" + "pass\n" * 30)
+            (source / f"{name}.py").write_text(f"# {name}\n" + "pass\n" * 60)
         out = io.StringIO()
         with patch.dict(os.environ, {"FAKE_SLEEP": "3"}):
             args = code_review.parse_args([
                 "--provider", "fake", "--model", "fake", "--hermes-command", str(fake),
-                "--path", str(source), "--chunk-bytes", "100", "--max-chunks", "5",
-                "--workers", "2", "--yes", "--pace", "0.25", "--dir", str(root / "run"),
-                "--no-keep-running"])
+                "--path", str(source), "--chunk-bytes", "100", "--max-chunks", "9",
+                "--workers", "2", "--yes", "--pace", "0.25", "--lease", "3",
+                "--dir", str(root / "run"), "--no-keep-running"])
             code = code_review.run(args, out=out, stdin=io.StringIO())
         text = out.getvalue()
         self.assertEqual(0, code, text)
         self.assertIn("was killed (kill -9)", text)
         self.assertIn("New work stopped after", text)
-        self.assertIn("Filed 5 finding(s), skipped 0", text)
+        self.assertIn("(2 batch merges, then a final merge)", text)
+        self.assertIn("Filed 9 finding(s), skipped 0", text)
         self.assertIn("1 lease(s) expired", text)
         self.assertTrue((root / "run" / code_review.REPORT).exists())
 

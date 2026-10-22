@@ -10,7 +10,8 @@ Each review is a real, paid model call. Along the way:
   lease expires, and its chunk is reassigned to a surviving worker;
 - a cost cap, set from the first review's real cost, stops new work part-way
   through, and a human raises it;
-- Hermes merges and ranks every chunk's findings into one list;
+- Hermes merges and ranks every chunk's findings into one list, in batches
+  when there are many chunks;
 - a Python "filer" agent asks a human which severities to file, then records
   them in a local tracker keyed by ``effect_id``, so a retry cannot file a
   finding twice, and writes REVIEW.md.
@@ -33,6 +34,7 @@ from logplane.demo import (DemoError, Harness, deliver_effect, latest_decision, 
 from logplane.executors import AssignmentContext, Blocked, Completed, PermanentFailure
 
 SEVERITIES = ("high", "medium", "low")
+MERGE_BATCH = 8  # reviews per merge task, so merged inputs stay under the 32 KB dependency limit
 FILE_CHOICES = ("high", "medium", "all", "none")
 TRACKER = "findings.db"
 REPORT = "REVIEW.md"
@@ -217,9 +219,7 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
                                            "instructions": REVIEW_INSTRUCTIONS})
         reviews.append(task)
     h.emit(f"  Submitted {len(reviews)} review tasks in workflow {workflow}")
-    merge, _ = h.submit("Merge and rank the findings", depends_on=reviews, capability="review",
-                        max_retries=2, context={"stage": "merge",
-                                                "instructions": MERGE_INSTRUCTIONS})
+    merge, stages = _submit_merges(h, reviews)
     filing, _ = h.submit("File the findings", depends_on=[merge], capability="file",
                          max_retries=2, context={"stage": "file"})
     h.cli(["policy", workflow, "--max-active-assignments", str(args.workers),
@@ -232,7 +232,8 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
     if args.cap:
         first_cost = _trip_and_raise_cap(h, workflow, reviews, deadline)
 
-    h.say("Waiting for the remaining reviews and the merge (real calls; this takes a while)...")
+    h.say(f"Waiting for the remaining reviews and the merge{stages} (real calls; this takes "
+          "a while)...")
     for task in reviews:
         fleet.wait_done(h, task, deadline)
     fleet.wait_done(h, merge, deadline)
@@ -273,6 +274,28 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
     points.append("Filing waited for your choice, and each finding's key is stable across "
                   f"attempts, so a retry cannot file it twice. The report is in {REPORT}.")
     h.recap(points)
+
+
+def _submit_merges(h: Harness, reviews: list[int]) -> tuple[int, str]:
+    """Merge in batches, then merge the batches, so inputs stay within limits.
+
+    Returns the final merge task and a description of the stages for narration.
+    """
+    context = {"stage": "merge", "instructions": MERGE_INSTRUCTIONS}
+    if len(reviews) <= MERGE_BATCH:
+        merge, _ = h.submit("Merge and rank the findings", depends_on=reviews,
+                            capability="review", max_retries=2, context=context)
+        return merge, ""
+    batches = [reviews[i:i + MERGE_BATCH] for i in range(0, len(reviews), MERGE_BATCH)]
+    partial = []
+    for number, batch in enumerate(batches, start=1):
+        task, _ = h.submit(f"Merge findings, batch {number} of {len(batches)}",
+                           depends_on=batch, capability="review", max_retries=2,
+                           context=context, quiet=True)
+        partial.append(task)
+    merge, _ = h.submit("Merge and rank the findings", depends_on=partial,
+                        capability="review", max_retries=2, context=context)
+    return merge, f" ({len(batches)} batch merges, then a final merge)"
 
 
 def _crash_a_reviewer(h: Harness, reviewers: list[str], reviews: list[int]) -> None:

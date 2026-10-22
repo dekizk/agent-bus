@@ -27,8 +27,9 @@ def add_hermes_arguments(parser: argparse.ArgumentParser, *, default_pace: float
     parser.add_argument("--reasoning", help="optional Hermes reasoning effort override")
     parser.add_argument("--timeout", type=float, default=600.0,
                         help="hard wall-clock limit per Hermes invocation (seconds)")
-    parser.add_argument("--pace", type=float, default=default_pace,
-                        help="narration pace; also sets the worker lease (4x pace, min 1.5s)")
+    parser.add_argument("--pace", type=float, default=default_pace, help="narration pace")
+    parser.add_argument("--lease", type=float, default=30.0,
+                        help="worker lease in seconds; a worker silent this long loses its task")
     parser.add_argument("--yes", action="store_true", help="answer every question with its default")
     parser.add_argument("--dir", help="new or empty directory to keep the history in")
     parser.add_argument("--keep-running", action=argparse.BooleanOptionalAction, default=None)
@@ -48,7 +49,8 @@ def run_example(args: argparse.Namespace, scenario: Callable[[Harness, argparse.
     tty = hasattr(stdin, "isatty") and stdin.isatty() and hasattr(out, "isatty") and out.isatty()
     interactive = tty and not args.yes
     color = hasattr(out, "isatty") and out.isatty() and "NO_COLOR" not in os.environ
-    h = Harness(workdir, out=out, pace=args.pace, interactive=interactive, color=color)
+    h = Harness(workdir, out=out, pace=args.pace, interactive=interactive, color=color,
+                lease_seconds=args.lease)
     # Child processes need the repository on their path for the examples package.
     h.environment["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + h.environment["PYTHONPATH"]
     h.environment["LOGPLANE_HEARTBEAT_SECONDS"] = str(h.heartbeat_seconds)
@@ -56,6 +58,9 @@ def run_example(args: argparse.Namespace, scenario: Callable[[Harness, argparse.
     h.emit(f"Bus: {h.url} (lease {h.lease_seconds:g}s; separate from any bus you already run)")
     h.emit(f"Hermes: {args.provider} / {args.model}, safe mode, clarify toolset only. "
            "Its model calls are real and paid.")
+    if sys.platform == "darwin":
+        h.emit("This takes a while. If the Mac sleeps, every process pauses and leases expire; "
+               "run under `caffeinate -i` to keep it awake.")
     code = 0
     try:
         scenario(h, args)
@@ -118,8 +123,15 @@ def wait_done(h: Harness, task_id: int, timeout: float, *, log: str = "logs") ->
 
     state = h.wait_until(finished, timeout, f"task {task_id} to finish")
     if state["status"] != "completed":
+        hint = ""
+        expired = [e for e in h.events(["task.assignment_expired"])
+                   if e["payload"].get("task_id") == task_id]
+        if len(expired) >= 2:
+            hint = (" Its leases expired repeatedly: if the machine slept or was overloaded, "
+                    "every process paused together; rerun under caffeinate -i or with a longer "
+                    "--lease.")
         raise DemoError(f"task {task_id} ended {state['status']}; see {log}/ and run: "
-                        f"logplane --url {h.url} explain {task_id}")
+                        f"logplane --url {h.url} explain {task_id}.{hint}")
     return state
 
 
