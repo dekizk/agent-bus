@@ -75,74 +75,76 @@ The command fails unless it finds and integrity-checks exactly one model-input
 and one model-output reference. Without `--capture-content`, it instead fails
 if any content reference appears, preserving the default privacy boundary.
 
-## Run the end-to-end workflow
-
-The quickest way to see a real agent under logplane is one command. It starts
-a throwaway bus and coordinator, runs Hermes as one worker and a small Python
-"publisher" agent as another, and submits a three-task chain: Hermes
-summarises what logplane is, Hermes drafts a short announcement from that
-summary, and the publisher writes it to a file only after you approve. The
-two Hermes calls are real, paid inference through your Hermes configuration;
-their tokens and cost appear in `logplane workflow`.
-
-```sh
-python -m examples.hermes.workflow --provider nous --model qwen/qwen3.8-max-0902
-```
-
-Use the provider and model from `hermes config get model` and
-`hermes auth status PROVIDER`. Options: `--yes` approves publishing without
-asking, `--max-cost` sets the workflow cap (default $1.00), `--reasoning`
-forwards a Hermes reasoning level, and `--dir` keeps the history in a chosen
-directory. The run ends with the announcement, the workflow's real usage, and
-the command to reopen its history.
-
-The publisher is the only agent that performs an irreversible action, and it
-is deliberately not a model. It returns `Blocked` until a human answers with
-`logplane decide`, and its write is keyed by `assignment.effect_id`, so a
-retried or overlapping attempt cannot publish twice. The publisher reports no
-model usage, so the workflow's budget line charges each of its attempts the
-configured reservation instead of guessing; the telemetry line shows the
-Hermes usage alone.
-
-`tests/test_hermes_example.py` runs this workflow against a fake Hermes
-executable, so CI covers the whole flow without credentials or paid calls.
-
 ## Review a codebase with a fleet of reviewers
 
-The bigger example fans a code review out to several Hermes workers and puts
-the coordinator through what goes wrong in real runs:
+The quickest way to see real agents under logplane is one command. It fans a
+code review out to several Hermes workers and puts the coordinator through
+what goes wrong in real runs:
 
 ```sh
 python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0902
 ```
 
-By default it splits logplane's own source into 16 chunks of about 10 KB,
-starts 4 Hermes reviewers, and submits one review task per chunk, a merge task
-that depends on all of them, and a filing task that depends on the merge.
+Use the provider and model from `hermes config get model` and
+`hermes auth status PROVIDER`. By default it splits logplane's own source
+into 16 chunks of about 10 KB, starts 4 Hermes reviewers, and submits one
+review task per chunk, a merge task that depends on all of them, and a filing
+task that depends on the merge. Every review is a real, paid model call.
 While the reviews run:
 
 - one reviewer is killed with `kill -9` in the middle of a real model call;
-  its lease expires, the chunk is reassigned, and the dead call's usage is
-  never reported, so its attempt is charged its reservation;
+  its lease expires, the chunk is reassigned to a surviving reviewer, and the
+  dead call's usage is never reported, so its attempt is charged its
+  reservation rather than guessed at;
 - after the first review completes, a cost cap set at about 60% of the
-  projected total stops new work part-way through; you raise it (or `--yes`
-  does), and both policy events carry a reason;
-- Hermes merges every chunk's findings into one ranked list;
+  projected total stops new work part-way through; `logplane explain` says
+  why, you raise the cap (or `--yes` does), and both policy events carry a
+  reason;
+- Hermes merges every chunk's findings into one ranked list of at most ten;
 - a Python "filer" agent asks which severities to file, records each chosen
-  finding once in `findings.db` under a key stable across attempts, and writes
-  `REVIEW.md`.
+  finding once in `findings.db` under a key that is the same on every attempt
+  of the task, and writes `REVIEW.md`.
 
-Point `--path` at your own repository to review it instead; `--include` picks
-the files, `--max-chunks` and `--workers` set the size of the run, and
-`--no-crash` or `--no-cap` skip those steps. Each chunk must fit logplane's
-16 KB inline context limit, so `--chunk-bytes` stays at or below about 12000.
-Cost scales with chunks and model: the defaults cost a few tens of cents on a
-mid-priced model; a frontier model over a large repository can cost dollars.
-Hermes sees only the chunk text in its prompt and runs with the `clarify`
-toolset in safe mode, so nothing is read from disk or executed.
+The run ends with the ranked findings, the workflow's real token and cost
+totals, a Mermaid chart of the DAG, and the command to reopen the history.
 
-`tests/test_hermes_example.py` runs this example against a fake Hermes too,
-including the crash and the cap.
+### Review your own code
+
+```sh
+python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0902 \
+  --path ~/src/my-service --include '*.py' --max-chunks 40 --workers 6
+```
+
+| Option | Default | What it does |
+|---|---|---|
+| `--path DIR` | logplane's `src/logplane` | directory to review |
+| `--include GLOB` | `*.py` | which files under `--path` to review (`'*.rs'`, `'*.ts'`, ...) |
+| `--max-chunks N` | 16 | number of review tasks; files are taken largest first and their chunks interleaved, so a small N still samples several files |
+| `--chunk-bytes N` | 10000 | largest chunk per review; keep it at or below about 12000 so it fits logplane's 16 KB inline context limit |
+| `--workers N` | 4 | Hermes reviewers running in parallel (at least 2 with `--crash`) |
+| `--no-crash` | | skip killing a reviewer |
+| `--no-cap` | | skip the cost cap |
+| `--reasoning LEVEL` | Hermes default | forward a Hermes reasoning level such as `high` |
+| `--timeout SECONDS` | 600 | hard limit per model call |
+| `--yes` | | answer every question with its default (raise the cap, file high and medium) |
+| `--dir DIR` | a temp directory | keep the history in a directory of your choice |
+| `--keep-running` | | leave the bus up afterwards so you can explore it with `logplane --url ...` |
+
+Cost scales with `--max-chunks` and the model. The defaults cost well under
+a dollar on a mid-priced model; a frontier model with `--reasoning high` over
+a large repository can cost several dollars, and the cap step will stop it
+part-way until you say yes. Hermes sees only the chunk text in its prompt and
+runs with the `clarify` toolset in safe mode, so nothing is read from disk or
+executed by the model.
+
+Each review returns findings with the file, line, severity, a short title, and
+a concrete detail. `REVIEW.md` lists the merged findings; `findings.db` holds
+the ones you chose to file, one row per finding, as a stand-in for an issue
+tracker that enforces idempotency keys.
+
+`tests/test_hermes_example.py` runs this example against a fake Hermes
+executable, including the crash and the cap, so CI covers the whole flow
+without credentials or paid calls.
 
 ## Run Hermes as a normal worker
 
