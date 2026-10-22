@@ -17,7 +17,7 @@ Each review is a real, paid model call. Along the way:
   finding twice, and writes REVIEW.md.
 
 Point ``--path`` at your own repository to review it instead. Costs scale with
-``--max-chunks`` and the model; the defaults review about 160 KB of source.
+``--max-chunks`` and the model; the defaults review about 100 KB of source.
 """
 
 from __future__ import annotations
@@ -169,12 +169,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         description="Fan a code review out to several Hermes workers under logplane",
     )
     fleet.add_hermes_arguments(parser, default_pace=2.0)
+    parser.set_defaults(timeout=900.0)  # a careful review of an 8 KB chunk can take minutes
     parser.add_argument("--path", type=Path, default=DEFAULT_PATH,
                         help="directory to review (default: logplane's own source)")
     parser.add_argument("--include", default="*.py", help="glob for files to review")
-    parser.add_argument("--chunk-bytes", type=int, default=10_000,
+    parser.add_argument("--chunk-bytes", type=int, default=8_000,
                         help="largest chunk handed to one review (inline context limit is 16 KB)")
-    parser.add_argument("--max-chunks", type=int, default=16, help="number of review tasks")
+    parser.add_argument("--max-chunks", type=int, default=12, help="number of review tasks")
     parser.add_argument("--workers", type=int, default=4, help="Hermes reviewers to start")
     parser.add_argument("--crash", action=argparse.BooleanOptionalAction, default=True,
                         help="kill one reviewer mid-call to show reassignment")
@@ -338,13 +339,14 @@ def _trip_and_raise_cap(h: Harness, workflow: str, reviews: list[int], deadline:
 
     def capped():
         state = h.workflow_state(workflow)
-        busy = any(t["status"] in {"assigned", "started"} for t in state["tasks"])
-        return state if state["budget"].get("blocked") and not busy else None
+        return state if state["budget"].get("blocked") else None
 
+    # Running reviews carry on; the cap only refuses to admit new ones.
     state = h.wait_until(capped, deadline, "the cap to stop new work")
     done = sum(t["status"] == "completed" for t in state["tasks"])
+    running = sum(t["status"] in {"assigned", "started"} for t in state["tasks"])
     h.say(f"New work stopped after {done} reviews at ${state['budget']['cost_usd']:.4f} "
-          "committed. Running reviews finished; waiting ones say why:")
+          f"committed; {running} running review(s) will finish, and waiting ones say why:")
     waiting = next((t["task_id"] for t in state["tasks"] if t["status"] == "open"), None)
     if waiting:
         h.view(["explain", str(waiting)])

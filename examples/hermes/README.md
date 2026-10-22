@@ -87,7 +87,7 @@ python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0
 
 Use the provider and model from `hermes config get model` and
 `hermes auth status PROVIDER`. By default it splits logplane's own source
-into 16 chunks of about 10 KB, starts 4 Hermes reviewers, and submits one
+into 12 chunks of about 8 KB, starts 4 Hermes reviewers, and submits one
 review task per chunk, a merge task that depends on all of them, and a filing
 task that depends on the merge. Every review is a real, paid model call.
 While the reviews run:
@@ -120,19 +120,19 @@ caffeinate -i python -m examples.hermes.code_review --provider nous --model qwen
 |---|---|---|
 | `--path DIR` | logplane's `src/logplane` | directory to review |
 | `--include GLOB` | `*.py` | which files under `--path` to review (`'*.rs'`, `'*.ts'`, ...) |
-| `--max-chunks N` | 16 | number of review tasks; files are taken largest first and their chunks interleaved, so a small N still samples several files |
-| `--chunk-bytes N` | 10000 | largest chunk per review; keep it at or below about 12000 so it fits logplane's 16 KB inline context limit |
+| `--max-chunks N` | 12 | number of review tasks; files are taken largest first and their chunks interleaved, so a small N still samples several files |
+| `--chunk-bytes N` | 8000 | largest chunk per review; keep it at or below about 12000 so it fits logplane's 16 KB inline context limit |
 | `--workers N` | 4 | Hermes reviewers running in parallel (at least 2 with `--crash`) |
 | `--no-crash` | | skip killing a reviewer |
 | `--no-cap` | | skip the cost cap |
 | `--reasoning LEVEL` | Hermes default | forward a Hermes reasoning level such as `high` |
-| `--timeout SECONDS` | 600 | hard limit per model call |
+| `--timeout SECONDS` | 900 | hard limit per model call; a careful review of one chunk can take several minutes |
 | `--lease SECONDS` | 30 | how long a worker may go silent before its task is reassigned |
 | `--yes` | | answer every question with its default (raise the cap, file high and medium) |
 | `--dir DIR` | a temp directory | keep the history in a directory of your choice |
 | `--keep-running` | | leave the bus up afterwards so you can explore it with `logplane --url ...` |
 
-A run of the default size takes 10 to 20 minutes. On a laptop, keep the
+A run of the default size takes 15 to 20 minutes, most of it model time. On a laptop, keep the
 machine awake for that long: if it sleeps, every process pauses together, the
 coordinator sees leases that expired minutes ago when it wakes, and after
 three such expiries a task fails. On macOS, prefix the command with
