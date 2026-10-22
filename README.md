@@ -9,9 +9,9 @@ board.
 
 Agent workflows fail in ordinary ways. A worker crashes mid-task, the
 coordinator restarts, two runners pick up the same job, an agent needs a human
-answer, or a retry repeats an external action. A kanban-style board only shows
-where a card was last moved. logplane records what actually happened, as
-immutable events, and derives current state by replaying them. Ownership,
+answer, or a retry repeats an external action. logplane coordinates your agents
+whatever framework each one uses, and records what actually happened as
+immutable events, deriving current state by replaying them. Ownership,
 retries, dependencies, and human decisions are all events, so a crash loses
 nothing and every state can be explained.
 
@@ -23,14 +23,15 @@ python -m pip install logplane
 
 logplane demo recovery       # kill the worker and the coordinator mid-task
 logplane demo approval       # an agent asks before an irreversible tool call
-logplane demo budget         # a cost cap stops a runaway bill
+logplane demo budget         # a cost cap stops new work at the limit
 logplane demo audit-triage   # parallel reviewers, a human severity call,
                               # findings submitted once despite a crash
 ```
 
 Each demo starts its own bus, coordinator, and workers as real processes in a
 throwaway directory, narrates what happens, and keeps the history for you to
-inspect. The crashes are real `kill -9`s. None of it touches your other
+inspect. The crashes are real `kill -9`s; the agents are scripted stand-ins, so
+their outputs, token counts, and costs are simulated. None of it touches your other
 logplane data.
 
 <details>
@@ -41,7 +42,7 @@ logplane data.
 </details>
 
 <details>
-<summary>Watch <code>logplane demo budget</code>: a cost cap stops a runaway bill</summary>
+<summary>Watch <code>logplane demo budget</code>: a cost cap stops new work at the limit</summary>
 
 ![logplane demo budget: ten summaries under a $2 cost cap stop at $1.60, then finish after the cap is raised](https://raw.githubusercontent.com/dekizk/logplane/main/docs/demo-budget.gif)
 
@@ -59,9 +60,12 @@ logplane data.
   for a risky tool call. `logplane decide` answers it, and the answer is on
   record.
 - **Spend limits.** Model calls report tokens and cost per task and attempt.
-  Workflow budgets stop new work at a cap, and raising the cap is an event too.
+  Workflow budgets stop admitting new work at a cap, and raising the cap is an
+  event too. They gate admission; they don't cut off a model call already
+  running.
 - **Retry-safe external effects.** `assignment.effect_id(...)` is stable across
-  attempts, so a retry can skip work a crashed attempt already did.
+  attempts. Pass it as the idempotency key to the system you call, and that
+  system can reject a retry's repeat.
 - **Bring your own agents.** Wrap a Python object, a CLI, or an HTTP service.
   logplane never needs your agent's internals.
 - **Explainable state.** `logplane task`, `explain`, and `workflow --mermaid`
@@ -281,8 +285,9 @@ logplane adapter check --python-target my_package.agent:ExistingAgent
 ```
 
 CLI and HTTP agents use the same versioned protocol through a small JSON
-config. Use `assignment.effect_id(...)` for any irreversible external effect so
-a retry cannot repeat it. [Integrating agents](https://github.com/dekizk/logplane/blob/main/docs/integration.md) covers the
+config. Pass `assignment.effect_id(...)` as the idempotency key for any
+irreversible external effect, so the receiving system can reject a repeat when a
+task is retried. [Integrating agents](https://github.com/dekizk/logplane/blob/main/docs/integration.md) covers the
 adapters, the safety contract, telemetry, and safe adoption alongside an
 existing system; [`examples/`](https://github.com/dekizk/logplane/blob/main/examples/README.md) has copyable Python, CLI,
 HTTP, and real-agent integrations.
@@ -332,7 +337,7 @@ the full pre-release procedure.
 logplane was called agent-bus before v0.13.0; if you used it under that name,
 follow the [migration steps](https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md#migrating-from-agent-bus).
 
-Current release: **v0.13.1**, the rename to logplane and a `src/` layout. See the
+Current release: **v0.13.2**, hardening after the rename to logplane. See the
 [release notes](https://github.com/dekizk/logplane/blob/main/RELEASE_NOTES.md) and the [roadmap](https://github.com/dekizk/logplane/blob/main/ROADMAP.md) for the path to
 v1.0. Licensed under the [MIT License](https://github.com/dekizk/logplane/blob/main/LICENSE). Copyright (c) 2026 deki. See
 [credits and acknowledgements](https://github.com/dekizk/logplane/blob/main/CONTRIBUTORS.md).

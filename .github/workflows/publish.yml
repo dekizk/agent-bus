@@ -1,7 +1,9 @@
 name: Publish to PyPI
 
-# Runs when a version tag such as v0.13.0 is pushed. PyPI trusts this
-# workflow through trusted publishing, so no API token is stored anywhere.
+# Runs when a version tag such as v0.13.0 is pushed. The built sdist and wheel
+# must pass the regression suite and an installed-wheel check before upload.
+# PyPI trusts this workflow through trusted publishing, so no API token is
+# stored anywhere.
 on:
   push:
     tags: ['v*']
@@ -39,9 +41,54 @@ jobs:
           path: dist/
           retention-days: 7
 
+  validate:
+    name: Validate ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.dependencies }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: '3.10', dependencies: minimum}
+          - {os: ubuntu-latest, python: '3.13', dependencies: latest}
+          - {os: macos-latest, python: '3.13', dependencies: latest}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - name: Install development tools and runtime dependencies
+        env:
+          DEPENDENCY_SET: ${{ matrix.dependencies }}
+        run: |
+          if [ "$DEPENDENCY_SET" = minimum ]; then
+            python -m pip install -c ci/constraints-min.txt -r requirements-dev.txt
+          else
+            python -m pip install -r requirements-dev.txt
+          fi
+          python -m pip install --no-deps -e .
+      - name: Regression suite on the tagged commit
+        run: python -m pytest -q
+      - name: Install and exercise the exact wheel that will be uploaded
+        env:
+          DEPENDENCY_SET: ${{ matrix.dependencies }}
+        run: |
+          if [ "$DEPENDENCY_SET" = minimum ]; then
+            python scripts/check_release.py --wheel dist/*.whl --output .release-check --constraints ci/constraints-min.txt
+          else
+            python scripts/check_release.py --wheel dist/*.whl --output .release-check
+          fi
+
   publish:
     name: Upload to PyPI
-    needs: build
+    # Only the artifact that passed every validation job is uploaded.
+    needs: [build, validate]
     runs-on: ubuntu-latest
     environment:
       name: pypi

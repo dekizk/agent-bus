@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -180,6 +181,46 @@ class ScenarioStageTests(unittest.TestCase):
         entries = demo.read_inbox(self.workdir / demo.INBOX_FILE)
         self.assertEqual(2, len({entry["effect_id"] for entry in entries}))
         self.assertEqual(2, len(entries))
+
+    def test_receiver_accepts_each_effect_key_once_under_concurrency(self):
+        path = self.workdir / demo.REFUND_LEDGER
+        barrier = threading.Barrier(8)
+        accepted = []
+
+        def deliver(attempt):
+            barrier.wait()
+            accepted.append(demo.deliver_effect(path, "effect-1", {"attempt": attempt}))
+
+        threads = [threading.Thread(target=deliver, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(1, accepted.count(True))
+        self.assertEqual(1, len(demo.read_inbox(path)))
+
+    def test_overlapping_approved_attempts_refund_once(self):
+        # A lease can expire while the old worker is still running, so two
+        # attempts of the same task may execute at the same time.
+        executors = [demo.ScenarioExecutor(name, self.workdir) for name in ("alice", "bob")]
+        barrier = threading.Barrier(2)
+        outcomes = []
+
+        def run(executor, attempt):
+            barrier.wait()
+            outcomes.append(executor.execute(assignment(
+                2, attempt=attempt, decisions=[decision(2, "approve")],
+                context={"stage": "approval", "work_seconds": 0, "tool": "issue_refund",
+                         "call": "issue_refund(order=4411)", "arguments": {"order": 4411}})))
+
+        threads = [threading.Thread(target=run, args=(executor, n))
+                   for n, executor in enumerate(executors, start=2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(1, len(demo.read_inbox(self.workdir / demo.REFUND_LEDGER)))
+        self.assertEqual(1, sum("not repeated" in outcome.summary for outcome in outcomes))
 
     def test_unknown_stage_is_an_error(self):
         with self.assertRaises(ValueError):

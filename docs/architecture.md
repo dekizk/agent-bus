@@ -23,7 +23,8 @@ Four identities keep workflows, retries, and replays unambiguous:
 Executors also receive a derived `effect_scope`, which remains stable across
 attempts for the same logical task. Python adapters can call
 `assignment.effect_id("operation-name")` to obtain a deterministic key for one
-irreversible external operation. This is deliberately distinct from
+irreversible external operation, which the system performing that operation
+must enforce as an idempotency key. This is deliberately distinct from
 `assignment_id`: the latter identifies a delivery attempt and changes on retry.
 
 A correlation may contain several tasks, and each task may have several

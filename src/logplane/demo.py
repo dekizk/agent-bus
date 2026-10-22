@@ -21,6 +21,7 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -73,8 +74,8 @@ REVIEW_FINDINGS: dict[str, list[dict[str, Any]]] = {
 
 SEVERITIES = ("High", "Medium")
 APPROVAL_CHOICES = ("approve", "deny")
-INBOX_FILE = "contest-inbox.jsonl"
-REFUND_LEDGER = "refunds.jsonl"
+INBOX_FILE = "contest-inbox.db"
+REFUND_LEDGER = "refunds.db"
 REPORT_FILE = "report.md"
 
 
@@ -209,19 +210,17 @@ class ScenarioExecutor:
         if choice == "deny":
             return Completed(summary=f"Human denied {call}; nothing was executed",
                              result={"tool": tool, "outcome": "denied"})
+        # The key is the same on every attempt of this task. The simulated
+        # payments system enforces it, the way a real API enforces an
+        # idempotency key, so overlapping attempts cannot both refund.
         effect = assignment.effect_id(f"tool:{tool}")
-        ledger = self.workdir / REFUND_LEDGER
-        if effect in read_inbox_effects(ledger):
-            summary = f"{call} was already executed by an earlier attempt; not repeated"
-        else:
-            record = {"effect_id": effect, "tool": tool, "arguments": arguments,
-                      "approved_by": assignment.decisions[-1].get("actor"),
-                      "attempt": assignment.attempt}
-            with ledger.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+        record = {"tool": tool, "arguments": arguments,
+                  "approved_by": assignment.decisions[-1].get("actor"),
+                  "attempt": assignment.attempt}
+        if deliver_effect(self.workdir / REFUND_LEDGER, effect, record):
             summary = f"Executed {call} after human approval"
+        else:
+            summary = f"{call} was already executed by an earlier attempt; not repeated"
         return Completed(summary=summary, result={"tool": tool, "outcome": "executed"})
 
     def stage_reply(self, assignment, context):
@@ -296,9 +295,10 @@ class ScenarioExecutor:
     def stage_submit(self, assignment, context):
         """Submit each finding once, even across crashed attempts.
 
-        The inbox stands in for a contest platform. Each submission is keyed by
-        ``assignment.effect_id``, which stays the same on every retry of this
-        task, so a later attempt skips work an earlier attempt already did.
+        The inbox stands in for a contest platform that accepts an idempotency
+        key. Each submission carries ``assignment.effect_id``, which stays the
+        same on every retry of this task, and the platform refuses a key it has
+        already seen, so a later or overlapping attempt cannot submit twice.
         """
         findings = [item for result in upstream_results(assignment)
                     for item in result.get("findings", [])]
@@ -307,16 +307,12 @@ class ScenarioExecutor:
         submitted, skipped = [], []
         for finding in findings:
             effect = assignment.effect_id(f"submit-finding:{finding['id']}")
-            if effect in read_inbox_effects(inbox):
+            record = {"finding": finding["id"], "severity": finding["severity"],
+                      "title": finding["title"], "submitted_by": self.name,
+                      "attempt": assignment.attempt}
+            if not deliver_effect(inbox, effect, record):
                 skipped.append(finding["id"])
                 continue
-            record = {"effect_id": effect, "finding": finding["id"],
-                      "severity": finding["severity"], "title": finding["title"],
-                      "submitted_by": self.name, "attempt": assignment.attempt}
-            with inbox.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
             submitted.append(finding["id"])
             time.sleep(pause)
         return Completed(
@@ -326,14 +322,37 @@ class ScenarioExecutor:
         )
 
 
+def deliver_effect(path: Path, effect_id: str, record: Mapping[str, Any]) -> bool:
+    """Perform a simulated external effect at most once per idempotency key.
+
+    This stands in for the receiving system (a payments API, a contest
+    platform). The uniqueness check and the write are one SQLite statement, so
+    two overlapping attempts cannot both perform the effect. Checking a list
+    first and writing afterwards would not be safe. Returns False for a key
+    the system has already accepted.
+    """
+    entry = json.dumps({"effect_id": effect_id, **record}, sort_keys=True)
+    with contextlib.closing(sqlite3.connect(path, timeout=30)) as conn:
+        with conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS effects ("
+                         "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                         "effect_id TEXT NOT NULL UNIQUE, record TEXT NOT NULL)")
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO effects (effect_id, record) VALUES (?, ?)",
+                (effect_id, entry))
+            return cursor.rowcount == 1
+
+
 def read_inbox(path: Path) -> list[dict[str, Any]]:
+    """Return the effects a simulated receiver accepted, oldest first."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def read_inbox_effects(path: Path) -> set[str]:
-    return {entry["effect_id"] for entry in read_inbox(path)}
+    with contextlib.closing(sqlite3.connect(path, timeout=30)) as conn:
+        try:
+            rows = conn.execute("SELECT record FROM effects ORDER BY seq").fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [json.loads(row[0]) for row in rows]
 
 
 def _worker_main(argv: list[str]) -> int:
@@ -853,8 +872,8 @@ def scenario_approval(h: Harness) -> None:
                  "is on record with who gave it and which attempt used it.")
     h.recap([
         first,
-        "An approved refund is keyed by assignment.effect_id, so a retry after a crash cannot "
-        "refund twice.",
+        "The refund carried assignment.effect_id as its idempotency key, and the payments "
+        "system rejects a key it has seen, so a retried attempt cannot refund twice.",
         "Waiting for a human didn't stall the draft, and it used none of the task's retries.",
     ])
 
@@ -873,8 +892,9 @@ def scenario_budget(h: Harness) -> None:
     h.emit(f"  Submitted tasks {first}–{first + 9} (one workflow)")
     h.cli(["policy", workflow, "--max-cost", "2", "--reserve-cost-per-assignment", "0.5",
            "--reason", "nightly research budget"])
-    h.say("Each assignment reserves $0.50 until its real cost is reported, so two workers "
-          "running at once can't overshoot the cap together. Start the workers:")
+    h.say("Each assignment reserves $0.50 until its cost is reported, so work is admitted "
+          "against what running tasks may still spend. This gates new work; it is not a "
+          "billing cutoff for a call already running. Start the workers:")
     h.start_worker("worker-1")
     h.start_worker("worker-2")
 
@@ -888,8 +908,8 @@ def scenario_budget(h: Harness) -> None:
     done = sum(task["status"] == "completed" for task in state["tasks"])
     spent = state["budget"]["cost_usd"]
     waiting = next(task["task_id"] for task in state["tasks"] if task["status"] == "open")
-    h.say(f"Work stopped after {done} summaries at ${spent:.2f}: one more could cost up to "
-          "its $0.50 reservation and overshoot the $2.00 cap. Nothing was killed; running "
+    h.say(f"Work stopped after {done} summaries at ${spent:.2f}: one more would reserve "
+          "$0.50 and take the committed total past the $2.00 cap. Nothing was killed; running "
           "tasks finished and new ones wait. The views say why:")
     h.view(["workflow", workflow])
     h.view(["explain", str(waiting)])
@@ -898,7 +918,7 @@ def scenario_budget(h: Harness) -> None:
         h.say("The remaining papers stay queued. Raising the cap later picks up where it "
               "left off.")
         h.recap([
-            "The cap stopped new spend without killing in-flight work.",
+            "The cap stopped new work without killing in-flight work.",
             "Queued tasks wait with an explanation instead of failing.",
         ])
         return
@@ -915,13 +935,13 @@ def scenario_budget(h: Harness) -> None:
     h.view(["task", str(waiting)])
     h.recap([
         "The cap stopped new work at the limit; in-flight tasks finished normally.",
-        "Reservations kept concurrent workers from overshooting the cap together.",
+        "Reservations counted running work against the cap before its cost was reported.",
         "Both the cap and the raise are events: who allowed more spend, when, and why.",
     ])
 
 
 def scenario_audit_triage(h: Harness) -> None:
-    h.title("Audit triage: parallel reviewers, a human severity call, exactly-once submission")
+    h.title("Audit triage: parallel reviewers, a human severity call, idempotent submission")
     h.say("A fictional protocol with three contracts. A lead agent scopes the audit, two reviewer "
           "agents split the contracts, duplicate findings are merged, a human makes the severity "
           "call, and the lead writes the report and submits the findings.")
@@ -996,7 +1016,8 @@ def scenario_audit_triage(h: Harness) -> None:
         "reassigned rather than lost.",
         "Four raw findings became three. The contested one waited for a human, and the "
         "answer is on record.",
-        "Each finding was submitted exactly once, even though the submitter crashed mid-batch.",
+        "Each finding reached the platform once: the submitter crashed mid-batch, and the "
+        "retry's repeated keys were rejected.",
     ])
 
 
@@ -1007,9 +1028,9 @@ SCENARIOS: dict[str, Scenario] = {
                  scenario_recovery),
         Scenario("approval", "an agent asks before an irreversible tool call; other work "
                  "continues", scenario_approval),
-        Scenario("budget", "a cost cap stops a runaway bill; raise it and work resumes",
+        Scenario("budget", "a cost cap stops new work; raise it and work resumes",
                  scenario_budget),
-        Scenario("audit-triage", "parallel reviewers, a human severity call, exactly-once "
+        Scenario("audit-triage", "parallel reviewers, a human severity call, idempotent "
                  "submission", scenario_audit_triage),
     )
 }
@@ -1043,6 +1064,8 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
     harness.emit(f"Demo directory: {workdir}")
     harness.emit(f"Bus: {harness.url} (lease {harness.lease_seconds:g}s; separate from any bus "
                  "you already run)")
+    harness.emit("The processes, events, and crashes are real; the agents are scripted "
+                 "stand-ins, so their outputs, token counts, and costs are simulated.")
     code = 0
     try:
         SCENARIOS[scenario_name].run(harness)
