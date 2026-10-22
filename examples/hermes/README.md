@@ -108,6 +108,8 @@ While the reviews run:
 
 The run ends with the ranked findings, the workflow's real token and cost
 totals, a Mermaid chart of the DAG, and the command to reopen the history.
+A recorded run is in [`docs/demo-code-review.gif`](../../docs/demo-code-review.gif):
+15 real calls, 202,336 tokens, $0.90, with the kill, the cap, and the filing.
 
 ### Review your own code
 

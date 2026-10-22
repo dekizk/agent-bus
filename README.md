@@ -304,6 +304,13 @@ python -m examples.hermes.code_review --provider PROVIDER --model MODEL \
   --path ~/src/my-service --include '*.py' --max-chunks 40 --workers 6
 ```
 
+<details>
+<summary>Watch the code review: 15 real model calls, a reviewer killed mid-call, a cost cap tripped and raised, findings merged and filed</summary>
+
+![logplane code review example: four Hermes reviewers review logplane's own source, one is killed mid-call and its chunk reassigned, a cost cap stops new work and is raised, Hermes merges the findings, and a Python agent files the chosen ones once](https://raw.githubusercontent.com/dekizk/logplane/main/docs/demo-code-review.gif)
+
+</details>
+
 ## Documentation
 
 | Page | Contents |
