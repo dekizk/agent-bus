@@ -107,6 +107,43 @@ Hermes usage alone.
 `tests/test_hermes_example.py` runs this workflow against a fake Hermes
 executable, so CI covers the whole flow without credentials or paid calls.
 
+## Review a codebase with a fleet of reviewers
+
+The bigger example fans a code review out to several Hermes workers and puts
+the coordinator through what goes wrong in real runs:
+
+```sh
+python -m examples.hermes.code_review --provider nous --model qwen/qwen3.8-max-0902
+```
+
+By default it splits logplane's own source into 16 chunks of about 10 KB,
+starts 4 Hermes reviewers, and submits one review task per chunk, a merge task
+that depends on all of them, and a filing task that depends on the merge.
+While the reviews run:
+
+- one reviewer is killed with `kill -9` in the middle of a real model call;
+  its lease expires, the chunk is reassigned, and the dead call's usage is
+  never reported, so its attempt is charged its reservation;
+- after the first review completes, a cost cap set at about 60% of the
+  projected total stops new work part-way through; you raise it (or `--yes`
+  does), and both policy events carry a reason;
+- Hermes merges every chunk's findings into one ranked list;
+- a Python "filer" agent asks which severities to file, records each chosen
+  finding once in `findings.db` under a key stable across attempts, and writes
+  `REVIEW.md`.
+
+Point `--path` at your own repository to review it instead; `--include` picks
+the files, `--max-chunks` and `--workers` set the size of the run, and
+`--no-crash` or `--no-cap` skip those steps. Each chunk must fit logplane's
+16 KB inline context limit, so `--chunk-bytes` stays at or below about 12000.
+Cost scales with chunks and model: the defaults cost a few tens of cents on a
+mid-priced model; a frontier model over a large repository can cost dollars.
+Hermes sees only the chunk text in its prompt and runs with the `clarify`
+toolset in safe mode, so nothing is read from disk or executed.
+
+`tests/test_hermes_example.py` runs this example against a fake Hermes too,
+including the crash and the cap.
+
 ## Run Hermes as a normal worker
 
 Start the bus and PM as documented in the root README. Create a disposable

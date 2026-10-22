@@ -19,21 +19,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Optional, TextIO
 
-from logplane.demo import DemoError, Harness, deliver_effect, latest_decision, normalize_choice
+from examples.hermes import fleet
+from logplane.demo import Harness, deliver_effect, latest_decision, normalize_choice
 from logplane.executors import AssignmentContext, Blocked, Completed, PermanentFailure
 from logplane.version import VERSION
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 PUBLISH_CHOICES = ("approve", "deny")
 ANNOUNCEMENT_FILE = "announcement.md"
 PUBLISH_LEDGER = "published.db"
-TERMINAL = {"completed", "failed", "cancelled", "dependency_failed"}
 
 MATERIAL = (
     "logplane is a local control plane for AI agents. It hands tasks to agents "
@@ -97,130 +94,20 @@ class PublisherExecutor:
                                    "effect_id": effect})
 
 
-def _publisher_main(argv: list[str]) -> int:
-    from logplane.client import BusClient
-    from logplane.runtime import WorkerRuntime
-
-    parser = argparse.ArgumentParser(prog="publisher")
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--workdir", required=True)
-    parser.add_argument("--heartbeat", type=float, default=1.0)
-    args = parser.parse_args(argv)
-    runtime = WorkerRuntime(
-        BusClient(args.url, actor="publisher"), name="publisher",
-        executor=PublisherExecutor(Path(args.workdir)), capabilities=["publish"],
-        heartbeat_seconds=args.heartbeat,
-    )
-    print("[publisher] registered, waiting for work", flush=True)
-    try:
-        runtime.run()
-    except KeyboardInterrupt:
-        print("[publisher] stopped", flush=True)
-    return 0
-
-
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m examples.hermes.workflow",
         description="Hermes Agent plus a Python approval agent under one logplane coordinator",
     )
-    parser.add_argument("--provider", required=True, help="Hermes provider, made explicit")
-    parser.add_argument("--model", required=True, help="Hermes model, made explicit")
-    parser.add_argument("--hermes-command", default="hermes", help="Hermes executable")
-    parser.add_argument("--reasoning", help="optional Hermes reasoning effort override")
-    parser.add_argument("--timeout", type=float, default=600.0,
-                        help="hard wall-clock limit per Hermes invocation (seconds)")
+    fleet.add_hermes_arguments(parser, default_pace=2.0)
     parser.add_argument("--max-cost", type=float, default=1.0,
                         help="workflow cost cap in USD, applied as budget-aware admission")
-    parser.add_argument("--pace", type=float, default=2.0,
-                        help="narration pace; also sets the worker lease (4x pace, min 1.5s)")
-    parser.add_argument("--yes", action="store_true", help="approve publishing without asking")
-    parser.add_argument("--dir", help="new or empty directory to keep the history in")
-    parser.add_argument("--keep-running", action=argparse.BooleanOptionalAction, default=None)
     return parser.parse_args(argv)
 
 
 def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
         stdin: TextIO = sys.stdin) -> int:
-    if args.dir:
-        workdir = Path(args.dir).expanduser().resolve()
-        if workdir.exists() and any(workdir.iterdir()):
-            print(f"workflow: directory must be new or empty: {workdir}", file=out)
-            return 2
-        workdir.mkdir(parents=True, exist_ok=True)
-    else:
-        workdir = Path(tempfile.mkdtemp(prefix="logplane-hermes-workflow-")).resolve()
-    tty = hasattr(stdin, "isatty") and stdin.isatty() and hasattr(out, "isatty") and out.isatty()
-    interactive = tty and not args.yes
-    color = hasattr(out, "isatty") and out.isatty() and "NO_COLOR" not in os.environ
-    h = Harness(workdir, out=out, pace=args.pace, interactive=interactive, color=color)
-    # Child processes need the repository on their path for the examples package.
-    h.environment["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + h.environment["PYTHONPATH"]
-    h.environment["LOGPLANE_HEARTBEAT_SECONDS"] = str(h.heartbeat_seconds)
-    h.emit(f"Workflow directory: {workdir}")
-    h.emit(f"Bus: {h.url} (lease {h.lease_seconds:g}s; separate from any bus you already run)")
-    h.emit(f"Hermes: {args.provider} / {args.model}, safe mode, clarify toolset only. "
-           "Its model calls are real and paid.")
-    code = 0
-    try:
-        _scenario(h, args)
-        keep_running = args.keep_running if args.keep_running is not None else interactive
-        if keep_running:
-            h.say(f"The bus is still running at {h.url}. Explore it from another terminal:")
-            h.block(f"logplane --url {h.url} workflows\nlogplane --url {h.url} tasks")
-            h._tail_stop.set()
-            try:
-                input("  Press Enter to stop. ")
-            except EOFError:
-                pass
-    except DemoError as exc:
-        h.emit(f"\nworkflow: {exc}")
-        code = 1
-    except KeyboardInterrupt:
-        code = 130
-    finally:
-        h.stop_all()
-    h.emit()
-    h.emit(f"History is kept in {workdir}. To reopen it later:")
-    h.emit(f"  logplane serve --config {h.config_path}")
-    return code
-
-
-def _start_hermes(h: Harness, args: argparse.Namespace) -> None:
-    work = h.workdir / "hermes-work"
-    work.mkdir(exist_ok=True)
-    argv = ["-m", "examples.hermes.run_worker", "--bus-url", h.url, "--name", "hermes",
-            "--working-directory", str(work), "--provider", args.provider,
-            "--model", args.model, "--hermes-command", args.hermes_command,
-            "--timeout", str(args.timeout), "--capability", "hermes"]
-    if args.reasoning:
-        argv += ["--reasoning", args.reasoning]
-    mark = h.last_event_id()
-    h._spawn("hermes", argv)
-    h.wait_until(lambda: h.find_event("agent.registered", actor="hermes", after=mark),
-                 20, "the Hermes worker to register")
-
-
-def _start_publisher(h: Harness) -> None:
-    argv = ["-m", "examples.hermes.workflow", "_publisher", "--url", h.url,
-            "--workdir", str(h.workdir), "--heartbeat", str(h.heartbeat_seconds)]
-    mark = h.last_event_id()
-    h._spawn("publisher", argv)
-    h.wait_until(lambda: h.find_event("agent.registered", actor="publisher", after=mark),
-                 20, "the publisher worker to register")
-
-
-def _wait_done(h: Harness, task_id: int, timeout: float) -> dict:
-    """Wait for a task to finish; a failure stops the workflow with a pointer."""
-    def finished():
-        state = h.task_state(task_id)
-        return state if state["status"] in TERMINAL else None
-
-    state = h.wait_until(finished, timeout, f"task {task_id} to finish")
-    if state["status"] != "completed":
-        raise DemoError(f"task {task_id} ended {state['status']}; see logs/hermes.log and run: "
-                        f"logplane --url {h.url} explain {task_id}")
-    return state
+    return fleet.run_example(args, _scenario, prefix="hermes-workflow", out=out, stdin=stdin)
 
 
 def _scenario(h: Harness, args: argparse.Namespace) -> None:
@@ -230,8 +117,8 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
           "workers; the coordinator doesn't know or care what is inside them.")
     h.start_bus()
     h.start_pm()
-    _start_hermes(h, args)
-    _start_publisher(h)
+    fleet.start_hermes_worker(h, args, "hermes")
+    fleet.start_python_worker(h, "examples.hermes.workflow", "publisher")
 
     summarise, workflow = h.submit(
         "Summarise what logplane is", capability="hermes", max_retries=1,
@@ -259,11 +146,11 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
 
     deadline = args.timeout + 60
     h.say("Waiting for Hermes to summarise (one real model call)...")
-    _wait_done(h, summarise, deadline)
+    fleet.wait_done(h, summarise, deadline)
     h.view(["task", str(summarise)])
     h.say("Now the draft, which depends on the summary: the coordinator hands Hermes the "
           "summary's result as an input, so nothing is copied by hand.")
-    _wait_done(h, draft, deadline)
+    fleet.wait_done(h, draft, deadline)
     h.view(["task", str(draft)])
 
     needed = h.wait_for("decision.needed", task_id=publish, timeout=60)
@@ -302,8 +189,8 @@ def _scenario(h: Harness, args: argparse.Namespace) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "_publisher":
-        return _publisher_main(argv[1:])
+    if argv and argv[0] == "_worker":
+        return fleet.run_python_worker(argv[1:], "publisher", "publish", PublisherExecutor)
     return run(parse_args(argv))
 
 
