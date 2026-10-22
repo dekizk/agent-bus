@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
 from examples.hermes.hermes_executor import HermesExecutor
-from examples.hermes import live_smoke, run_worker
+from examples.hermes import code_review, live_smoke, run_worker
 from logplane.artifacts import ArtifactStore
 from logplane.executors import (
     AssignmentContext,
@@ -394,6 +395,96 @@ class HermesLiveSmokeTests(unittest.TestCase):
                 live_smoke.verify_artifact_capture(events, store, required=False)
             with self.assertRaisesRegex(RuntimeError, "input and output"):
                 live_smoke.verify_artifact_capture(events[:1], store, required=True)
+
+
+FAKE_REVIEWER = """import json, os, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+prompt = args[args.index("-z") + 1]
+payload = json.loads(prompt[prompt.index("ASSIGNMENT_JSON") + len("ASSIGNMENT_JSON"):])
+context = payload.get("context", {})
+Path(args[args.index("--usage-file") + 1]).write_text(json.dumps(
+    {"input_tokens": 3000, "output_tokens": 400, "total_tokens": 3400,
+     "estimated_cost_usd": 0.01, "model": "fake"}))
+time.sleep(float(os.environ.get("FAKE_SLEEP", "3")))
+if context.get("stage") == "review":
+    findings = [{"file": context["file"], "line": context["start_line"], "severity": "high",
+                 "title": "Problem", "detail": "Concrete."}]
+else:
+    findings = [f for d in payload.get("dependencies", [])
+                for f in d.get("result", {}).get("findings", [])][:10]
+print(json.dumps({"status": "completed", "summary": context.get("stage", "?"),
+                  "result": {"findings": findings}}))
+"""
+
+
+class FilerExecutorTests(unittest.TestCase):
+    def test_files_chosen_severities_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workdir = Path(directory)
+            executor = code_review.FilerExecutor(workdir)
+            findings = [{"file": "a.py", "line": 1, "severity": "high", "title": "A", "detail": "x"},
+                        {"file": "b.py", "line": 2, "severity": "low", "title": "B", "detail": "y"}]
+
+            def run(attempt, decision=None):
+                decisions = () if decision is None else (
+                    {"event_id": 9, "actor": "human", "assignment_id": f"task:7:attempt:{attempt}",
+                     "decision_id": "decision:task:7", "decision": decision},)
+                return executor.execute(assignment(
+                    attempt=attempt, assignment_id=f"task:7:attempt:{attempt}",
+                    context={"stage": "file"}, decisions=decisions,
+                    dependencies=({"task_id": 6, "completion_event_id": 60, "summary": "m",
+                                   "result": {"findings": findings}},)))
+
+            blocked = run(1)
+            self.assertIsInstance(blocked, Blocked)
+            self.assertIn("2 findings (1 high, 0 medium, 1 low)", blocked.reason)
+            first = run(2, "medium")
+            self.assertEqual({"filed": 1, "skipped": 0}, {k: first.result[k] for k in ("filed", "skipped")})
+            again = run(3, "medium")
+            self.assertEqual({"filed": 0, "skipped": 1}, {k: again.result[k] for k in ("filed", "skipped")})
+            self.assertIn("**high** `a.py:1` A", (workdir / code_review.REPORT).read_text())
+
+    def test_chunks_interleave_files_largest_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "big.py").write_text("x = 1\n" * 40)
+            (root / "small.py").write_text("y = 2\n" * 5)
+            chunks = code_review.chunk_files(root, "*.py", 100, 3)
+            self.assertEqual(["big.py", "small.py", "big.py"], [c["file"] for c in chunks])
+            self.assertEqual((1, 16), (chunks[0]["start_line"], chunks[0]["end_line"]))
+            self.assertEqual((17, 32), (chunks[2]["start_line"], chunks[2]["end_line"]))
+
+
+@unittest.skipIf(os.name != "posix", "the example uses POSIX process signals")
+class HermesCodeReviewLiveTests(unittest.TestCase):
+    def test_review_survives_a_crash_and_a_cap_and_files_once(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        fake = root / "fake_hermes"
+        fake.write_text(f"#!{sys.executable}\n" + FAKE_REVIEWER, encoding="utf-8")
+        fake.chmod(0o755)
+        source = root / "src"
+        source.mkdir()
+        for name in ("alpha", "beta", "gamma"):
+            (source / f"{name}.py").write_text(f"# {name}\n" + "pass\n" * 60)
+        out = io.StringIO()
+        with patch.dict(os.environ, {"FAKE_SLEEP": "3"}):
+            args = code_review.parse_args([
+                "--provider", "fake", "--model", "fake", "--hermes-command", str(fake),
+                "--path", str(source), "--chunk-bytes", "100", "--max-chunks", "9",
+                "--workers", "2", "--yes", "--pace", "0.25", "--lease", "3",
+                "--dir", str(root / "run"), "--no-keep-running"])
+            code = code_review.run(args, out=out, stdin=io.StringIO())
+        text = out.getvalue()
+        self.assertEqual(0, code, text)
+        self.assertIn("was killed (kill -9)", text)
+        self.assertIn("New work stopped after", text)
+        self.assertIn("(2 batch merges, then a final merge)", text)
+        self.assertIn("Filed 9 finding(s), skipped 0", text)
+        self.assertIn("1 lease(s) expired", text)
+        self.assertTrue((root / "run" / code_review.REPORT).exists())
 
 
 if __name__ == "__main__":

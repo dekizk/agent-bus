@@ -20,6 +20,8 @@ Copyable examples:
 - [`cli_agent/`](cli_agent/) uses the versioned stdin/stdout protocol;
 - [`http_agent/`](http_agent/) demonstrates the guarded HTTP bridge, retry-safe
   effect identity, and cooperative cancellation;
-- [`hermes/`](hermes/) is the realistic model-agent integration.
+- [`hermes/`](hermes/) is the realistic model-agent integration, including a
+  one-command code review by a fleet of Hermes reviewers with a crash, a cost
+  cap, and idempotent filing through a Python agent.
 - [`audit_triage/`](audit_triage/) explains the `logplane demo audit-triage`
   pipeline and how to swap its stand-in stages for real agents.

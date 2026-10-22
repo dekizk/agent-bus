@@ -120,7 +120,11 @@ def main(argv: list[str] | None = None) -> None:
             os.environ.get("LOGPLANE_HEARTBEAT_SECONDS", "5")
         ),
     )
-    runtime.run()
+    try:
+        runtime.run()
+    except KeyboardInterrupt:
+        # A stop signal is the normal way to end a worker; leave a clean log.
+        print("[hermes] stopped", flush=True)
 
 
 if __name__ == "__main__":
