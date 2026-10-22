@@ -24,6 +24,12 @@ backup format changes.
   suggest that checking before writing is equivalent. Budgets are described as
   admission control rather than a billing cutoff, and every demo says that its
   agents' outputs, token counts, and costs are simulated.
+- **No false lease expiry when the PM falls behind.** The PM applies events one
+  at a time and checks leases against the clock. On a busy host it could read
+  an old heartbeat, expire a worker that was still alive, and hand its task to
+  another attempt while the first kept running. Before expiring a lease, the
+  PM now reads to the head of the log and expires only if the lease is still
+  stale. This surfaced as an intermittent CI failure in the audit-triage demo.
 - **Releases are validated before upload.** The publishing workflow now runs
   the regression suite and the installed-wheel check against the exact files it
   uploads, on Linux and macOS and with minimum dependencies, and publishes only

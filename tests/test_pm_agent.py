@@ -1320,6 +1320,35 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual("task.assignment_expired", planned["topic"])
         self.assertEqual("worker process was replaced", planned["payload"]["reason"])
 
+    def test_lease_is_not_expired_by_a_heartbeat_the_pm_has_not_read_yet(self):
+        state = PMState()
+        cursor = pm_agent.OrderedProjectionCursor(state)
+        cursor.consume([
+            registered(ts=100.0),
+            created(ts=100.0),
+            event(3, "task.assigned", "pm", {
+                "task_id": 1, "assignment_id": "task:1:attempt:1", "attempt": 1,
+                "assignee": "alice", "worker_instance_id": "alice-1"}, caused_by=2),
+        ])
+        unread = [event(4, "agent.heartbeat", "alice",
+                        {"name": "alice", "instance_id": "alice-1"}, ts=125.0)]
+
+        class LaggingBus(FakeBus):
+            def query_all(self, after_id=0, topics=None):
+                log = sorted(unread + self.events, key=lambda item: item["id"])
+                return [item for item in log if item["id"] > after_id]
+
+        fake = LaggingBus(starting_id=5)
+        reconcile(state, fake, now=130.0, lease_seconds=20, cursor=cursor,
+                  default_workflow_max_active_assignments=None)
+        self.assertNotIn("task.assignment_expired", [item["topic"] for item in fake.events])
+        self.assertEqual(4, cursor.last_event_id)
+
+        unread.clear()
+        reconcile(state, fake, now=150.0, lease_seconds=20, cursor=cursor,
+                  default_workflow_max_active_assignments=None)
+        self.assertIn("task.assignment_expired", [item["topic"] for item in fake.events])
+
     def test_malformed_event_does_not_poison_replay(self):
         state = PMState()
         malformed = event(1, "agent.registered", "alice", {})

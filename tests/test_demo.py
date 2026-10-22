@@ -302,7 +302,13 @@ class LiveScenarioTests(unittest.TestCase):
         out = io.StringIO()
         code = demo.run(name, out=out, pace=0.25, assume_yes=True,
                         directory=directory.name, keep_running=False)
-        self.assertEqual(0, code, out.getvalue())
+        if code != 0:
+            # The temporary directory is removed after the test, so keep the
+            # process logs in the failure message for CI.
+            logs = sorted((Path(directory.name) / "logs").glob("*.log"))
+            tails = "".join(f"\n--- {log.name} (last 40 lines)\n" + "\n".join(
+                log.read_text(errors="replace").splitlines()[-40:]) for log in logs)
+            self.fail(out.getvalue() + tails)
         self.assertIn("What just happened", out.getvalue())
         return Path(directory.name), out.getvalue()
 
