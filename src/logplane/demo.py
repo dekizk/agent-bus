@@ -879,7 +879,7 @@ def scenario_approval(h: Harness) -> None:
 
 
 def scenario_budget(h: Harness) -> None:
-    h.title("A cost cap stops a runaway bill")
+    h.title("A cost cap stops new work at the limit")
     h.say("An agent fleet has ten papers to summarise, at about $0.40 of model usage each. "
           "Left alone that is $4. The workflow gets a $2.00 cap before any work starts.")
     h.start_bus()
@@ -1064,8 +1064,8 @@ def run(scenario_name: Optional[str], *, out: TextIO = sys.stdout, pace: float =
     harness.emit(f"Demo directory: {workdir}")
     harness.emit(f"Bus: {harness.url} (lease {harness.lease_seconds:g}s; separate from any bus "
                  "you already run)")
-    harness.emit("The processes, events, and crashes are real; the agents are scripted "
-                 "stand-ins, so their outputs, token counts, and costs are simulated.")
+    harness.emit("Real processes, events, and crashes; scripted stand-in agents, so their")
+    harness.emit("outputs, token counts, and costs are simulated.")
     code = 0
     try:
         SCENARIOS[scenario_name].run(harness)
