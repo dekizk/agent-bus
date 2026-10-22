@@ -588,6 +588,13 @@ def _resolve_observer_url(
                 f"({configured_url}); unset LOGPLANE_URL or pass --url explicitly"
             )
         return configured_url
+    from logplane.legacy import legacy_config_hint
+
+    hint = legacy_config_hint(path.resolve())
+    if hint:
+        # Falling back to LOGPLANE_URL or the default port here could reach a
+        # different bus than the one the old config describes.
+        raise ValueError(f"{hint}; or pass --url to choose a bus explicitly")
     if environment_url:
         return environment_url.rstrip("/")
     return DEFAULT_URL

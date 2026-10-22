@@ -783,6 +783,18 @@ def reconcile(
         )
         if planned is None:
             return emitted
+        if (
+            cursor is not None
+            and planned["topic"] == "task.assignment_expired"
+            and planned["payload"].get("reason") == "worker lease expired"
+            and cursor.catch_up(bus)
+        ):
+            # The PM applies events one at a time. When it falls behind the
+            # log (a busy host, a burst of events), a heartbeat the worker
+            # already sent may still be unread, and expiring now would retry
+            # work a live worker is still doing. Read to the head of the log
+            # and plan again; expire only if the lease is still stale.
+            continue
         publish_options = {
             "caused_by": planned.get("caused_by"),
             "idempotency_key": planned["idempotency_key"],

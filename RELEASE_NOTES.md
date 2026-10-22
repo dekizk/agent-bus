@@ -1,5 +1,40 @@
 # Release notes
 
+## v0.13.2 — 2026-10-22
+
+Hardening from an external review. No event, executor-wire, database, or
+backup format changes.
+
+### Fixes
+
+- **No silent fallback to another bus during migration.** When only
+  `agent-bus.local.json` exists, read commands and `cancel`, `retry`, and
+  `decide` now stop with the rename message instead of falling back to
+  `LOGPLANE_URL` or the default port, which could reach a different bus. An
+  explicit `--url` still works. `logplane init` refuses to create a fresh
+  config next to an old one, which would have started an empty history.
+- **Demo effects are enforced by the receiver.** The approval and
+  audit-triage demos used to check their ledger and then write to it as two
+  steps, so two overlapping attempts of one task could both perform the
+  effect. Their simulated payments system and contest platform now accept each
+  `effect_id` once in a single atomic SQLite write (`refunds.db`,
+  `contest-inbox.db`), and a new test runs overlapping attempts.
+- **Wording matches the guarantees.** `effect_id()` gives a stable key; the
+  system you call must enforce it as an idempotency key. The docs no longer
+  suggest that checking before writing is equivalent. Budgets are described as
+  admission control rather than a billing cutoff, and every demo says that its
+  agents' outputs, token counts, and costs are simulated.
+- **No false lease expiry when the PM falls behind.** The PM applies events one
+  at a time and checks leases against the clock. On a busy host it could read
+  an old heartbeat, expire a worker that was still alive, and hand its task to
+  another attempt while the first kept running. Before expiring a lease, the
+  PM now reads to the head of the log and expires only if the lease is still
+  stale. This surfaced as an intermittent CI failure in the audit-triage demo.
+- **Releases are validated before upload.** The publishing workflow now runs
+  the regression suite and the installed-wheel check against the exact files it
+  uploads, on Linux and macOS and with minimum dependencies, and publishes only
+  if all of them pass.
+
 ## v0.13.1 — 2026-10-21
 
 Fixes the project page on PyPI. No code changes.

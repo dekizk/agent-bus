@@ -224,6 +224,13 @@ def initialize_local_config(directory: str | Path) -> Path:
     root = Path(directory).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     path = root / DEFAULT_LOCAL_CONFIG
+    from logplane.legacy import legacy_config_hint
+
+    hint = legacy_config_hint(path)
+    if hint:
+        # A fresh config next to an old one would start an empty history and
+        # make the existing installation look lost.
+        raise ValueError(f"not initializing: {hint}")
     value = {
         "schema_version": LOCAL_CONFIG_VERSION,
         "bus": {

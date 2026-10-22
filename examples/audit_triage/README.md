@@ -3,7 +3,8 @@
 A smart-contract audit workflow coordinated by logplane: a lead agent scopes
 the audit, reviewer agents split the contracts, duplicate findings are merged,
 a human makes the contested severity call, and the lead writes the report and
-submits each finding to a contest platform exactly once.
+submits each finding to a contest platform once, with the platform rejecting
+repeated idempotency keys.
 
 Run it end to end with deterministic stand-in agents (no model, network, or
 credentials):
@@ -27,7 +28,7 @@ severity, or `--pace 0.5` to run faster.
 | Merge duplicate findings | all reviews | `lead` | groups by `root_cause` | cluster findings with the same root cause |
 | Triage severity | merge | `lead` | blocks on the contested finding | ask a human whenever severity is disputed |
 | Write the report | triage | `lead` | writes `report.md` | draft the submission write-ups |
-| Submit findings | report | `lead` | appends to `contest-inbox.jsonl` | submit to the contest platform |
+| Submit findings | report | `lead` | records in `contest-inbox.db` | submit to the contest platform |
 
 The stand-ins live in `demo.py` (`ScenarioExecutor`). Each stage reads
 `context.stage` and the upstream `result` objects that logplane delivers in
@@ -42,12 +43,15 @@ The stand-ins live in `demo.py` (`ScenarioExecutor`). Each stage reads
 - **Human decisions.** The triage agent returns `Blocked(question)`. The PM
   records `decision.needed`. Your `logplane decide` answer reaches the next
   attempt through `assignment.decisions`.
-- **Exactly-once external effects.** The submitter keys every submission with
-  `assignment.effect_id("submit-finding:<id>")`. The key is the same on every
-  attempt of the task, so when a replacement lead retries the batch, it skips
-  findings the crashed attempt already submitted. Apply the same pattern to any
-  real external write: pass the key as the platform's idempotency key, or check
-  it before writing, as the demo does.
+- **Idempotent external effects.** The submitter sends every submission with
+  `assignment.effect_id("submit-finding:<id>")` as its idempotency key. The key
+  is the same on every attempt of the task, and the simulated platform accepts
+  each key once in a single atomic write, so a replacement lead's retry cannot
+  resubmit what the crashed attempt already sent, even if the two attempts
+  overlap. For a real external write, pass the key to a platform that enforces
+  idempotency keys. Checking a list yourself and then writing is not enough: a
+  lease can expire while the old attempt is still running, so two attempts can
+  both see "not yet sent" and both send.
 
 ## Using real agents
 

@@ -154,7 +154,8 @@ subprocess is terminated and its result is suppressed. Shell execution is not
 used.
 
 In-process Python threads cannot be force-killed safely. Such agents should
-make logical external effects idempotent with `assignment.effect_id(...)`. If
+pass `assignment.effect_id(...)` as an idempotency key that the receiving system
+enforces. If
 the wrapped object exposes `cancel(assignment_id)` or `close()`,
 `PythonAgentAdapter` forwards those lifecycle calls.
 
@@ -205,7 +206,11 @@ coverage, and its recorded live trial evidence.
   `assignment.effect_id("stable-operation-name")` in Python, or combine the
   protocol's `effect_scope` with a stable operation name, for each file write,
   API call, deployment, payment, or other irreversible logical effect that
-  must not repeat when the task is retried.
+  must not repeat when the task is retried. logplane supplies the stable key;
+  the system that performs the effect must enforce it atomically, for example
+  an API's idempotency key or a unique database constraint. A separate "check,
+  then write" in the agent is not enough, because a lease can expire while the
+  old attempt is still running, so two attempts of one task can overlap.
 - Check `deadline_at` before starting and cooperate with
   `cancel(assignment_id)` where possible. Never publish a late result yourself.
 - Return only `Completed`, `Blocked`, `RetryableFailure`, or
