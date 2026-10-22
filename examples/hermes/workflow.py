@@ -112,7 +112,10 @@ def _publisher_main(argv: list[str]) -> int:
         heartbeat_seconds=args.heartbeat,
     )
     print("[publisher] registered, waiting for work", flush=True)
-    runtime.run()
+    try:
+        runtime.run()
+    except KeyboardInterrupt:
+        print("[publisher] stopped", flush=True)
     return 0
 
 
