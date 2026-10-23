@@ -68,14 +68,30 @@ check_legacy_environment()
 # Optional perimeter auth: when LOGPLANE_TOKEN is set, every data route
 # requires "Authorization: Bearer <token>". Actor strings are still
 # self-reported — this authenticates clients, not identities.
-API_TOKEN = os.environ.get("LOGPLANE_TOKEN")
+def _read_api_token() -> Optional[str]:
+    value = os.environ.get("LOGPLANE_TOKEN")
+    if value is not None and not value.strip():
+        # An empty value usually means an unexpanded variable or a typo. Treating
+        # it as "no auth" would silently start an unauthenticated bus.
+        raise RuntimeError(
+            "LOGPLANE_TOKEN is set but empty; set a token, or unset it to run "
+            "without authentication"
+        )
+    return value
+
+
+API_TOKEN = _read_api_token()
 
 
 async def require_token(request: Request) -> None:
     if not API_TOKEN:
         return
-    supplied = request.headers.get("authorization", "")
-    if not secrets.compare_digest(supplied, f"Bearer {API_TOKEN}"):
+    # Compare bytes: compare_digest rejects non-ASCII str with TypeError, which
+    # would turn a bad header into a 500. Starlette decodes headers as latin-1,
+    # so encoding back to latin-1 recovers the bytes the client sent.
+    supplied = request.headers.get("authorization", "").encode("latin-1", "replace")
+    expected = f"Bearer {API_TOKEN}".encode("utf-8")
+    if not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
 class EventValidationError(ValueError):

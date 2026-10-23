@@ -210,6 +210,22 @@ class PMLockTests(unittest.TestCase):
 
             self.assertEqual("do-not-truncate", target.read_text())
 
+    def test_lock_refuses_a_file_replaced_while_locking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "pm.lock"
+            real_flock = fcntl.flock
+
+            def flock_then_replace(fd, operation):
+                real_flock(fd, operation)
+                lock_path.unlink()
+                lock_path.write_text("someone else's lock")
+
+            with patch.object(pm_agent, "LOCK_PATH", lock_path), \
+                    patch.object(pm_agent.fcntl, "flock", side_effect=flock_then_replace):
+                with self.assertRaisesRegex(SystemExit, "replaced while locking"):
+                    with pm_agent.single_pm_lock():
+                        self.fail("a replaced lock file must not count as held")
+
     def test_new_lock_is_user_only(self):
         with tempfile.TemporaryDirectory() as directory:
             lock_path = Path(directory) / "pm.lock"

@@ -1,3 +1,3 @@
 """Project version shared by runtime and packaging metadata."""
 
-VERSION = "0.13.2"
+VERSION = "0.13.3"

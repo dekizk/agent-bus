@@ -1042,6 +1042,47 @@ the stored telemetry does not attest the provider's effective effort setting.
   rerunning with those local test permissions passed. Starlette/httpx deprecation
   and SQLite resource warnings were emitted and are not resolved by this patch.
 
+## Fleet code review — 2026-10-22
+
+- Example: `python -m examples.hermes.code_review` on logplane 0.13.2's own
+  `src/logplane`, Hermes Agent v0.22.4, provider `nous`, model
+  `qwen/qwen3.8-max-0902`, safe mode, `clarify` toolset only, four reviewers.
+- Authority: none beyond the prompt. Each review saw only its chunk's text;
+  the Python filer wrote `findings.db` and `REVIEW.md` in the run directory.
+
+Three live runs, the first two failed and changed the example:
+
+1. 16 chunks of 10 KB, 8-second lease. The laptop slept mid-run; every
+   process paused together, the PM saw leases that had expired minutes
+   earlier on wake, and one review exhausted three attempts. Recovery worked
+   as designed; the lease and the run length were wrong for a laptop. The
+   example now uses a 30-second lease (`--lease`), tells macOS users to run
+   under `caffeinate -i`, and explains repeated expiries in its error.
+2. Same size, kept awake. One review of a 10 KB chunk passed the 600-second
+   Hermes timeout, and the example waited for every running review to finish
+   before continuing past the cost cap, so its own wait timed out. The cap
+   step now continues as soon as admission is refused, the default timeout is
+   900 seconds, and a default run is 12 chunks of 8 KB.
+3. Completed in 24 minutes: 893 events, 15 model calls (12 reviews, two batch
+   merges, one final merge), 202,336 tokens, $0.9030 estimated by the
+   provider. One reviewer was killed mid-call as designed; its lease expired
+   once and the chunk was reassigned, with no failed attempts. The cost cap,
+   set from the first review's real cost, refused new work after four reviews
+   at $0.31 committed; raising it to $1.12 was a second policy event with a
+   reason. The budget line ($0.9960) exceeds telemetry usage because the
+   killed call and the filer's attempts are charged their reservations. Ten
+   merged findings were filed once each.
+
+Findings: of the merged list, five held up on inspection and were fixed in
+0.13.3 (empty `LOGPLANE_TOKEN`, non-ASCII auth header, reducer default values
+missing from the snapshot fingerprint, NaN in snapshots, PM lock file replaced
+during locking), as was a sixth seen in the review stage (telemetry
+idempotency keys not scoped to the attempt). Others were wrong on inspection:
+usage is recorded under its own idempotency key, so it cannot double-count;
+the event stream reconnects rather than stopping the worker; `pause_task` and
+`resume_task` use per-call keys deliberately, because a task can be paused
+more than once.
+
 ## Trial-note template
 
 - Date and task category:

@@ -199,6 +199,17 @@ def single_pm_lock():
         os.close(fd)
         raise SystemExit("[pm] another PM is already running")
 
+    # The lock protects the path, not just this open file. If the file was
+    # removed or replaced between open and flock, another PM could lock the new
+    # file at the same path, so require that the path still names this file.
+    try:
+        current = os.stat(LOCK_PATH, follow_symlinks=False)
+    except FileNotFoundError:
+        current = None
+    if current is None or (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+        os.close(fd)
+        raise SystemExit("[pm] PM lock file was replaced while locking; start the PM again")
+
     try:
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)

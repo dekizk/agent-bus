@@ -37,6 +37,7 @@ def reducer_fingerprint() -> str:
             if inspect.isfunction(value) and value.__module__ == module.__name__:
                 digest.update(name.encode())
                 digest.update(json.dumps(_code_identity(value.__code__), sort_keys=True).encode())
+                digest.update(_defaults_identity(value).encode())
             elif inspect.isclass(value) and value.__module__ == module.__name__:
                 if is_dataclass(value):
                     for field in fields(value):
@@ -49,6 +50,7 @@ def reducer_fingerprint() -> str:
                     if inspect.isfunction(function):
                         digest.update(f"{name}.{method}".encode())
                         digest.update(json.dumps(_code_identity(function.__code__), sort_keys=True).encode())
+                        digest.update(_defaults_identity(function).encode())
             elif name.isupper() and isinstance(value, (str, int, float, tuple, frozenset, list, set, dict)):
                 # Canonicalize policy/topic constants, including unordered sets.
                 try:
@@ -57,6 +59,13 @@ def reducer_fingerprint() -> str:
                 except ValueError:
                     pass  # Class registries are covered by their loaded methods.
     return digest.hexdigest()
+
+
+def _defaults_identity(function) -> str:
+    # Default argument values live on the function, not in its code object, so a
+    # changed default must be hashed separately or old snapshots would replay
+    # under the new behavior.
+    return repr((function.__defaults__, sorted((function.__kwdefaults__ or {}).items())))
 
 
 def _code_identity(code):
@@ -129,9 +138,14 @@ def encode_state(state: projection.PMState) -> str:
     return json.dumps(_pack(vars(state)), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _reject_constant(name: str):
+    # encode_state refuses NaN and Infinity; a snapshot containing them is corrupt.
+    raise ValueError(f"invalid snapshot constant: {name}")
+
+
 def decode_state(data: str) -> projection.PMState:
     state = projection.PMState()
-    values = _unpack(json.loads(data))
+    values = _unpack(json.loads(data, parse_constant=_reject_constant))
     if not isinstance(values, dict) or set(values) != set(vars(state)):
         raise ValueError("incompatible snapshot state")
     mappings = {"workers": projection.WorkerRecord, "tasks": projection.TaskRecord,
