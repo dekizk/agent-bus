@@ -1,7 +1,9 @@
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from logplane import bus
 from logplane.version import VERSION
@@ -838,8 +840,23 @@ class BusApiTests(unittest.TestCase):
                 200, self.client.post("/events", json=body, headers=headers).status_code
             )
             self.assertEqual(200, self.client.get("/events", headers=headers).status_code)
+
+            # Non-ASCII header bytes must be a 401, not a TypeError and a 500.
+            raw = [(b"authorization", "Bearer s\u00e9cret".encode("latin-1"))]
+            self.assertEqual(401, self.client.get("/events", headers=raw).status_code)
         finally:
             bus.API_TOKEN = None
+
+    def test_empty_token_refuses_to_start_unauthenticated(self):
+        for value in ("", "   "):
+            with self.subTest(value=repr(value)):
+                with patch.dict(os.environ, {"LOGPLANE_TOKEN": value}):
+                    with self.assertRaisesRegex(RuntimeError, "set but empty"):
+                        bus._read_api_token()
+        with patch.dict(os.environ, {"LOGPLANE_TOKEN": "secret"}):
+            self.assertEqual("secret", bus._read_api_token())
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(bus._read_api_token())
 
 
 if __name__ == "__main__":

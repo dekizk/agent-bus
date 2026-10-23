@@ -268,6 +268,29 @@ class TelemetryBusContractTests(unittest.TestCase):
         self.assertEqual(10, accounting[0]["payload"]["tokens"])
         self.assertIsNone(accounting[0]["payload"]["cost_usd"])
 
+        # Another attempt that reuses the same invocation and tool-call ids (an
+        # adapter numbering calls from 1 each time) is a different invocation.
+        second = assignment(
+            task_id=root["payload"]["task_id"],
+            assignment_id="task:1:attempt:2",
+            assignment_event_id=root["id"],
+            attempt=2,
+        )
+        again = sink.model_completed(
+            second,
+            invocation_id="invocation-1",
+            provider="nous",
+            model="openai/gpt-5.5",
+            duration_ms=12,
+            usage={"total_tokens": 7},
+        )
+        tool_again = sink.tool_started(
+            second, tool_call_id="call-1", tool_name="clarify", invocation_id="invocation-1")
+        self.assertNotEqual(model_done["id"], again["id"])
+        self.assertNotEqual(tool_started["id"], tool_again["id"])
+        accounting = bus.fetch_after(0, ["workflow.usage_recorded"])
+        self.assertEqual([10, 7], [event["payload"]["tokens"] for event in accounting])
+
 
 if __name__ == "__main__":
     unittest.main()

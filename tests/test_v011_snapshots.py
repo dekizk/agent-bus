@@ -99,6 +99,38 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(state.assignment_accounting["task:1:attempt:1"].charged_tokens(),
                          decoded.assignment_accounting["task:1:attempt:1"].charged_tokens())
 
+    def test_decode_rejects_non_finite_numbers(self):
+        self.seed()
+        encoded = encode_state(load_projection(self.path).state)
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                corrupt = encoded.replace('["last_scheduling_assignment_event_id",4]',
+                                          f'["last_scheduling_assignment_event_id",{constant}]', 1)
+                self.assertNotEqual(encoded, corrupt)
+                with self.assertRaisesRegex(ValueError, "invalid snapshot constant"):
+                    decode_state(corrupt)
+
+    def test_fingerprint_changes_when_a_reducer_default_changes(self):
+        from logplane import projection, projection_store
+
+        function = projection.AgentPolicyRecord.__init__
+        fingerprint = projection_store.reducer_fingerprint.__wrapped__  # bypass the cache
+        before = fingerprint()
+        original = function.__defaults__
+        try:
+            function.__defaults__ = (5,)
+            self.assertNotEqual(before, fingerprint())
+        finally:
+            function.__defaults__ = original
+        self.assertEqual(before, fingerprint())
+
+    def test_fingerprint_is_stable_across_processes(self):
+        script = "from logplane.projection_store import reducer_fingerprint; print(reducer_fingerprint())"
+        values = {subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                                 check=True, cwd=Path(bus.__file__).parents[1]).stdout.strip()
+                  for _ in range(2)}
+        self.assertEqual(1, len(values))
+
     def test_suffix_replay_and_historical_bound_never_use_future_snapshot(self):
         self.seed()
         save_projection(self.path, load_projection(self.path))

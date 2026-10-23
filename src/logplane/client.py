@@ -109,6 +109,9 @@ class BusClient:
         reason: str = "paused by requester",
         idempotency_key: Optional[str] = None,
     ) -> dict:
+        """Request a pause. A task can be paused and resumed many times, so the
+        default key is unique per call; pass ``idempotency_key`` to make a retry
+        of the same request safe."""
         self._validate_control_target(task_id, reason)
         return self.publish(
             "task.pause_requested",
@@ -123,6 +126,7 @@ class BusClient:
         reason: str = "resumed by requester",
         idempotency_key: Optional[str] = None,
     ) -> dict:
+        """Request a resume; see ``pause_task`` for the default key."""
         self._validate_control_target(task_id, reason)
         return self.publish(
             "task.resume_requested",

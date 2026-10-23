@@ -94,7 +94,7 @@ class BusTelemetrySink:
                 "artifacts": artifacts,
             },
             caused_by=assignment.assignment_event_id,
-            idempotency_key=f"telemetry:model:{invocation_id}:started",
+            idempotency_key=f"telemetry:model:{assignment.assignment_id}:{invocation_id}:started",
         )
 
     def model_completed(
@@ -123,7 +123,7 @@ class BusTelemetrySink:
                 "artifacts": self._capture(output_content, kind="model_output"),
             },
             caused_by=caused_by or assignment.assignment_event_id,
-            idempotency_key=f"telemetry:model:{invocation_id}:completed",
+            idempotency_key=f"telemetry:model:{assignment.assignment_id}:{invocation_id}:completed",
         )
         self._record_usage(
             assignment,
@@ -163,7 +163,7 @@ class BusTelemetrySink:
                 "artifacts": self._capture(output_content, kind="model_output"),
             },
             caused_by=caused_by or assignment.assignment_event_id,
-            idempotency_key=f"telemetry:model:{invocation_id}:failed",
+            idempotency_key=f"telemetry:model:{assignment.assignment_id}:{invocation_id}:failed",
         )
         self._record_usage(
             assignment,
@@ -197,7 +197,7 @@ class BusTelemetrySink:
             assignment,
             fields,
             caused_by=caused_by or assignment.assignment_event_id,
-            idempotency_key=f"telemetry:tool:{tool_call_id}:started",
+            idempotency_key=f"telemetry:tool:{assignment.assignment_id}:{tool_call_id}:started",
         )
 
     def tool_completed(
@@ -226,7 +226,7 @@ class BusTelemetrySink:
             assignment,
             fields,
             caused_by=caused_by or assignment.assignment_event_id,
-            idempotency_key=f"telemetry:tool:{tool_call_id}:completed",
+            idempotency_key=f"telemetry:tool:{assignment.assignment_id}:{tool_call_id}:completed",
         )
 
     def tool_failed(
@@ -259,7 +259,7 @@ class BusTelemetrySink:
             assignment,
             fields,
             caused_by=caused_by or assignment.assignment_event_id,
-            idempotency_key=f"telemetry:tool:{tool_call_id}:failed",
+            idempotency_key=f"telemetry:tool:{assignment.assignment_id}:{tool_call_id}:failed",
         )
 
     def _publish(
@@ -335,7 +335,7 @@ class BusTelemetrySink:
                 "cost_usd": cost,
             },
             caused_by=telemetry_event_id,
-            idempotency_key=f"accounting:model:{invocation_id}:terminal",
+            idempotency_key=f"accounting:model:{assignment.assignment_id}:{invocation_id}:terminal",
             correlation_id=assignment.correlation_id,
             producer=self.producer.to_dict(),
         )

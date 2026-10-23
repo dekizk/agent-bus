@@ -1,5 +1,38 @@
 # Release notes
 
+## v0.13.3 — 2026-10-23
+
+Fixes for bugs found when the [code review example](examples/hermes/README.md#review-a-codebase-with-a-fleet-of-reviewers)
+reviewed logplane's own source with real models. No event, executor-wire,
+database, or backup format changes.
+
+### Fixes
+
+- **An empty `LOGPLANE_TOKEN` no longer means "no auth".** A set but empty or
+  blank value, usually an unexpanded variable, now stops the bus with a clear
+  message instead of starting it unauthenticated. Unset the variable to run
+  without a token.
+- **A non-ASCII `Authorization` header gets a 401, not a 500.** The token
+  comparison now works on bytes.
+- **Changing a reducer's default argument values invalidates PM snapshots.**
+  The snapshot fingerprint hashed function code but not default values, so a
+  changed default could replay an old snapshot under new behavior. Existing
+  snapshots are discarded once after upgrading and rebuilt from the log.
+- **Snapshots containing NaN or Infinity are rejected** as corrupt, matching
+  the encoder, which never writes them.
+- **The PM lock checks that its file was not replaced while locking.** If the
+  lock file is deleted and recreated between opening and locking it, the PM
+  now stops instead of holding a lock another PM could also take.
+- **Telemetry and usage idempotency keys include the assignment.** An adapter
+  that reuses invocation or tool-call ids across attempts (numbering calls
+  from 1 each time, say) no longer has a later attempt's telemetry and usage
+  silently dropped as duplicates. Keys for events already in the log are
+  unchanged.
+
+`BusClient.pause_task` and `resume_task` keep a unique default key per call,
+because a task can be paused and resumed more than once; their docstrings now
+say to pass `idempotency_key` when retrying the same request.
+
 ## v0.13.2 — 2026-10-22
 
 Hardening from an external review. No event, executor-wire, database, or
